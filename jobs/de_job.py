@@ -184,7 +184,7 @@ class DEGridPointJob(Job):
 
             avg_improvement = np.mean(grid_state['improvement_history'])
             if avg_improvement < self.sampler.convergence_threshold:
-                print(f"--- DE Converged for {self.grid_idx}. Spawning refinement job. ---")
+                # print(f"--- DE Converged for {self.grid_idx}. Spawning refinement job. ---")
                 # This job factory will set status to 'refining_queued'
                 # and return (new_job, next_job_id + 1)
                 return self.sampler.create_refinement_job_for_point(self.grid_idx, next_job_id)
