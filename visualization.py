@@ -54,7 +54,7 @@ def plot_profiles(sampler, fig, axes):
     cmap = plt.get_cmap('viridis')
     cmap.set_bad(color='white')
 
-    im = ax.imshow(masked_profile.T, extent=extent, aspect='auto', origin='lower',
+    im = ax.imshow(masked_profile.T, extent=extent, aspect='equal', origin='lower',
                    cmap=cmap, vmin=vmin, vmax=vmax)
 
     active_points = []
@@ -68,11 +68,6 @@ def plot_profiles(sampler, fig, axes):
         ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                    edgecolor='black', lw=0.5, label='Active DE Points')
 
-    if sampler.initial_maxima:
-        peaks = np.array([m['point'] for m in sampler.initial_maxima])
-        ax.plot(peaks[:, dim1], peaks[:, dim2], 'r*', markersize=10,
-                label='Found Maxima', markeredgecolor='k')
-
     ax.set_title(f'Profile Likelihood (Gen: {sampler.current_generation}, Dims: {sampler.projection_dims})')
     ax.set_xlabel(f'Parameter {dim1}')
     ax.set_ylabel(f'Parameter {dim2}')
@@ -85,5 +80,3 @@ def plot_profiles(sampler, fig, axes):
     fig.colorbar(im, cax=cax, orientation='vertical', label='Log Likelihood')
 
     fig.tight_layout()
-    fig.canvas.draw()
-    plt.pause(0.01)

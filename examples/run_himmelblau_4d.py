@@ -43,7 +43,7 @@ if myrank == 0:
     # Setup plotting
     try:
         import matplotlib.pyplot as plt
-        plt.ion() # Interactive mode on
+        plt.ioff() # Interactive mode off
         fig, axes = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [10, 1]})
     except ImportError:
         fig, axes = None, None
@@ -130,12 +130,6 @@ if myrank == 0:
     # Terminate all workers after all projections complete
     print("Master: All projections complete. Terminating workers...")
     terminate_workers(comm, myrank)
-
-    # Show final plot interactively
-    if fig:
-        print("Master: Final plot displayed. Close window to exit.")
-        plt.ioff()
-        plt.show()
 
 else:
     # --- Worker process ---
