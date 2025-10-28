@@ -1,6 +1,7 @@
 """
 MPI worker process logic.
 """
+import numpy as np
 try:
     from mpi4py import MPI
 except ImportError:
@@ -37,7 +38,11 @@ def worker_main(comm, myrank):
 
         # Execute the task (a single target evaluation)
         params = task['params']
-        target_val = target_func(params)
+        try:
+            target_val = target_func(params)
+        except Exception as e:
+            print(f"Worker {myrank}: Error evaluating target function at params {params}: {e}")
+            target_val = -np.inf  # Return -inf for failed evaluations
 
         # Send the result back to the master
         context = task['context']
