@@ -124,10 +124,16 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_jobs = []
 
             if current_stage == 'INITIAL_OPTIMIZATION':
-                if skip_init_opt_on_warm_start and sampler.initial_maxima:
-                     print("Skipping initial optimization on warm start.")
-                else:
+                # Try to initialize from warm start file first
+                if skip_init_opt_on_warm_start and sampler.samples_output_file:
+                    sampler._initialize_from_warm_start_file(sampler.samples_output_file)
+
+                # If no maxima found from warm start (or warm start disabled), run global optimization
+                if not sampler.initial_maxima:
                     new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
+                else:
+                    print("Skipping initial optimization - using warm start from file.")
+                    new_jobs = []
 
                 if not new_jobs:
                     current_stage = stages.pop(0) if stages else None
@@ -262,7 +268,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                         current_patching_batch_improvements.append(job.improvement)
                     current_patching_batch_ids.remove(job_id_finished)
 
-                print(f"--- Master: Job {job.id} ({job.type}) finished. Success: {job.success} ---")
+                # print(f"--- Master: Job {job.id} ({job.type}) finished. Success: {job.success} ---")
                 # This updates the sampler state and can spawn a new job
                 spawn_result = job.on_finish(next_job_id)
                 del active_jobs[job_id_finished]
@@ -279,7 +285,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                         low_prio_tasks.extend(initial_tasks)
                     # --- END MODIFICATION ---
 
-                    print(f"--- Master: Spawned new job {new_job.id} ({new_job.type}) for grid {new_job.grid_idx} ---")
+                    # print(f"--- Master: Spawned new job {new_job.id} ({new_job.type}) for grid {new_job.grid_idx} ---")
 
                 # Check if the patching batch is now complete
                 if current_stage == 'WAITING_FOR_PATCHING' and not current_patching_batch_ids:

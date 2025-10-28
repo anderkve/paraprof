@@ -52,6 +52,9 @@ if myrank == 0:
     # Calculate memory size based on max grid points across all projections
     max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
 
+    # Use a single output file for all projections to enable warm start
+    output_file = f"samples_rank_{myrank}.csv"
+
     sampler = GridAnchoredDESampler(
         target_func=log_likelihood,
         bounds=param_bounds,
@@ -71,7 +74,7 @@ if myrank == 0:
         patching_conv_threshold=0.01,
         max_patching_iterations=10, # Limit patching
         memory_size=max_grid_points * 25,
-        samples_output_file=None,  # Will be set for each projection
+        samples_output_file=output_file,  # Single file for all projections
     )
 
     def plot_func_wrapper(s, fig, axes):
@@ -92,12 +95,8 @@ if myrank == 0:
         if proj_idx > 0:
             sampler._reset_for_new_projection(projection_config)
 
-        # Set projection-specific output file
-        dims_str = "_".join(map(str, projection_config['dims']))
-        output_file = f"samples_rank_{myrank}_dims_{dims_str}.csv"
-        sampler.samples_output_file = output_file
-        sampler.samples_buffer = []
-        sampler.sample_buffer_size = 1000  # Initialize buffer size
+        # Enable warm start for all projections after the first
+        skip_init_opt = (proj_idx > 0)
 
         # Run the workflow for this projection
         master_main(
@@ -107,7 +106,7 @@ if myrank == 0:
             max_num_to_evolve=None, # Limit evals per gen -> Evolve all
             plot_callback=plot_func_wrapper,
             plot_interval=100, # Plot every 100 seconds
-            skip_init_opt_on_warm_start=False,
+            skip_init_opt_on_warm_start=skip_init_opt,  # Enable warm start after first projection
             fig=fig,
             axes=axes,
             myrank=myrank
@@ -119,6 +118,7 @@ if myrank == 0:
         # Save projection-specific plot
         if fig:
             plot_func_wrapper(sampler, fig, axes)
+            dims_str = "_".join(map(str, projection_config['dims']))
             plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}.png"
             fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
             print(f"Saved plot to: {plot_filename}")
