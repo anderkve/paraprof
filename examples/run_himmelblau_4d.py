@@ -93,6 +93,7 @@ if myrank == 0:
         output_file = f"samples_rank_{myrank}_dims_{dims_str}.csv"
         sampler.samples_output_file = output_file
         sampler.samples_buffer = []
+        sampler.sample_buffer_size = 1000  # Initialize buffer size
 
         # Run the workflow for this projection
         master_main(
