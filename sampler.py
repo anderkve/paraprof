@@ -1,6 +1,7 @@
 """
 Main Grid-Anchored Differential Evolution Sampler.
 """
+import os
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
@@ -178,8 +179,8 @@ class GridAnchoredDESampler:
         try:
             with open(self.samples_output_file, 'a') as f:
                 for params, target_val in self.samples_buffer:
-                    param_str = ", ".join([f"{p:.6e}" for p in params])
-                    f.write(f"{param_str}, {target_val:.6e}\n")
+                    param_str = ", ".join([f"{p:.10e}" for p in params])
+                    f.write(f"{param_str}, {target_val:.10e}\n")
 
             self.samples_buffer = []
         except IOError as e:
@@ -252,6 +253,76 @@ class GridAnchoredDESampler:
 
             if all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
                 yield neighbor_idx
+
+
+    def _initialize_from_warm_start_file(self, warm_start_file):
+        """
+        Initializes initial_maxima from a previous sample file.
+
+        This method reads all samples from an accumulated CSV file and uses them
+        to populate the initial_maxima list, avoiding expensive global optimization
+        for subsequent projection runs.
+
+        Parameters
+        ----------
+        warm_start_file : str
+            Path to CSV file containing previous samples (params, target_val)
+        """
+        if not warm_start_file or not os.path.exists(warm_start_file):
+            print("  No warm-start file found or provided. Skipping warm start.")
+            return
+
+        print(f"--- Initializing from warm-start file: {warm_start_file} ---")
+        try:
+            samples = np.loadtxt(warm_start_file, delimiter=',')
+            if samples.ndim == 1:
+                samples = samples.reshape(1, -1)
+        except Exception as e:
+            print(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")
+            return
+
+        # Group samples by grid index and keep the best for each
+        best_candidates = {}
+        for sample_row in samples:
+            params = sample_row[:-1]
+            target_val = sample_row[-1]
+
+            # Validate sample is within bounds
+            if not np.all((params >= self.bounds[:, 0]) & (params <= self.bounds[:, 1])):
+                continue
+
+            grid_idx = self._get_grid_indices_from_point(params)
+
+            if grid_idx not in best_candidates or target_val > best_candidates[grid_idx]['target_val']:
+                best_candidates[grid_idx] = {'params': params, 'target_val': target_val}
+
+        if not best_candidates:
+            print("  No valid samples found in warm-start file for the current grid.")
+            return
+
+        # Update global maximum from warm start samples
+        warm_start_max_target_val = max(c['target_val'] for c in best_candidates.values())
+        self.global_max_target_val = max(self.global_max_target_val, warm_start_max_target_val)
+
+        # Define ROI cutoff
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+
+        # Populate initial_maxima with samples above ROI threshold
+        warm_start_maxima = []
+        for grid_idx, candidate in best_candidates.items():
+            if candidate['target_val'] >= roi_cutoff:
+                warm_start_maxima.append({
+                    'point': candidate['params'],
+                    'target_val': candidate['target_val']
+                })
+
+        # Sort by target_val (best first)
+        warm_start_maxima.sort(key=lambda x: x['target_val'], reverse=True)
+
+        # Add to initial_maxima list
+        self.initial_maxima.extend(warm_start_maxima)
+
+        print(f"--- Loaded {len(warm_start_maxima)} warm-start maxima from file. New Global Max: {self.global_max_target_val:.4e} ---")
 
 
     # --- Job Factory Methods (Master Only) ---
