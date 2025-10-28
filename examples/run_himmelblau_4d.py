@@ -29,7 +29,6 @@ myrank = comm.Get_rank()
 
 # --- Configuration ---
 TEST_FUNCTION = "himmelblau_4d"
-OUTPUT_FILE = f"samples_rank_{myrank}.csv"
 
 PROJECTIONS_TO_RUN = [
     {'dims': [0, 1], 'grid_points': [100, 100], 'patching': True, 'refining': True},
@@ -50,6 +49,8 @@ if myrank == 0:
         fig, axes = None, None
         print("Matplotlib not found. Plotting will be disabled.")
 
+    # Calculate memory size based on max grid points across all projections
+    max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
 
     sampler = GridAnchoredDESampler(
         target_func=log_likelihood,
@@ -69,29 +70,61 @@ if myrank == 0:
         patching_fraction=0.05,
         patching_conv_threshold=0.01,
         max_patching_iterations=10, # Limit patching
-        memory_size=len(PROJECTIONS_TO_RUN[0]['grid_points']) * 25,
-        samples_output_file=OUTPUT_FILE,
+        memory_size=max_grid_points * 25,
+        samples_output_file=None,  # Will be set for each projection
     )
 
     def plot_func_wrapper(s, fig, axes):
         plot_profiles(s, fig, axes)
 
-    master_main(
-        comm=comm,
-        sampler=sampler,
-        num_generations=100000, # Set a finite number of generations
-        max_num_to_evolve=None, # Limit evals per gen -> Evolve all
-        plot_callback=plot_func_wrapper,
-        plot_interval=100, # Plot every 100 seconds
-        skip_init_opt_on_warm_start=False,
-        fig=fig,
-        axes=axes,
-        myrank=myrank
-    )
+    # --- Loop over all projections ---
+    for proj_idx, projection_config in enumerate(PROJECTIONS_TO_RUN):
+        print("\n" + "="*80)
+        print(f"=== Starting Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
+        print(f"=== Dimensions: {projection_config['dims']} ===")
+        print("="*80 + "\n")
 
+        # Reset sampler for new projection
+        if proj_idx > 0:
+            sampler._reset_for_new_projection(projection_config)
+
+        # Set projection-specific output file
+        dims_str = "_".join(map(str, projection_config['dims']))
+        output_file = f"samples_rank_{myrank}_dims_{dims_str}.csv"
+        sampler.samples_output_file = output_file
+        sampler.samples_buffer = []
+
+        # Run the workflow for this projection
+        master_main(
+            comm=comm,
+            sampler=sampler,
+            num_generations=100000, # Set a finite number of generations
+            max_num_to_evolve=None, # Limit evals per gen -> Evolve all
+            plot_callback=plot_func_wrapper,
+            plot_interval=100, # Plot every 100 seconds
+            skip_init_opt_on_warm_start=False,
+            fig=fig,
+            axes=axes,
+            myrank=myrank
+        )
+
+        # Flush samples buffer after each projection
+        sampler._flush_samples_buffer()
+
+        # Save projection-specific plot
+        if fig:
+            plot_func_wrapper(sampler, fig, axes)
+            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}.png"
+            fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
+            print(f"Saved plot to: {plot_filename}")
+
+        print("\n" + "="*80)
+        print(f"=== Completed Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
+        print("="*80 + "\n")
+
+    # Show final plot interactively
     if fig:
-        print("Master: Final plot. Press Enter to exit.")
-        plot_func_wrapper(sampler, fig, axes)
+        print("Master: All projections complete. Final plot displayed. Press Enter to exit.")
         plt.ioff()
         plt.show()
 
