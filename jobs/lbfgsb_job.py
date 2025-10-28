@@ -205,25 +205,32 @@ class LBFGSBJob(Job):
 
         return new_tasks
 
-    def _calculate_gradient_tasks(self, eps=1e-8):
+    def _calculate_gradient_tasks(self, base_eps=1e-8):
         """Generates tasks needed to numerically calculate the gradient."""
         tasks = []
         x = self.current_params
         self.gradient_components = {} # Clear old components
+
+        # Adaptive step size per dimension: scale with parameter magnitude
+        # This ensures numerical stability across parameters with different scales
+        eps = np.maximum(np.abs(x) * base_eps, 1e-10)
+
+        # Store eps array for later use in gradient reconstruction
+        self.current_eps = eps
 
         if self.refinement_gradient_method == "central":
             self.pending_grad_evals = 2 * self.n_opt_dims
             for i in range(self.n_opt_dims):
                 # Positive step
                 x_plus = x.copy()
-                x_plus[i] += eps
+                x_plus[i] += eps[i]
                 full_params_plus = self._construct_full_params_for_task(x_plus)
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
                 tasks.append({'params': full_params_plus, 'context': context})
 
                 # Negative step
                 x_minus = x.copy()
-                x_minus[i] -= eps
+                x_minus[i] -= eps[i]
                 full_params_minus = self._construct_full_params_for_task(x_minus)
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': -1}
                 tasks.append({'params': full_params_minus, 'context': context})
@@ -232,7 +239,7 @@ class LBFGSBJob(Job):
             self.pending_grad_evals = self.n_opt_dims
             for i in range(self.n_opt_dims):
                 x_plus = x.copy()
-                x_plus[i] += eps
+                x_plus[i] += eps[i]
                 full_params_plus = self._construct_full_params_for_task(x_plus)
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
                 tasks.append({'params': full_params_plus, 'context': context})
@@ -261,11 +268,11 @@ class LBFGSBJob(Job):
                 for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
                     f_minus = self.gradient_components[(i, -1)]
-                    grad[i] = (f_plus - f_minus) / (2 * 1e-8)
+                    grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
             elif self.refinement_gradient_method == "forward":
                  for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
-                    grad[i] = (f_plus - f) / 1e-8
+                    grad[i] = (f_plus - f) / self.current_eps[i]
 
             self.current_gradient = grad
 
