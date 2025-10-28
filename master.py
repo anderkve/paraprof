@@ -15,6 +15,26 @@ except ImportError:
 from constants import TASK_TERMINATE
 
 
+def terminate_workers(comm, myrank=0):
+    """
+    Terminates all worker processes.
+
+    Parameters
+    ----------
+    comm : MPI.Comm
+        MPI communicator
+    myrank : int
+        Master rank (usually 0)
+    """
+    n_workers = comm.Get_size() - 1
+
+    print(f"rank {myrank}: DEBUG: terminate_workers: Sending TASK_TERMINATE to workers.", flush=True)
+    for rank in range(1, n_workers + 1):
+        comm.send(TASK_TERMINATE, dest=rank)
+
+    print(f"rank {myrank}: DEBUG: terminate_workers: All workers terminated.")
+
+
 def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 plot_callback, plot_interval, skip_init_opt_on_warm_start=True,
                 fig=None, axes=None, myrank=0):
@@ -51,9 +71,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         return
 
     print(f"rank {myrank}: DEBUG: master_main: STARTING with {n_workers} workers.")
-
-    # Broadcast the target function to all workers
-    comm.bcast(sampler.target_func, root=0)
 
     # --- Master state ---
     free_workers = list(range(1, n_workers + 1))
@@ -324,20 +341,3 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     print(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     print(f"  Total Grid Points Explored: {len(sampler.population)}")
     print("="*80 + "\n")
-
-    # --- 5. Terminate workers ---
-    print(f"rank {myrank}: DEBUG: master_main: send TASK_TERMINATE to workers.", flush=True)
-    for rank in range(1, n_workers + 1):
-        if rank in free_workers:
-            comm.send(TASK_TERMINATE, dest=rank)
-        else:
-            # This logic is for a non-blocking setup.
-            # In our blocking setup, all workers should be free.
-            # But as a failsafe:
-            print(f"Waiting for worker {rank} to finish last task before terminating...")
-            result = comm.recv(source=rank)
-            tasks_completed += 1
-            # We don't process this last result, just receive it.
-            comm.send(TASK_TERMINATE, dest=rank)
-
-    print(f"rank {myrank}: DEBUG: master_main: All workers terminated.")
