@@ -18,7 +18,7 @@ except ImportError:
     sys.exit(1)
 
 from sampler import GridAnchoredDESampler
-from master import master_main
+from master import master_main, terminate_workers
 from worker import worker_main
 from visualization import plot_profiles
 from test_functions import get_test_function
@@ -32,7 +32,7 @@ TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
     {'dims': [0, 1], 'grid_points': [100, 100], 'patching': True, 'refining': True},
-    # {'dims': [0, 2], 'grid_points': [100, 100], 'patching': True, 'refining': True},
+    {'dims': [0, 2], 'grid_points': [100, 100], 'patching': True, 'refining': True},
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
@@ -76,6 +76,10 @@ if myrank == 0:
 
     def plot_func_wrapper(s, fig, axes):
         plot_profiles(s, fig, axes)
+
+    # Broadcast the target function to all workers (once, before all projections)
+    print("Master: Broadcasting target function to workers...")
+    comm.bcast(sampler.target_func, root=0)
 
     # --- Loop over all projections ---
     for proj_idx, projection_config in enumerate(PROJECTIONS_TO_RUN):
@@ -123,9 +127,13 @@ if myrank == 0:
         print(f"=== Completed Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
         print("="*80 + "\n")
 
+    # Terminate all workers after all projections complete
+    print("Master: All projections complete. Terminating workers...")
+    terminate_workers(comm, myrank)
+
     # Show final plot interactively
     if fig:
-        print("Master: All projections complete. Final plot displayed. Press Enter to exit.")
+        print("Master: Final plot displayed. Close window to exit.")
         plt.ioff()
         plt.show()
 
