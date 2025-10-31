@@ -70,9 +70,9 @@ if myrank == 0:
         refinement_ftol=1e-9,
         refinement_max_iter=20,
         refinement_gradient_method="forward", # "central",
-        patching_fraction=0.05,
+        patching_fraction=0.1,
         patching_conv_threshold=0.01,
-        max_patching_iterations=10, # Limit patching
+        max_patching_iterations=1000, # Limit patching
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
     )
