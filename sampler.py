@@ -117,6 +117,12 @@ class GridAnchoredDESampler:
         self.target_calls = 0
         self.global_max_target_val = -np.inf
 
+        # --- Refinement State ---
+        self.is_refinement_run = False
+        self.refinement_factor = None
+        self.coarse_grid_solution = None
+        self.refinement_interpolator = None
+
         # --- Per-Projection State (will be reset) ---
         self.projection_dims = None
         self.grid_points_per_dim = None
@@ -170,6 +176,47 @@ class GridAnchoredDESampler:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
 
+        # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
+        if self.is_refinement_run and self.coarse_grid_solution is not None:
+            print("--- Transferring coarse grid solutions to fine grid ---")
+            coarse_solutions = self.coarse_grid_solution['solutions']
+            n_transferred = 0
+
+            for coarse_idx, solution in coarse_solutions.items():
+                # Map coarse grid index to fine grid index
+                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.refinement_factor)
+
+                # Verify the fine grid point is valid
+                if not all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
+                    print(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
+                    continue
+
+                # Create population state for this transferred point
+                continuous_params = solution['continuous_params']
+                likelihood = solution['likelihood']
+
+                # Create a population with a single individual (the transferred solution)
+                self.population[fine_idx] = {
+                    'continuous_params': np.array([continuous_params]),
+                    'fitnesses': np.array([likelihood]),
+                    'best_fitness': likelihood,
+                    'status': 'refined',  # Mark as already refined
+                    'improvement_history': [],
+                    'optimizer_state': None
+                }
+
+                # Add to active grid (even though status is 'refined')
+                self.active_grid_indices.add(fine_idx)
+
+                # Update profile likelihood grid
+                self.profile_likelihood_grid[fine_idx] = likelihood
+
+                n_transferred += 1
+
+            print(f"Transferred {n_transferred} coarse grid points to fine grid")
+            print(f"Fine grid now has {len(self.population)} populated points")
+            print("="*80 + "\n")
+
 
     def export_grid_solution(self):
         """
@@ -211,6 +258,39 @@ class GridAnchoredDESampler:
             'solutions': solutions,
             'grid_shape': self.grid_shape
         }
+
+
+    def setup_refinement_run(self, coarse_solution, refinement_factor):
+        """
+        Prepares the sampler for a refined grid run.
+
+        This method stores the coarse grid solution and sets flags to enable
+        refinement mode. The actual grid setup happens in _reset_for_new_projection.
+
+        Parameters
+        ----------
+        coarse_solution : dict
+            Dictionary returned by export_grid_solution() containing the
+            coarse grid's converged solutions
+        refinement_factor : int
+            Grid refinement factor (e.g., 2 for 2x finer grid in each dimension)
+        """
+        from interpolation import GridInterpolator
+
+        self.is_refinement_run = True
+        self.refinement_factor = refinement_factor
+        self.coarse_grid_solution = coarse_solution
+
+        # Create interpolator from coarse solution
+        self.refinement_interpolator = GridInterpolator(coarse_solution)
+
+        print("\n" + "="*80)
+        print("--- Refinement Run Configuration ---")
+        print(f"Refinement factor: {refinement_factor}x")
+        print(f"Coarse grid shape: {coarse_solution['grid_shape']}")
+        print(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
+        print(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
+        print("="*80 + "\n")
 
 
     def _is_coarse_grid_point(self, fine_idx, refinement_factor):
@@ -487,6 +567,78 @@ class GridAnchoredDESampler:
                 next_job_id += 1
 
         print(f"--- Generating {len(jobs)} activation jobs ---")
+        return jobs, next_job_id
+
+
+    def create_refinement_activation_jobs(self, next_job_id):
+        """
+        Generates ActivationJobs for new fine grid points using interpolation.
+
+        This method is called during refinement runs to activate neighbors of
+        transferred coarse grid points, using interpolation to predict good
+        starting values for continuous parameters.
+
+        Parameters
+        ----------
+        next_job_id : int
+            Next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of ActivationJob objects
+        next_job_id : int
+            Updated job ID counter
+        """
+        if not self.is_refinement_run or self.refinement_interpolator is None:
+            print("Warning: create_refinement_activation_jobs called but not in refinement mode.")
+            return [], next_job_id
+
+        jobs = []
+        activation_job_created_for_grid_points = set()
+
+        # Find all transferred coarse grid points (status='refined')
+        transferred_points = [idx for idx, state in self.population.items()
+                             if state['status'] == 'refined']
+
+        print(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
+
+        # Activate all neighbors of transferred points
+        for grid_idx in transferred_points:
+            for neighbor_idx in self._get_valid_neighbors(grid_idx):
+                # Skip if already activated or pending
+                if (neighbor_idx in activation_job_created_for_grid_points) or \
+                   (neighbor_idx in self.population) or \
+                   (neighbor_idx in self.pending_activation_indices):
+                    continue
+
+                # Get interpolated starting parameters
+                grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
+                interpolated_continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+
+                # Handle case where interpolation returns None (no continuous dims)
+                if interpolated_continuous_params is None:
+                    warm_start_params = None
+                # Check for NaN values from interpolation
+                elif np.any(np.isnan(interpolated_continuous_params)):
+                    # Fallback: use nearest transferred point's parameters
+                    nearest_state = self.population[grid_idx]
+                    warm_start_params = nearest_state['continuous_params'][0]
+                else:
+                    warm_start_params = interpolated_continuous_params
+
+                job = ActivationJob(
+                    job_id=next_job_id,
+                    sampler=self,
+                    grid_idx=neighbor_idx,
+                    warm_start_params=warm_start_params
+                )
+                jobs.append(job)
+                activation_job_created_for_grid_points.add(neighbor_idx)
+                self.pending_activation_indices.add(neighbor_idx)
+                next_job_id += 1
+
+        print(f"--- Generating {len(jobs)} refinement activation jobs ---")
         return jobs, next_job_id
 
 

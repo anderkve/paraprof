@@ -31,8 +31,11 @@ myrank = comm.Get_rank()
 TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
-    {'dims': [0, 1], 'grid_points': [100, 100], 'patching': True, 'refining': True},
-    {'dims': [0, 2], 'grid_points': [100, 100], 'patching': True, 'refining': True},
+    # Each projection can optionally enable grid refinement
+    # 'enable_refinement': True/False - whether to run refinement after coarse grid
+    # 'refinement_factor': int - grid refinement factor (e.g., 2 = twice as many points per dim)
+    {'dims': [0, 2], 'grid_points': [50, 50], 'patching': True, 'refining': True,
+     'enable_refinement': True, 'refinement_factor': 2},
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
@@ -98,6 +101,11 @@ if myrank == 0:
         # Enable warm start for all projections after the first
         skip_init_opt = (proj_idx > 0)
 
+        # --- COARSE GRID RUN ---
+        print("\n" + "="*80)
+        print("=== Running Coarse Grid ===")
+        print("="*80 + "\n")
+
         # Run the workflow for this projection
         master_main(
             comm=comm,
@@ -112,16 +120,66 @@ if myrank == 0:
             myrank=myrank
         )
 
-        # Flush samples buffer after each projection
+        # Flush samples buffer after coarse grid
         sampler._flush_samples_buffer()
 
-        # Save projection-specific plot
+        # Save coarse grid plot
         if fig:
             plot_func_wrapper(sampler, fig, axes)
             dims_str = "_".join(map(str, projection_config['dims']))
-            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}.png"
+            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse.png"
             fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
-            print(f"Saved plot to: {plot_filename}")
+            print(f"Saved coarse grid plot to: {plot_filename}")
+
+        # --- REFINEMENT RUN (if enabled) ---
+        if projection_config.get('enable_refinement', False):
+            print("\n" + "="*80)
+            print("=== Starting Grid Refinement ===")
+            print("="*80 + "\n")
+
+            # Export coarse grid solution
+            coarse_solution = sampler.export_grid_solution()
+            refinement_factor = projection_config.get('refinement_factor', 2)
+
+            # Setup refined projection config
+            refined_config = projection_config.copy()
+            refined_config['grid_points'] = [
+                n * refinement_factor for n in projection_config['grid_points']
+            ]
+
+            # Configure sampler for refinement
+            sampler.setup_refinement_run(coarse_solution, refinement_factor)
+            sampler._reset_for_new_projection(refined_config)
+
+            # Run refinement workflow
+            master_main(
+                comm=comm,
+                sampler=sampler,
+                num_generations=100000,
+                max_num_to_evolve=None,
+                plot_callback=plot_func_wrapper,
+                plot_interval=100,
+                skip_init_opt_on_warm_start=True,  # Always skip for refinement
+                fig=fig,
+                axes=axes,
+                myrank=myrank
+            )
+
+            # Flush samples buffer after refinement
+            sampler._flush_samples_buffer()
+
+            # Save refined grid plot
+            if fig:
+                plot_func_wrapper(sampler, fig, axes)
+                plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined.png"
+                fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
+                print(f"Saved refined grid plot to: {plot_filename}")
+
+            # Reset refinement flags for next projection
+            sampler.is_refinement_run = False
+            sampler.refinement_factor = None
+            sampler.coarse_grid_solution = None
+            sampler.refinement_interpolator = None
 
         print("\n" + "="*80)
         print(f"=== Completed Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
