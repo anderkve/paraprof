@@ -124,6 +124,13 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_jobs = []
 
             if current_stage == 'INITIAL_OPTIMIZATION':
+                # Skip initial optimization if this is a refinement run
+                if sampler.is_refinement_run:
+                    print("Skipping initial optimization - refinement run mode.")
+                    new_jobs = []
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
                 # Try to initialize from warm start file first
                 if skip_init_opt_on_warm_start and sampler.samples_output_file:
                     sampler._initialize_from_warm_start_file(sampler.samples_output_file)
@@ -140,11 +147,19 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     continue
 
             elif current_stage == 'ACTIVATION':
-                new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
-                if not new_jobs:
-                    print("No activation jobs created (no initial maxima?). Moving to next stage.")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
+                # Use refinement activation for refinement runs
+                if sampler.is_refinement_run:
+                    new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
+                    if not new_jobs:
+                        print("No refinement activation jobs created. Moving to next stage.")
+                        current_stage = stages.pop(0) if stages else None
+                        continue
+                else:
+                    new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
+                    if not new_jobs:
+                        print("No activation jobs created (no initial maxima?). Moving to next stage.")
+                        current_stage = stages.pop(0) if stages else None
+                        continue
 
             elif current_stage == 'DE_LOOP':
                 # This stage loops
