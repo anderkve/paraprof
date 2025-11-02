@@ -171,6 +171,108 @@ class GridAnchoredDESampler:
         self.memory_idx = 0
 
 
+    def export_grid_solution(self):
+        """
+        Exports the current grid solution for use in refinement runs.
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'grid_axes': List of arrays defining the grid coordinates
+            - 'projection_dims': List of projection dimension indices
+            - 'continuous_dims': List of continuous dimension indices
+            - 'solutions': Dict mapping grid_idx -> solution dict
+              Each solution dict contains:
+              - 'continuous_params': Best continuous parameters at this grid point
+              - 'likelihood': Best likelihood value
+              - 'full_params': Complete parameter vector
+        """
+        solutions = {}
+
+        for grid_idx, state in self.population.items():
+            # Only export converged/refined points
+            if state['status'] in ['converged', 'refined']:
+                best_ind_idx = np.argmax(state['fitnesses'])
+                continuous_params = state['continuous_params'][best_ind_idx]
+                likelihood = state['fitnesses'][best_ind_idx]
+                full_params = self._construct_params(grid_idx, continuous_params)
+
+                solutions[grid_idx] = {
+                    'continuous_params': continuous_params.copy(),
+                    'likelihood': likelihood,
+                    'full_params': full_params.copy()
+                }
+
+        return {
+            'grid_axes': [ax.copy() for ax in self.grid_axes],
+            'projection_dims': self.projection_dims.copy(),
+            'continuous_dims': self.continuous_dims.copy(),
+            'solutions': solutions,
+            'grid_shape': self.grid_shape
+        }
+
+
+    def _is_coarse_grid_point(self, fine_idx, refinement_factor):
+        """
+        Checks if a fine grid index corresponds to a coarse grid point.
+
+        Parameters
+        ----------
+        fine_idx : tuple
+            Grid index in the fine grid
+        refinement_factor : int
+            Grid refinement factor (e.g., 2 for 2x refinement)
+
+        Returns
+        -------
+        bool
+            True if fine_idx aligns with a coarse grid point
+        """
+        return all(idx % refinement_factor == 0 for idx in fine_idx)
+
+
+    def _map_coarse_to_fine_index(self, coarse_idx, refinement_factor):
+        """
+        Maps a coarse grid index to the corresponding fine grid index.
+
+        Parameters
+        ----------
+        coarse_idx : tuple
+            Grid index in the coarse grid
+        refinement_factor : int
+            Grid refinement factor
+
+        Returns
+        -------
+        tuple
+            Corresponding index in the fine grid
+        """
+        return tuple(idx * refinement_factor for idx in coarse_idx)
+
+
+    def _map_fine_to_coarse_index(self, fine_idx, refinement_factor):
+        """
+        Maps a fine grid index to the corresponding coarse grid index.
+
+        Parameters
+        ----------
+        fine_idx : tuple
+            Grid index in the fine grid
+        refinement_factor : int
+            Grid refinement factor
+
+        Returns
+        -------
+        tuple or None
+            Corresponding coarse grid index if fine_idx aligns with coarse grid,
+            otherwise None
+        """
+        if not self._is_coarse_grid_point(fine_idx, refinement_factor):
+            return None
+        return tuple(idx // refinement_factor for idx in fine_idx)
+
+
     def _flush_samples_buffer(self):
         """Writes the content of the samples buffer to the output file."""
         if not self.samples_output_file or not self.samples_buffer:
