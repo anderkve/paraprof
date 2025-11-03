@@ -159,7 +159,7 @@ class DEGridPointJob(Job):
     def on_finish(self, next_job_id):
         """
         Update the best_fitness and history for this grid point.
-        If converged, spawn a new REFINEMENT job.
+        If converged, spawn a new LBFGSB job.
         """
         if not self.success:
             return None
@@ -184,9 +184,9 @@ class DEGridPointJob(Job):
 
             avg_improvement = np.mean(grid_state['improvement_history'])
             if avg_improvement < self.sampler.convergence_threshold:
-                # print(f"--- DE Converged for {self.grid_idx}. Spawning refinement job. ---")
-                # This job factory will set status to 'refining_queued'
+                print(f"--- DE Converged for {self.grid_idx}. Spawning LBFGSB job. ---")
+                # This job factory will set status to 'LBFGSB_queued'
                 # and return (new_job, next_job_id + 1)
-                return self.sampler.create_refinement_job_for_point(self.grid_idx, next_job_id)
+                return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
 
         return None

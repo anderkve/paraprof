@@ -34,7 +34,7 @@ PROJECTIONS_TO_RUN = [
     # Each projection can optionally enable grid refinement
     # 'enable_refinement': True/False - whether to run refinement after coarse grid
     # 'refinement_factor': int - grid refinement factor (e.g., 2 = twice as many points per dim)
-    {'dims': [0, 1], 'grid_points': [50, 50], 'patching': True, 'refining': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 2},
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
@@ -68,10 +68,11 @@ if myrank == 0:
         roi_threshold=3.2,
         convergence_threshold=1e-3, # Tighter -> Looser (match serial)
         convergence_window=2,      # Longer window -> Shorter (match serial)
-        neighbor_pull_probability=0.5,
-        refinement_ftol=1e-9,
-        refinement_max_iter=20,
-        refinement_gradient_method="forward", # "central",
+        # neighbor_pull_probability=0.5,
+        neighbor_pull_probability=0.9,
+        LBFGSB_ftol=1e-9,
+        LBFGSB_max_iter=20,
+        LBFGSB_gradient_method="forward", # "central",
         patching_fraction=0.1,
         patching_conv_threshold=0.01,
         max_patching_iterations=1000, # Limit patching
