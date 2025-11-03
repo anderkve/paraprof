@@ -21,18 +21,46 @@ class ActivationJob(Job):
         self.n_cont_dims = self.sampler.n_cont_dims
         cont_bounds = self.sampler.bounds[self.sampler.continuous_dims]
 
-        # Generate all continuous parameter sets at once
-        lhs_sampler = LHS(d=self.n_cont_dims, seed=np.random.randint(1e6, 1e12))
-        unit_samples = lhs_sampler.random(n=self.pop_size)
-        scaled_samples = cont_bounds[:, 0] + unit_samples * (cont_bounds[:, 1] - cont_bounds[:, 0])
+        # --- Mixed initialization strategy ---
+        # Calculate how many samples from each source
+        mix_ratios = self.sampler.activation_mix_ratios
+        n_from_neighbors = int(self.pop_size * mix_ratios['neighbors'])
+        n_from_global = int(self.pop_size * mix_ratios['global'])
+        n_from_random = self.pop_size - n_from_neighbors - n_from_global
 
-        if self.warm_start_params is not None:
-            # Replace the closest LHS point with the warm-start params
-            distances = np.linalg.norm(scaled_samples - self.warm_start_params, axis=1)
-            closest_idx = np.argmin(distances)
-            scaled_samples[closest_idx] = self.warm_start_params
+        samples_list = []
 
-        self.all_continuous_params = scaled_samples
+        # 1. Neighbor samples (warm start)
+        if self.warm_start_params is not None and n_from_neighbors > 0:
+            # Add the warm start params
+            samples_list.append(self.warm_start_params)
+            # Add perturbations around it for the remaining neighbor samples
+            for _ in range(n_from_neighbors - 1):
+                perturbation = np.random.normal(0, 0.1, size=self.n_cont_dims)
+                perturbed = self.warm_start_params + perturbation * (cont_bounds[:, 1] - cont_bounds[:, 0])
+                perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.continuous_dims)
+                samples_list.append(perturbed)
+        else:
+            # If no warm start, redistribute to random
+            n_from_random += n_from_neighbors
+
+        # 2. Global pool samples
+        global_samples = self.sampler._sample_from_global_pool(n_from_global)
+        if global_samples is not None:
+            samples_list.extend(global_samples)
+        else:
+            # If pool is empty, redistribute to random
+            n_from_random += n_from_global
+
+        # 3. Random LHS samples
+        if n_from_random > 0:
+            lhs_sampler = LHS(d=self.n_cont_dims, seed=np.random.randint(1e6, 1e12))
+            unit_samples = lhs_sampler.random(n=n_from_random)
+            random_samples = cont_bounds[:, 0] + unit_samples * (cont_bounds[:, 1] - cont_bounds[:, 0])
+            samples_list.extend(random_samples)
+
+        # Combine all samples
+        self.all_continuous_params = np.array(samples_list)
 
         self.all_full_params = [
             self.sampler._construct_params(self.grid_idx, cont_params)
