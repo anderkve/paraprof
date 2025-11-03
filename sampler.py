@@ -29,9 +29,9 @@ class GridAnchoredDESampler:
                  convergence_threshold=1e-5,
                  convergence_window=25,
                  neighbor_pull_probability=0.3,
-                 refinement_ftol=1e-7,
-                 refinement_max_iter=50,
-                 refinement_gradient_method="central",
+                 LBFGSB_ftol=1e-7,
+                 LBFGSB_max_iter=50,
+                 LBFGSB_gradient_method="central",
                  patching_fraction=0.1,
                  patching_conv_threshold=0.01,
                  max_patching_iterations=100,
@@ -64,11 +64,11 @@ class GridAnchoredDESampler:
             Number of generations to check for convergence
         neighbor_pull_probability : float
             Probability of using neighbor-pull mutation
-        refinement_ftol : float
-            Function tolerance for L-BFGS-B refinement
-        refinement_max_iter : int
+        LBFGSB_ftol : float
+            Function tolerance for L-BFGS-B optimization
+        LBFGSB_max_iter : int
             Maximum iterations for L-BFGS-B
-        refinement_gradient_method : str
+        LBFGSB_gradient_method : str
             Gradient method ('central' or 'forward')
         patching_fraction : float
             Fraction of points to patch per iteration
@@ -99,9 +99,9 @@ class GridAnchoredDESampler:
         self.convergence_threshold = convergence_threshold
         self.convergence_window = convergence_window
         self.neighbor_pull_probability = neighbor_pull_probability
-        self.refinement_ftol = refinement_ftol
-        self.refinement_max_iter = refinement_max_iter
-        self.refinement_gradient_method = refinement_gradient_method
+        self.LBFGSB_ftol = LBFGSB_ftol
+        self.LBFGSB_max_iter = LBFGSB_max_iter
+        self.LBFGSB_gradient_method = LBFGSB_gradient_method
         self.patching_fraction = patching_fraction
         self.patching_conv_threshold = patching_conv_threshold
         self.max_patching_iterations = max_patching_iterations
@@ -200,12 +200,12 @@ class GridAnchoredDESampler:
                     'continuous_params': np.array([continuous_params]),
                     'fitnesses': np.array([likelihood]),
                     'best_fitness': likelihood,
-                    'status': 'refined',  # Mark as already refined
+                    'status': 'optimized',  # Mark as already optimized
                     'improvement_history': [],
                     'optimizer_state': None
                 }
 
-                # Add to active grid (even though status is 'refined')
+                # Add to active grid (even though status is 'optimized')
                 self.active_grid_indices.add(fine_idx)
 
                 # Update profile likelihood grid
@@ -238,8 +238,8 @@ class GridAnchoredDESampler:
         solutions = {}
 
         for grid_idx, state in self.population.items():
-            # Only export converged/refined points
-            if state['status'] in ['converged', 'refined']:
+            # Only export converged/optimized points
+            if state['status'] in ['converged', 'optimized']:
                 best_ind_idx = np.argmax(state['fitnesses'])
                 continuous_params = state['continuous_params'][best_ind_idx]
                 likelihood = state['fitnesses'][best_ind_idx]
@@ -599,7 +599,7 @@ class GridAnchoredDESampler:
 
         # Find all transferred coarse grid points (status='refined')
         transferred_points = [idx for idx, state in self.population.items()
-                             if (state['status'] == 'refined') and 
+                             if (state['status'] == 'optimized') and 
                                 (state['best_fitness'] >= (self.global_max_target_val - self.roi_threshold))]
 
         print(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
@@ -733,18 +733,18 @@ class GridAnchoredDESampler:
             self.memory_CR[self.memory_idx] = muCR
             self.memory_idx = (self.memory_idx + 1) % self.memory_size
 
-    def create_refinement_job_for_point(self, grid_idx, next_job_id):
+    def create_LBFGSB_job_for_point(self, grid_idx, next_job_id):
         """
-        Creates a new L-BFGS-B refinement job for a single converged grid point.
+        Creates a new L-BFGS-B optimization job for a single converged grid point.
         """
         state = self.population.get(grid_idx)
 
-        # Safety check: only refine active/converged/refined points
-        if not state or state['status'] == 'refining_queued':
+        # Safety check: only optimize active/converged/optimized points
+        if not state or state['status'] == 'LBFGSB_queued':
             return None
 
         # Mark as claimed
-        state['status'] = 'refining_queued'
+        state['status'] = 'LBFGSB_queued'
 
         # Find the best individual to start from
         best_ind_idx = np.argmax(state['fitnesses'])
@@ -759,7 +759,7 @@ class GridAnchoredDESampler:
 
         job = LBFGSBJob(
             job_id=next_job_id,
-            job_type='REFINEMENT',
+            job_type='LBFGSB',
             sampler=self,
             opt_dims=tuple(self.continuous_dims), # Optimize continuous dims
             start_params=start_params_partial,     # Partial vector
@@ -813,9 +813,9 @@ class GridAnchoredDESampler:
 
         return new_jobs, next_job_id
 
-    def create_patching_refinement_jobs(self, next_job_id):
+    def create_patching_LBFGSB_jobs(self, next_job_id):
         """
-        Identifies candidates for patching and creates refinement jobs for them.
+        Identifies candidates for patching and creates LBFGSB jobs for them.
         """
         # 1. Identify all candidates
         roi_cutoff = self.global_max_target_val - self.roi_threshold
@@ -877,13 +877,13 @@ class GridAnchoredDESampler:
         num_to_patch = max(1, int(len(priority_scores) * self.patching_fraction))
         points_to_patch = [idx for _, idx in priority_scores[:num_to_patch]]
 
-        # 4. Create refinement jobs for these points
+        # 4. Create LBFGSB jobs for these points
         new_jobs = []
         for grid_idx in points_to_patch:
             state = self.population.get(grid_idx)
-            # Only patch if it exists and isn't already being refined
-            if state and state['status'] != 'refining_queued':
-                spawn_result = self.create_refinement_job_for_point(grid_idx, next_job_id)
+            # Only patch if it exists and isn't already being optimized
+            if state and state['status'] != 'LBFGSB_queued':
+                spawn_result = self.create_LBFGSB_job_for_point(grid_idx, next_job_id)
                 if spawn_result:
                     job, next_job_id = spawn_result
                     new_jobs.append(job)

@@ -1,5 +1,5 @@
 """
-L-BFGS-B optimization job for asynchronous gradient-based refinement.
+L-BFGS-B optimization job for asynchronous gradient-based optimization.
 """
 import numpy as np
 import collections
@@ -12,7 +12,7 @@ class LBFGSBJob(Job):
     This single class handles all the logic for initial fitness evaluation,
     gradient calculation, line searching, and history updates.
 
-    For REFINEMENT jobs, it includes logic to test a neighbor's parameters
+    For LBFGSB jobs, it includes logic to test a neighbor's parameters
     and seed the Hessian (s_hist, y_hist) from a converged neighbor.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
@@ -21,9 +21,9 @@ class LBFGSBJob(Job):
         super().__init__(job_id, job_type, sampler)
 
         # L-BFGS-B parameters from sampler
-        self.refinement_ftol = sampler.refinement_ftol
-        self.refinement_max_iter = sampler.refinement_max_iter
-        self.refinement_gradient_method = sampler.refinement_gradient_method
+        self.LBFGSB_ftol = sampler.LBFGSB_ftol
+        self.LBFGSB_max_iter = sampler.LBFGSB_max_iter
+        self.LBFGSB_gradient_method = sampler.LBFGSB_gradient_method
 
         # Job-specific state
         self.grid_idx = grid_idx
@@ -37,7 +37,7 @@ class LBFGSBJob(Job):
         self.improvement = 0.0 # For patching
 
         # L-BFGS-B internal state
-        if self.type == 'REFINEMENT':
+        if self.type == 'LBFGSB':
             self.status = 'NEEDS_NEIGHBOR_TEST'
             self.fallback_params = self.start_params_partial # Own best params
         else:
@@ -103,16 +103,15 @@ class LBFGSBJob(Job):
         """Returns the first task(s) for the job."""
 
         if self.status == 'NEEDS_NEIGHBOR_TEST':
-            # --- Logic from serial _refine_single_point ---
             best_neighbor_state = None
             best_neighbor_fitness = -np.inf
 
             for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
                 if neighbor_idx in self.sampler.population:
                     neighbor_state = self.sampler.population[neighbor_idx]
-                    # Check if neighbor is 'refined' (post-LBFGSB) or 'converged' (post-DE)
+                    # Check if neighbor is 'optimized' (post-LBFGSB) or 'converged' (post-DE)
                     # and has an optimizer state to seed from.
-                    if (neighbor_state['status'] in ['refined', 'converged']) and \
+                    if (neighbor_state['status'] in ['optimized', 'converged']) and \
                        (neighbor_state.get('optimizer_state') is not None):
 
                         if neighbor_state['best_fitness'] > best_neighbor_fitness:
@@ -147,7 +146,7 @@ class LBFGSBJob(Job):
 
         if self.status == 'NEEDS_INITIAL_F':
             # This is the fallback: evaluate the starting params
-            # (either for global opt, or for refinement with no neighbors)
+            # (either for global opt, or for optimization with no neighbors)
             context = {
                 'type': self.type,
                 'job_id': self.id,
@@ -183,7 +182,7 @@ class LBFGSBJob(Job):
             new_tasks = self._calculate_gradient_tasks()
 
         elif self.status == 'NEEDS_INITIAL_F' and sub_type == 'LBFGS_INITIAL_F':
-            # Came here from global opt or refinement with no neighbors
+            # Came here from global opt or optimization with no neighbors
             self.current_fitness = result['target_val']
             self.current_objective = -self.current_fitness
             self.current_params = self._get_partial_params_from_full(result['params'])
@@ -218,7 +217,7 @@ class LBFGSBJob(Job):
         # Store eps array for later use in gradient reconstruction
         self.current_eps = eps
 
-        if self.refinement_gradient_method == "central":
+        if self.LBFGSB_gradient_method == "central":
             self.pending_grad_evals = 2 * self.n_opt_dims
             for i in range(self.n_opt_dims):
                 # Positive step
@@ -235,7 +234,7 @@ class LBFGSBJob(Job):
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': -1}
                 tasks.append({'params': full_params_minus, 'context': context})
 
-        elif self.refinement_gradient_method == "forward":
+        elif self.LBFGSB_gradient_method == "forward":
             self.pending_grad_evals = self.n_opt_dims
             for i in range(self.n_opt_dims):
                 x_plus = x.copy()
@@ -244,7 +243,7 @@ class LBFGSBJob(Job):
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
                 tasks.append({'params': full_params_plus, 'context': context})
         else:
-            raise Exception(f"Gradient method {self.refinement_gradient_method} not implemented.")
+            raise Exception(f"Gradient method {self.LBFGSB_gradient_method} not implemented.")
 
         return tasks
 
@@ -264,12 +263,12 @@ class LBFGSBJob(Job):
             grad = np.zeros(self.n_opt_dims)
             f = self.current_objective
 
-            if self.refinement_gradient_method == "central":
+            if self.LBFGSB_gradient_method == "central":
                 for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
                     f_minus = self.gradient_components[(i, -1)]
                     grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
-            elif self.refinement_gradient_method == "forward":
+            elif self.LBFGSB_gradient_method == "forward":
                  for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
                     grad[i] = (f_plus - f) / self.current_eps[i]
@@ -365,7 +364,7 @@ class LBFGSBJob(Job):
             self.iteration += 1
 
             # Check for convergence
-            if self.iteration >= self.refinement_max_iter or np.abs(f_old - f_new) < self.refinement_ftol:
+            if self.iteration >= self.LBFGSB_max_iter or np.abs(f_old - f_new) < self.LBFGSB_ftol:
                 self.status = 'FINISHED'
                 self._is_finished = True
                 self.success = True
@@ -407,9 +406,9 @@ class LBFGSBJob(Job):
             self.improvement = self.current_fitness - self.start_fitness
 
         if not self.success:
-            # For refinement, if it fails, set status back to 'converged'
+            # For optimization, if it fails, set status back to 'converged'
             # so it can be picked up by patching later.
-            if self.type == 'REFINEMENT' and self.grid_idx in self.sampler.population:
+            if self.type == 'LBFGSB' and self.grid_idx in self.sampler.population:
                 self.sampler.population[self.grid_idx]['status'] = 'converged'
             return None # Don't record failed jobs
 
@@ -421,14 +420,14 @@ class LBFGSBJob(Job):
             if final_target_val > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = final_target_val
 
-        elif self.type == 'REFINEMENT':
+        elif self.type == 'LBFGSB':
             grid_idx = self.grid_idx
             if grid_idx in self.sampler.population:
                 state = self.sampler.population[grid_idx]
                 state['optimizer_state'] = {'s': list(self.s_hist), 'y': list(self.y_hist)}
-                state['status'] = 'refined' # Mark as fully complete
+                state['status'] = 'optimized' # Mark as fully complete
 
-                # Update the best individual with the refined result
+                # Update the best individual with the optimized result
                 if self.current_fitness > state['best_fitness']:
                      state['best_fitness'] = self.current_fitness
                      best_idx = np.argmax(state['fitnesses'])

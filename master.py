@@ -213,7 +213,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     continue
 
                 print(f"--- Master: Starting Patching Iteration {patching_iteration + 1} ---")
-                new_jobs, next_job_id = sampler.create_patching_refinement_jobs(next_job_id)
+                new_jobs, next_job_id = sampler.create_patching_LBFGSB_jobs(next_job_id)
 
                 if not new_jobs:
                     print("--- Master: No patching candidates found. Ending patching. ---")
@@ -238,7 +238,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 initial_tasks = job.start()
 
                 # --- MODIFICATION: Add to correct priority queue ---
-                if job.type in ['INITIAL_OPTIMIZATION', 'REFINEMENT']:
+                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
                     high_prio_tasks.extend(initial_tasks)
                 else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                     low_prio_tasks.extend(initial_tasks)
@@ -268,7 +268,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_tasks = job.process_result(result)
 
             # --- MODIFICATION: Add to correct priority queue ---
-            if job.type in ['INITIAL_OPTIMIZATION', 'REFINEMENT']:
+            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
                 high_prio_tasks.extend(new_tasks)
             else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                 low_prio_tasks.extend(new_tasks)
@@ -294,7 +294,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     initial_tasks = new_job.start()
 
                     # --- MODIFICATION: Add to correct priority queue ---
-                    if new_job.type in ['INITIAL_OPTIMIZATION', 'REFINEMENT']:
+                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
                         high_prio_tasks.extend(initial_tasks)
                     else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                         low_prio_tasks.extend(initial_tasks)
