@@ -134,6 +134,8 @@ class GridAnchoredDESampler:
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
+        self.enable_lbfgsb = True  # Default to True (controlled per-projection)
+        self.enable_patching = True  # Default to True (controlled per-projection)
 
         # --- Per-Projection State (reset) ---
         self._reset_for_new_projection(self.projections[0])
@@ -156,6 +158,14 @@ class GridAnchoredDESampler:
             raise ValueError("Length of projection_dims must match length of grid_points_per_dim.")
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
+
+        # Read optional flags from projection config
+        self.enable_lbfgsb = projection_config.get('lbfgsb', True)
+        self.enable_patching = projection_config.get('patching', True)
+
+        # Print configuration
+        print(f"  L-BFGS-B after DE convergence: {'Enabled' if self.enable_lbfgsb else 'Disabled'}")
+        print(f"  Patching stage: {'Enabled' if self.enable_patching else 'Disabled'}")
 
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
@@ -817,6 +827,10 @@ class GridAnchoredDESampler:
         """
         Identifies candidates for patching and creates LBFGSB jobs for them.
         """
+        # Early return if patching is disabled (defensive check)
+        if not self.enable_patching:
+            return [], next_job_id
+
         # 1. Identify all candidates
         roi_cutoff = self.global_max_target_val - self.roi_threshold
         candidate_indices = []

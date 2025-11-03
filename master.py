@@ -206,6 +206,12 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     continue
 
             elif current_stage == 'PATCHING':
+                # Check if patching is enabled for this projection
+                if not sampler.enable_patching:
+                    print("--- Master: Patching disabled for this projection. Skipping. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
                 if patching_iteration >= sampler.max_patching_iterations or \
                    last_patching_improvement < sampler.patching_conv_threshold:
                     print("--- Master: Patching converged or max iterations reached. ---")
