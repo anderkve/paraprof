@@ -34,7 +34,11 @@ PROJECTIONS_TO_RUN = [
     # Each projection can optionally enable grid refinement
     # 'enable_refinement': True/False - whether to run refinement after coarse grid
     # 'refinement_factor': int - grid refinement factor (e.g., 2 = twice as many points per dim)
-    {'dims': [0, 1], 'grid_points': [50, 50], 'patching': False, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [25, 25], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 4},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [100, 100], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [200, 200], 'patching': False, 'lbfgsb': False, 'enable_refinement': False, 'refinement_factor': 1},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'patching': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 1},
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
@@ -61,15 +65,14 @@ if myrank == 0:
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,
-        pop_per_grid_point=1, # Increased for better DE
+        pop_per_grid_point=20, # Increased for better DE
         mutation_strategy='current-to-pbest/1',
         pbest_fraction=0.1,
         n_initial_optimizations=30, # Increased
         roi_threshold=3.2,
-        convergence_threshold=1e-3, # Tighter -> Looser (match serial)
-        convergence_window=2,      # Longer window -> Shorter (match serial)
-        # neighbor_pull_probability=0.5,
-        neighbor_pull_probability=0.9,
+        convergence_threshold=1e-7, # Tighter -> Looser (match serial)
+        convergence_window=5,      # Longer window -> Shorter (match serial)
+        neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
         LBFGSB_max_iter=20,
         LBFGSB_gradient_method="forward", # "central",
