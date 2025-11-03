@@ -34,8 +34,7 @@ PROJECTIONS_TO_RUN = [
     # Each projection can optionally enable grid refinement
     # 'enable_refinement': True/False - whether to run refinement after coarse grid
     # 'refinement_factor': int - grid refinement factor (e.g., 2 = twice as many points per dim)
-    {'dims': [0, 2], 'grid_points': [50, 50], 'patching': True, 'refining': True,
-     'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'patching': True, 'refining': True, 'enable_refinement': True, 'refinement_factor': 2},
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)

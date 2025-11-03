@@ -599,7 +599,8 @@ class GridAnchoredDESampler:
 
         # Find all transferred coarse grid points (status='refined')
         transferred_points = [idx for idx, state in self.population.items()
-                             if state['status'] == 'refined']
+                             if (state['status'] == 'refined') and 
+                                (state['best_fitness'] >= (self.global_max_target_val - self.roi_threshold))]
 
         print(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
 
