@@ -36,6 +36,8 @@ class GridAnchoredDESampler:
                  patching_conv_threshold=0.01,
                  max_patching_iterations=100,
                  memory_size=100,
+                 global_pool_size=100,
+                 activation_mix_ratios=None,
                  samples_output_file=None):
         """
         Initializes the Grid-Anchored DE Sampler.
@@ -78,6 +80,12 @@ class GridAnchoredDESampler:
             Maximum patching iterations
         memory_size : int
             Size of F/CR memory for adaptive DE
+        global_pool_size : int
+            Maximum size of global solution pool
+        activation_mix_ratios : dict, optional
+            Ratios for mixed initialization strategy.
+            Keys: 'neighbors', 'global', 'random'
+            Defaults to {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
         samples_output_file : str, optional
             File to save sampled points
         """
@@ -107,6 +115,13 @@ class GridAnchoredDESampler:
         self.max_patching_iterations = max_patching_iterations
         self.memory_size = memory_size
 
+        # --- Global solution pool parameters ---
+        self.global_pool_size = global_pool_size
+        if activation_mix_ratios is None:
+            self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
+        else:
+            self.activation_mix_ratios = activation_mix_ratios
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         if self.samples_output_file:
@@ -116,6 +131,7 @@ class GridAnchoredDESampler:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.global_max_target_val = -np.inf
+        self.global_solution_pool = []  # List of {'continuous_params', 'fitness', 'grid_idx'}
 
         # --- Refinement State ---
         self.is_refinement_run = False
@@ -266,7 +282,8 @@ class GridAnchoredDESampler:
             'projection_dims': self.projection_dims.copy(),
             'continuous_dims': self.continuous_dims.copy(),
             'solutions': solutions,
-            'grid_shape': self.grid_shape
+            'grid_shape': self.grid_shape,
+            'global_solution_pool': [s.copy() for s in self.global_solution_pool]
         }
 
 
@@ -294,12 +311,18 @@ class GridAnchoredDESampler:
         # Create interpolator from coarse solution
         self.refinement_interpolator = GridInterpolator(coarse_solution)
 
+        # Restore global solution pool from coarse run
+        if 'global_solution_pool' in coarse_solution:
+            self.global_solution_pool = [s.copy() for s in coarse_solution['global_solution_pool']]
+            print(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
+
         print("\n" + "="*80)
         print("--- Refinement Run Configuration ---")
         print(f"Refinement factor: {refinement_factor}x")
         print(f"Coarse grid shape: {coarse_solution['grid_shape']}")
         print(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
         print(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
+        print(f"Global solution pool size: {len(self.global_solution_pool)}")
         print("="*80 + "\n")
 
 
@@ -445,6 +468,68 @@ class GridAnchoredDESampler:
 
             if all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
                 yield neighbor_idx
+
+
+    def _update_global_pool(self, full_params, fitness, grid_idx):
+        """
+        Adds or updates a solution in the global solution pool.
+
+        Maintains a pool of the best solutions found across all grid points,
+        sorted by fitness. The pool is capped at global_pool_size.
+
+        Note: Stores FULL parameter vectors to support reuse across different projections.
+
+        Parameters
+        ----------
+        full_params : np.ndarray
+            The full parameter vector (all dimensions)
+        fitness : float
+            The likelihood/fitness value
+        grid_idx : tuple or None
+            The grid point index where this solution was found (None for global optim)
+        """
+        # Add the new solution
+        self.global_solution_pool.append({
+            'full_params': full_params.copy(),
+            'fitness': fitness,
+            'grid_idx': grid_idx
+        })
+
+        # Sort by fitness (descending) and keep top N
+        self.global_solution_pool.sort(key=lambda x: x['fitness'], reverse=True)
+        self.global_solution_pool = self.global_solution_pool[:self.global_pool_size]
+
+
+    def _sample_from_global_pool(self, n_samples):
+        """
+        Randomly samples continuous parameter values from the global solution pool.
+
+        Extracts continuous dimensions for the current projection from stored full
+        parameter vectors.
+
+        Parameters
+        ----------
+        n_samples : int
+            Number of samples to draw
+
+        Returns
+        -------
+        np.ndarray or None
+            Array of shape (n_samples, n_cont_dims) with continuous params for
+            current projection, or None if pool is empty
+        """
+        if not self.global_solution_pool or n_samples == 0:
+            return None
+
+        # Sample with replacement if needed
+        n_available = len(self.global_solution_pool)
+        sample_indices = np.random.choice(n_available, size=min(n_samples, n_available), replace=False)
+
+        # Extract continuous dims from full parameter vectors
+        samples = np.array([self.global_solution_pool[i]['full_params'][self.continuous_dims]
+                           for i in sample_indices])
+
+        return samples
 
 
     def _initialize_from_warm_start_file(self, warm_start_file):

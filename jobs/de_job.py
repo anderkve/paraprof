@@ -178,6 +178,13 @@ class DEGridPointJob(Job):
             if new_best_fitness > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = new_best_fitness
 
+            # Update global solution pool with improved solution
+            best_idx = np.argmax(grid_state['fitnesses'])
+            best_continuous_params = grid_state['continuous_params'][best_idx]
+            # Construct full parameter vector for the pool
+            full_params = self.sampler._construct_params(self.grid_idx, best_continuous_params)
+            self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
+
         # Check for convergence
         if grid_state['status'] == 'active' and \
            len(grid_state['improvement_history']) == self.sampler.convergence_window:

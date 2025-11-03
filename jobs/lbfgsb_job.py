@@ -420,6 +420,9 @@ class LBFGSBJob(Job):
             if final_target_val > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = final_target_val
 
+            # Update global solution pool with discovered maximum
+            self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
+
         elif self.type == 'LBFGSB':
             grid_idx = self.grid_idx
             if grid_idx in self.sampler.population:
@@ -437,5 +440,10 @@ class LBFGSBJob(Job):
 
                      if self.current_fitness > self.sampler.global_max_target_val:
                          self.sampler.global_max_target_val = self.current_fitness
+
+                     # Update global solution pool with optimized solution
+                     # Construct full parameter vector for the pool
+                     full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
+                     self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
 
         return None # This job doesn't spawn children
