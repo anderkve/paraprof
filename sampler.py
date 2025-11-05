@@ -202,9 +202,9 @@ class GridAnchoredDESampler:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
 
-        # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
+        # --- Handle refinement run: Transfer coarse grid solutions to profile grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
-            print("--- Transferring coarse grid solutions to fine grid ---")
+            print("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
             coarse_solutions = self.coarse_grid_solution['solutions']
             n_transferred = 0
 
@@ -217,30 +217,15 @@ class GridAnchoredDESampler:
                     print(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
                     continue
 
-                # Create population state for this transferred point
-                continuous_params = solution['continuous_params']
                 likelihood = solution['likelihood']
 
-                # Create a population with a single individual (the transferred solution)
-                self.population[fine_idx] = {
-                    'continuous_params': np.array([continuous_params]),
-                    'fitnesses': np.array([likelihood]),
-                    'best_fitness': likelihood,
-                    'status': 'optimized',  # Mark as already optimized
-                    'improvement_history': [],
-                    'optimizer_state': None
-                }
-
-                # Add to active grid (even though status is 'optimized')
-                self.active_grid_indices.add(fine_idx)
-
-                # Update profile likelihood grid
+                # Store in profile likelihood grid for visualization
+                # Note: No population state is created - LBFGSB jobs will handle neighbors
                 self.profile_likelihood_grid[fine_idx] = likelihood
 
                 n_transferred += 1
 
-            print(f"Transferred {n_transferred} coarse grid points to fine grid")
-            print(f"Fine grid now has {len(self.population)} populated points")
+            print(f"Transferred {n_transferred} coarse grid values to profile likelihood grid")
             print("="*80 + "\n")
 
 
@@ -735,6 +720,90 @@ class GridAnchoredDESampler:
                 next_job_id += 1
 
         print(f"--- Generating {len(jobs)} refinement activation jobs ---")
+        return jobs, next_job_id
+
+
+    def create_refinement_lbfgsb_jobs(self, next_job_id):
+        """
+        Creates LBFGSB jobs directly for fine grid neighbors during refinement.
+
+        This method bypasses DE entirely and uses interpolated starting points
+        from the coarse grid solution for fast convergence.
+
+        Parameters
+        ----------
+        next_job_id : int
+            Next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of LBFGSBJob objects
+        next_job_id : int
+            Updated job ID counter
+        """
+        if not self.is_refinement_run or self.refinement_interpolator is None:
+            print("Warning: create_refinement_lbfgsb_jobs called but not in refinement mode.")
+            return [], next_job_id
+
+        jobs = []
+        lbfgsb_job_created_for_grid_points = set()
+
+        # Find all transferred coarse grid points within ROI
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+        transferred_points = []
+
+        for coarse_idx, solution in self.coarse_grid_solution['solutions'].items():
+            if solution['likelihood'] >= roi_cutoff:
+                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.refinement_factor)
+                if all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
+                    transferred_points.append(fine_idx)
+
+        print(f"--- Creating refinement LBFGSB jobs from {len(transferred_points)} transferred points ---")
+
+        # Create LBFGSB jobs for all neighbors of transferred points
+        for grid_idx in transferred_points:
+            for neighbor_idx in self._get_valid_neighbors(grid_idx):
+                # Skip if already processed or is a transferred coarse point
+                if (neighbor_idx in lbfgsb_job_created_for_grid_points) or \
+                   (self._is_coarse_grid_point(neighbor_idx, self.refinement_factor)):
+                    continue
+
+                # Get interpolated starting parameters
+                grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
+                interpolated_continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+
+                # Handle edge cases in interpolation
+                if interpolated_continuous_params is None:
+                    # No continuous dims - use empty array
+                    start_params_partial = np.array([])
+                elif np.any(np.isnan(interpolated_continuous_params)):
+                    # Interpolation failed - skip this point or use fallback
+                    print(f"Warning: Interpolation failed for {neighbor_idx}, skipping.")
+                    continue
+                else:
+                    start_params_partial = interpolated_continuous_params
+
+                # Construct full parameter vector for initial evaluation
+                start_params_full = self._construct_params(neighbor_idx, start_params_partial)
+
+                # Create LBFGSB job directly
+                job = LBFGSBJob(
+                    job_id=next_job_id,
+                    job_type='REFINEMENT_LBFGSB',
+                    sampler=self,
+                    opt_dims=tuple(self.continuous_dims),
+                    start_params=start_params_partial,
+                    grid_idx=neighbor_idx,
+                    start_params_full=start_params_full,
+                    seed_history=None,
+                    start_fitness=-np.inf
+                )
+                jobs.append(job)
+                lbfgsb_job_created_for_grid_points.add(neighbor_idx)
+                next_job_id += 1
+
+        print(f"--- Generating {len(jobs)} refinement LBFGSB jobs ---")
         return jobs, next_job_id
 
 

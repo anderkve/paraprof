@@ -446,4 +446,30 @@ class LBFGSBJob(Job):
                      full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
                      self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
 
+        elif self.type == 'REFINEMENT_LBFGSB':
+            # For refinement, we create a new population entry directly (no prior DE)
+            grid_idx = self.grid_idx
+
+            # Create a minimal population state for this grid point
+            self.sampler.population[grid_idx] = {
+                'continuous_params': np.array([self.current_params]),
+                'fitnesses': np.array([self.current_fitness]),
+                'best_fitness': self.current_fitness,
+                'status': 'optimized',
+                'improvement_history': [],
+                'last_update_gen': 0,
+                'optimizer_state': {'s': list(self.s_hist), 'y': list(self.y_hist)}
+            }
+
+            # Update profile likelihood grid
+            self.sampler.profile_likelihood_grid[grid_idx] = self.current_fitness
+
+            # Update global maximum if needed
+            if self.current_fitness > self.sampler.global_max_target_val:
+                self.sampler.global_max_target_val = self.current_fitness
+
+            # Update global solution pool
+            full_params = self.sampler._construct_params(grid_idx, self.current_params)
+            self.sampler._update_global_pool(full_params, self.current_fitness, grid_idx)
+
         return None # This job doesn't spawn children
