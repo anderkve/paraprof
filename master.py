@@ -75,8 +75,12 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # --- Master state ---
     free_workers = list(range(1, n_workers + 1))
 
-    # Define the workflow stages
-    stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP', 'PATCHING']
+    # Define the workflow stages (different for refinement runs)
+    if sampler.is_refinement_run:
+        stages = ['REFINEMENT_LBFGSB']
+        print("--- Refinement mode: Using direct LBFGSB optimization ---")
+    else:
+        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP', 'PATCHING']
 
     current_stage = stages.pop(0) if stages else None
 
@@ -237,6 +241,15 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 # If we are here with no active jobs, it means the batch finished.
                 pass
 
+            elif current_stage == 'REFINEMENT_LBFGSB':
+                # For refinement runs, directly create LBFGSB jobs from interpolated starts
+                new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
+
+                if not new_jobs:
+                    print("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
 
             # --- Add new jobs to active pool and queue initial tasks ---
             for job in new_jobs:
@@ -244,7 +257,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 initial_tasks = job.start()
 
                 # --- MODIFICATION: Add to correct priority queue ---
-                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
+                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
                     high_prio_tasks.extend(initial_tasks)
                 else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                     low_prio_tasks.extend(initial_tasks)
@@ -274,7 +287,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_tasks = job.process_result(result)
 
             # --- MODIFICATION: Add to correct priority queue ---
-            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
+            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
                 high_prio_tasks.extend(new_tasks)
             else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                 low_prio_tasks.extend(new_tasks)
@@ -300,7 +313,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     initial_tasks = new_job.start()
 
                     # --- MODIFICATION: Add to correct priority queue ---
-                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB']:
+                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
                         high_prio_tasks.extend(initial_tasks)
                     else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                         low_prio_tasks.extend(initial_tasks)
