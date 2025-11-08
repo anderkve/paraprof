@@ -369,6 +369,19 @@ class GridAnchoredDESampler:
         return tuple(idx // refinement_factor for idx in fine_idx)
 
 
+    def _cleanup_refinement_state(self):
+        """
+        Resets refinement-related state after refinement run completes.
+
+        This ensures the sampler is ready for the next projection without
+        carrying over refinement flags and data structures.
+        """
+        self.is_refinement_run = False
+        self.refinement_factor = None
+        self.coarse_grid_solution = None
+        self.refinement_interpolator = None
+
+
     def _flush_samples_buffer(self):
         """Writes the content of the samples buffer to the output file."""
         if not self.samples_output_file or not self.samples_buffer:
