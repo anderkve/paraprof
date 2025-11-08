@@ -34,19 +34,14 @@ np.random.seed(750123)
 TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
-    # Each projection can optionally enable grid refinement
-    # 'enable_refinement': True/False - whether to run refinement after coarse grid
-    # 'refinement_factor': int - grid refinement factor (e.g., 2 = twice as many points per dim)
-    # {'dims': [0, 1], 'grid_points': [25, 25], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 4},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [100, 100], 'patching': False, 'lbfgsb': False, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [200, 200], 'patching': False, 'lbfgsb': False, 'enable_refinement': False, 'refinement_factor': 1},
 
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'patching': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'patching': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 3},
-    # {'dims': [0, 3], 'grid_points': [50, 50], 'patching': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 3},
-    # {'dims': [0, 3], 'grid_points': [75, 75], 'patching': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [150, 150], 'patching': True, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 1},
+    {'dims': [0, 1], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [2, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+
 ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
@@ -84,7 +79,7 @@ if myrank == 0:
         LBFGSB_ftol=1e-9,
         LBFGSB_max_iter=20,
         LBFGSB_gradient_method="forward", # "central",
-        max_patching_waves=10,  # Maximum number of patching waves
+        max_patching_waves=20,  # Maximum number of patching waves
         patching_n_neighbors=1,  # Test only the best neighbor
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections

@@ -384,9 +384,13 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # Define the workflow stages (different for refinement runs)
     if sampler.is_refinement_run:
         stages = ['REFINEMENT_LBFGSB']
+        if sampler.patching_refined:
+            stages.append('PATCHING_WAVES')
         print("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
-        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP', 'PATCHING_WAVES']
+        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP']
+        if sampler.patching_coarse:
+            stages.append('PATCHING_WAVES')
 
     current_stage = stages.pop(0) if stages else None
 
@@ -517,9 +521,10 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     continue
 
             elif current_stage == 'PATCHING_WAVES':
-                # Check if patching is enabled for this projection
-                if not sampler.enable_patching:
-                    print("--- Master: Patching disabled for this projection. Skipping. ---")
+                # Check appropriate flag based on run type
+                patching_enabled = sampler.patching_refined if sampler.is_refinement_run else sampler.patching_coarse
+                if not patching_enabled:
+                    print("--- Master: Patching disabled for this stage. Skipping. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
