@@ -80,7 +80,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         stages = ['REFINEMENT_LBFGSB']
         print("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
-        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP', 'PATCHING']
+        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP', 'PATCHING_WAVES']
 
     current_stage = stages.pop(0) if stages else None
 
@@ -101,11 +101,12 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     de_successful_F = [] # Shared list for F/CR
     de_successful_CR = []
 
-    # Patching stage state
-    patching_iteration = 0
-    last_patching_improvement = np.inf
-    current_patching_batch_ids = set()
-    current_patching_batch_improvements = []
+    # Wave-based patching state
+    patching_wave_number = 0
+    patching_updated_last_wave = None
+    patching_wave_baseline_fitness = {}  # grid_idx -> fitness at wave start
+    patching_wave_test_jobs = set()  # IDs of test jobs in current wave
+    patching_wave_lbfgsb_jobs = set()  # IDs of L-BFGS-B jobs spawned by current wave
 
     last_plot_time = time.time()
     de_gen_start_time = time.time() # Add timer for DE generations
@@ -209,36 +210,49 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-            elif current_stage == 'PATCHING':
+            elif current_stage == 'PATCHING_WAVES':
                 # Check if patching is enabled for this projection
                 if not sampler.enable_patching:
                     print("--- Master: Patching disabled for this projection. Skipping. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                if patching_iteration >= sampler.max_patching_iterations or \
-                   last_patching_improvement < sampler.patching_conv_threshold:
-                    print("--- Master: Patching converged or max iterations reached. ---")
+                # Check if max waves reached
+                if patching_wave_number >= sampler.max_patching_waves:
+                    print(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                print(f"--- Master: Starting Patching Iteration {patching_iteration + 1} ---")
-                new_jobs, next_job_id = sampler.create_patching_LBFGSB_jobs(next_job_id)
+                print(f"\n--- Master: Starting Patching Wave {patching_wave_number} ---")
+
+                # Create jobs for this wave
+                new_jobs, next_job_id = sampler.create_patching_wave_jobs(
+                    wave_number=patching_wave_number,
+                    updated_points_last_wave=patching_updated_last_wave,
+                    next_job_id=next_job_id
+                )
 
                 if not new_jobs:
                     print("--- Master: No patching candidates found. Ending patching. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                # Reset batch state
-                current_patching_batch_ids = {j.id for j in new_jobs}
-                current_patching_batch_improvements = []
-                patching_iteration += 1
-                current_stage = 'WAITING_FOR_PATCHING' # Go to wait state
+                # Record baseline fitness for all grid points at wave start
+                patching_wave_baseline_fitness = {
+                    idx: state['best_fitness']
+                    for idx, state in sampler.population.items()
+                }
 
-            elif current_stage == 'WAITING_FOR_PATCHING':
-                # This stage just waits for jobs to complete.
-                # If we are here with no active jobs, it means the batch finished.
+                # Track test job IDs
+                patching_wave_test_jobs = {j.id for j in new_jobs}
+                patching_wave_lbfgsb_jobs = set()
+
+                # Transition to waiting state
+                current_stage = 'WAITING_FOR_PATCHING_WAVE'
+
+            elif current_stage == 'WAITING_FOR_PATCHING_WAVE':
+                # This stage just waits for wave jobs to complete
+                # Wave is complete when checked in job completion handling
                 pass
 
             elif current_stage == 'REFINEMENT_LBFGSB':
@@ -257,14 +271,14 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 initial_tasks = job.start()
 
                 # --- MODIFICATION: Add to correct priority queue ---
-                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
+                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                     high_prio_tasks.extend(initial_tasks)
                 else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                     low_prio_tasks.extend(initial_tasks)
                 # --- END MODIFICATION ---
 
             # If we just finished a non-looping stage, advance to the next
-            if current_stage not in ['DE_LOOP', 'WAITING_FOR_PATCHING']:
+            if current_stage not in ['DE_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 3. (MODIFIED) Check for and process ALL available results ---
@@ -287,7 +301,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_tasks = job.process_result(result)
 
             # --- MODIFICATION: Add to correct priority queue ---
-            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
+            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                 high_prio_tasks.extend(new_tasks)
             else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                 low_prio_tasks.extend(new_tasks)
@@ -295,14 +309,17 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
             if job.is_finished():
                 job_id_finished = job.id
-                was_patching_job = job_id_finished in current_patching_batch_ids
 
-                if was_patching_job:
-                    if job.success and hasattr(job, 'improvement') and job.improvement > 0:
-                        current_patching_batch_improvements.append(job.improvement)
-                    current_patching_batch_ids.remove(job_id_finished)
+                # Track wave-based patching jobs
+                is_wave_test_job = job_id_finished in patching_wave_test_jobs
+                is_wave_lbfgsb_job = job_id_finished in patching_wave_lbfgsb_jobs
 
-                # print(f"--- Master: Job {job.id} ({job.type}) finished. Success: {job.success} ---")
+                if is_wave_test_job:
+                    patching_wave_test_jobs.remove(job_id_finished)
+
+                if is_wave_lbfgsb_job:
+                    patching_wave_lbfgsb_jobs.remove(job_id_finished)
+
                 # This updates the sampler state and can spawn a new job
                 spawn_result = job.on_finish(next_job_id)
                 del active_jobs[job_id_finished]
@@ -312,20 +329,39 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     active_jobs[new_job.id] = new_job
                     initial_tasks = new_job.start()
 
+                    # Track if this is an L-BFGS-B job spawned by a patching test
+                    if is_wave_test_job and new_job.type == 'PATCHING_LBFGSB':
+                        patching_wave_lbfgsb_jobs.add(new_job.id)
+
                     # --- MODIFICATION: Add to correct priority queue ---
-                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB']:
+                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                         high_prio_tasks.extend(initial_tasks)
                     else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                         low_prio_tasks.extend(initial_tasks)
                     # --- END MODIFICATION ---
 
-                    # print(f"--- Master: Spawned new job {new_job.id} ({new_job.type}) for grid {new_job.grid_idx} ---")
+                # Check if the patching wave is now complete
+                if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
+                   not patching_wave_test_jobs and not patching_wave_lbfgsb_jobs:
 
-                # Check if the patching batch is now complete
-                if current_stage == 'WAITING_FOR_PATCHING' and not current_patching_batch_ids:
-                    last_patching_improvement = sum(current_patching_batch_improvements)
-                    print(f"--- Master: Patching Iteration {patching_iteration} complete. Total improvement: {last_patching_improvement} ---")
-                    current_stage = 'PATCHING' # Loop back to start next iteration
+                    # Determine which grid points were updated (fitness improved)
+                    updated_points = []
+                    for idx, state in sampler.population.items():
+                        baseline_fitness = patching_wave_baseline_fitness.get(idx, -np.inf)
+                        if state['best_fitness'] > baseline_fitness:
+                            updated_points.append(idx)
+
+                    print(f"--- Master: Patching Wave {patching_wave_number} complete. Updated {len(updated_points)} points ---")
+
+                    if updated_points:
+                        # Start next wave with updated points as seeds
+                        patching_updated_last_wave = updated_points
+                        patching_wave_number += 1
+                        current_stage = 'PATCHING_WAVES'  # Loop back to start next wave
+                    else:
+                        # No updates, patching converged
+                        print("--- Master: No updates in wave. Patching converged. ---")
+                        current_stage = stages.pop(0) if stages else None
 
         # --- End of Iprobe receive loop ---
 

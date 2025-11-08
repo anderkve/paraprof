@@ -32,11 +32,10 @@ class GridAnchoredDESampler:
                  LBFGSB_ftol=1e-7,
                  LBFGSB_max_iter=50,
                  LBFGSB_gradient_method="central",
-                 patching_fraction=0.1,
-                 patching_conv_threshold=0.01,
-                 max_patching_iterations=100,
+                 max_patching_waves=10,
+                 patching_n_neighbors=1,
                  memory_size=100,
-                 global_pool_size=100,
+                 global_pool_size=200,
                  activation_mix_ratios=None,
                  samples_output_file=None):
         """
@@ -72,12 +71,10 @@ class GridAnchoredDESampler:
             Maximum iterations for L-BFGS-B
         LBFGSB_gradient_method : str
             Gradient method ('central' or 'forward')
-        patching_fraction : float
-            Fraction of points to patch per iteration
-        patching_conv_threshold : float
-            Convergence threshold for patching
-        max_patching_iterations : int
-            Maximum patching iterations
+        max_patching_waves : int
+            Maximum number of patching waves (default: 10)
+        patching_n_neighbors : int
+            Number of best neighbors to test per grid point (default: 1)
         memory_size : int
             Size of F/CR memory for adaptive DE
         global_pool_size : int
@@ -110,15 +107,16 @@ class GridAnchoredDESampler:
         self.LBFGSB_ftol = LBFGSB_ftol
         self.LBFGSB_max_iter = LBFGSB_max_iter
         self.LBFGSB_gradient_method = LBFGSB_gradient_method
-        self.patching_fraction = patching_fraction
-        self.patching_conv_threshold = patching_conv_threshold
-        self.max_patching_iterations = max_patching_iterations
+        self.max_patching_waves = max_patching_waves
+        self.patching_n_neighbors = patching_n_neighbors
         self.memory_size = memory_size
 
         # --- Global solution pool parameters ---
         self.global_pool_size = global_pool_size
         if activation_mix_ratios is None:
-            self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
+            self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
+            # self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
+            # self.activation_mix_ratios = {'neighbors': 0.2, 'global': 0.6, 'random': 0.2}  # <--- This does not work very well
         else:
             self.activation_mix_ratios = activation_mix_ratios
 
@@ -998,83 +996,144 @@ class GridAnchoredDESampler:
 
         return new_jobs, next_job_id
 
-    def create_patching_LBFGSB_jobs(self, next_job_id):
+    def _get_best_neighbor_continuous_params(self, grid_idx, n_neighbors=None):
         """
-        Identifies candidates for patching and creates LBFGSB jobs for them.
+        Gets continuous parameters from the best neighbor(s) of a grid point.
+
+        Parameters
+        ----------
+        grid_idx : tuple
+            Grid index to find neighbors for
+        n_neighbors : int, optional
+            Number of best neighbors to return. Defaults to self.patching_n_neighbors
+
+        Returns
+        -------
+        list of tuples or None
+            List of (neighbor_idx, continuous_params, fitness) for best neighbors,
+            sorted by fitness (best first). Returns None if no valid neighbors exist.
         """
-        # Early return if patching is disabled (defensive check)
-        if not self.enable_patching:
-            return [], next_job_id
+        if n_neighbors is None:
+            n_neighbors = self.patching_n_neighbors
 
-        # 1. Identify all candidates
-        roi_cutoff = self.global_max_target_val - self.roi_threshold
-        candidate_indices = []
-        for grid_idx, state in self.population.items():
-            if state['best_fitness'] >= roi_cutoff:
-                candidate_indices.append(grid_idx)
-            else:
-                # Also check points bordering the ROI (from test_38.py)
-                neighbor_count = 0
-                roi_neighbor_count = 0
-                for neighbor_idx in self._get_valid_neighbors(grid_idx):
-                    neighbor_count += 1
-                    if self.profile_likelihood_grid.get(neighbor_idx, -np.inf) >= roi_cutoff:
-                        roi_neighbor_count += 1
-                if neighbor_count > 0 and (roi_neighbor_count / neighbor_count) > 0.5:
-                    candidate_indices.append(grid_idx)
+        neighbor_info = []
 
-        if not candidate_indices:
-            return [], next_job_id
-
-        # 2. Calculate priority scores for each candidate
-        priority_scores = []
-        for grid_idx in candidate_indices:
-            current_logL = self.profile_likelihood_grid.get(grid_idx, -np.inf)
-            if current_logL == -np.inf:
+        for neighbor_idx in self._get_valid_neighbors(grid_idx):
+            if neighbor_idx not in self.population:
                 continue
 
-            scalar_gradient_sum = 0.0
-            neighbor_logL_sum = 0.0
+            neighbor_state = self.population[neighbor_idx]
+            neighbor_fitness = neighbor_state['best_fitness']
 
-            for dim_idx in range(self.n_proj_dims):
-                for direction in [-1, 1]:
-                    offset = np.zeros(self.n_proj_dims, dtype=int)
-                    offset[dim_idx] = direction
-                    neighbor_idx = tuple(np.array(grid_idx) + offset)
+            # Get best continuous params from neighbor
+            best_idx = np.argmax(neighbor_state['fitnesses'])
+            continuous_params = neighbor_state['continuous_params'][best_idx]
 
-                    if not all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
-                        continue
+            neighbor_info.append((neighbor_idx, continuous_params, neighbor_fitness))
 
-                    neighbor_logL = self.profile_likelihood_grid.get(neighbor_idx, -np.inf)
+        if not neighbor_info:
+            return None
 
-                    if neighbor_logL > -np.inf and neighbor_logL >= roi_cutoff:
-                        gradient = neighbor_logL - current_logL
-                        if gradient > 0:
-                            scalar_gradient_sum += gradient
-                            neighbor_logL_sum += neighbor_logL
+        # Sort by fitness (descending) and take top n_neighbors
+        neighbor_info.sort(key=lambda x: x[2], reverse=True)
+        return neighbor_info[:n_neighbors]
 
-            if scalar_gradient_sum > 0:
-                likelihood_weight = max(neighbor_logL_sum - roi_cutoff, 0) + 1.0
-                priority_score = scalar_gradient_sum * likelihood_weight
-                priority_scores.append((priority_score, grid_idx))
 
-        if not priority_scores:
+    def create_patching_wave_jobs(self, wave_number, updated_points_last_wave, next_job_id):
+        """
+        Creates patching test jobs for a wave.
+
+        Wave 0: Tests all ROI points with their best neighbor's parameters
+        Wave 1+: Tests neighbors of points updated in previous wave
+
+        Parameters
+        ----------
+        wave_number : int
+            Current wave number (0-indexed)
+        updated_points_last_wave : list or None
+            List of grid indices updated in previous wave (None for wave 0)
+        next_job_id : int
+            Next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of PatchingTestJob objects
+        next_job_id : int
+            Updated job ID counter
+        """
+        from jobs.patching_test_job import PatchingTestJob
+
+        # Determine candidate grid points for this wave
+        if wave_number == 0:
+            # Wave 0: Test all ROI points AND border points
+            roi_cutoff = self.global_max_target_val - self.roi_threshold
+            candidates = []
+
+            for idx, state in self.population.items():
+                if state['best_fitness'] >= roi_cutoff:
+                    # Point is within ROI - definitely test it
+                    candidates.append(idx)
+                else:
+                    # Point is below ROI - check if it borders the ROI
+                    # (i.e., has neighbors within ROI)
+                    neighbor_count = 0
+                    roi_neighbor_count = 0
+                    for neighbor_idx in self._get_valid_neighbors(idx):
+                        if neighbor_idx in self.population:
+                            neighbor_count += 1
+                            if self.population[neighbor_idx]['best_fitness'] >= roi_cutoff:
+                                roi_neighbor_count += 1
+
+                    # Include if >50% of neighbors are in ROI
+                    if neighbor_count > 0 and (roi_neighbor_count / neighbor_count) > 0.5:
+                        candidates.append(idx)
+
+            print(f"--- Patching Wave 0: Testing {len(candidates)} ROI and border points ---")
+        else:
+            # Wave 1+: Test neighbors of recently updated points
+            candidates = set()
+            for updated_idx in updated_points_last_wave:
+                for neighbor_idx in self._get_valid_neighbors(updated_idx):
+                    if neighbor_idx in self.population:
+                        candidates.add(neighbor_idx)
+            candidates = list(candidates)
+            print(f"--- Patching Wave {wave_number}: Testing {len(candidates)} neighbor points ---")
+
+        if not candidates:
             return [], next_job_id
 
-        # 3. Sort points and select the top fraction
-        priority_scores.sort(key=lambda x: x[0], reverse=True)
-        num_to_patch = max(1, int(len(priority_scores) * self.patching_fraction))
-        points_to_patch = [idx for _, idx in priority_scores[:num_to_patch]]
+        jobs = []
+        tests_created = 0
 
-        # 4. Create LBFGSB jobs for these points
-        new_jobs = []
-        for grid_idx in points_to_patch:
-            state = self.population.get(grid_idx)
-            # Only patch if it exists and isn't already being optimized
-            if state and state['status'] != 'LBFGSB_queued':
-                spawn_result = self.create_LBFGSB_job_for_point(grid_idx, next_job_id)
-                if spawn_result:
-                    job, next_job_id = spawn_result
-                    new_jobs.append(job)
+        for grid_idx in candidates:
+            current_fitness = self.population[grid_idx]['best_fitness']
 
-        return new_jobs, next_job_id
+            # Get best neighbor(s) continuous parameters
+            neighbor_info = self._get_best_neighbor_continuous_params(
+                grid_idx, n_neighbors=self.patching_n_neighbors
+            )
+
+            if neighbor_info is None:
+                continue
+
+            # For each neighbor to test
+            for neighbor_idx, test_params, neighbor_fitness in neighbor_info:
+                # Optimization: only test if neighbor has better likelihood
+                if neighbor_fitness <= current_fitness:
+                    continue
+
+                # Create test job
+                job = PatchingTestJob(
+                    job_id=next_job_id,
+                    sampler=self,
+                    grid_idx=grid_idx,
+                    test_continuous_params=test_params.copy(),
+                    wave_number=wave_number
+                )
+                jobs.append(job)
+                tests_created += 1
+                next_job_id += 1
+
+        print(f"    Created {tests_created} test jobs for wave {wave_number}")
+        return jobs, next_job_id
