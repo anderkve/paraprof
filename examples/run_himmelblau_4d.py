@@ -19,7 +19,7 @@ except ImportError:
     sys.exit(1)
 
 from sampler import GridAnchoredDESampler
-from master import master_main, terminate_workers
+from master import run_all_projections, terminate_workers
 from worker import worker_main
 from visualization import plot_profiles
 from test_functions import get_test_function
@@ -97,103 +97,32 @@ if myrank == 0:
     print("Master: Broadcasting target function to workers...")
     comm.bcast(sampler.target_func, root=0)
 
-    # --- Loop over all projections ---
-    for proj_idx, projection_config in enumerate(PROJECTIONS_TO_RUN):
-        print("\n" + "="*80)
-        print(f"=== Starting Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
-        print(f"=== Dimensions: {projection_config['dims']} ===")
-        print("="*80 + "\n")
+    # --- Run all projections with automatic refinement handling ---
+    results = run_all_projections(
+        comm=comm,
+        sampler=sampler,
+        projections=PROJECTIONS_TO_RUN,
+        num_generations=100000,
+        max_num_to_evolve=None,
+        plot_callback=plot_func_wrapper,
+        plot_interval=100,
+        save_plots=True,
+        plot_dpi=150,
+        fig=fig,
+        axes=axes,
+        myrank=myrank
+    )
 
-        # Reset sampler for new projection
-        if proj_idx > 0:
-            sampler._reset_for_new_projection(projection_config)
-
-        # Enable warm start for all projections after the first
-        skip_init_opt = (proj_idx > 0)
-
-        # --- COARSE GRID RUN ---
-        print("\n" + "="*80)
-        print("=== Running Coarse Grid ===")
-        print("="*80 + "\n")
-
-        # Run the workflow for this projection
-        master_main(
-            comm=comm,
-            sampler=sampler,
-            num_generations=100000, # Set a finite number of generations
-            max_num_to_evolve=None, # Limit evals per gen -> Evolve all
-            plot_callback=plot_func_wrapper,
-            plot_interval=100, # Plot every 100 seconds
-            skip_init_opt_on_warm_start=skip_init_opt,  # Enable warm start after first projection
-            fig=fig,
-            axes=axes,
-            myrank=myrank
-        )
-
-        # Flush samples buffer after coarse grid
-        sampler._flush_samples_buffer()
-
-        # Save coarse grid plot
-        if fig:
-            plot_func_wrapper(sampler, fig, axes)
-            dims_str = "_".join(map(str, projection_config['dims']))
-            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse.png"
-            fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
-            print(f"Saved coarse grid plot to: {plot_filename}")
-
-        # --- REFINEMENT RUN (if enabled) ---
-        if projection_config.get('enable_refinement', False):
-            print("\n" + "="*80)
-            print("=== Starting Grid Refinement ===")
-            print("="*80 + "\n")
-
-            # Export coarse grid solution
-            coarse_solution = sampler.export_grid_solution()
-            refinement_factor = projection_config.get('refinement_factor', 2)
-
-            # Setup refined projection config
-            refined_config = projection_config.copy()
-            refined_config['grid_points'] = [
-                n * refinement_factor for n in projection_config['grid_points']
-            ]
-
-            # Configure sampler for refinement
-            sampler.setup_refinement_run(coarse_solution, refinement_factor)
-            sampler._reset_for_new_projection(refined_config)
-
-            # Run refinement workflow
-            master_main(
-                comm=comm,
-                sampler=sampler,
-                num_generations=100000,
-                max_num_to_evolve=None,
-                plot_callback=plot_func_wrapper,
-                plot_interval=100,
-                skip_init_opt_on_warm_start=True,  # Always skip for refinement
-                fig=fig,
-                axes=axes,
-                myrank=myrank
-            )
-
-            # Flush samples buffer after refinement
-            sampler._flush_samples_buffer()
-
-            # Save refined grid plot
-            if fig:
-                plot_func_wrapper(sampler, fig, axes)
-                plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined.png"
-                fig.savefig(plot_filename, dpi=150, bbox_inches='tight')
-                print(f"Saved refined grid plot to: {plot_filename}")
-
-            # Reset refinement flags for next projection
-            sampler.is_refinement_run = False
-            sampler.refinement_factor = None
-            sampler.coarse_grid_solution = None
-            sampler.refinement_interpolator = None
-
-        print("\n" + "="*80)
-        print(f"=== Completed Projection {proj_idx + 1}/{len(PROJECTIONS_TO_RUN)} ===")
-        print("="*80 + "\n")
+    # Print summary of all projections
+    print("\n" + "="*80)
+    print("=== Summary of All Projections ===")
+    print("="*80)
+    for i, res in enumerate(results):
+        dims = res['projection_config']['dims']
+        calls = res['metrics']['total_target_calls']
+        max_ll = res['metrics']['global_max']
+        print(f"  Projection {i+1} (dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
+    print("="*80 + "\n")
 
     # Terminate all workers after all projections complete
     print("Master: All projections complete. Terminating workers...")

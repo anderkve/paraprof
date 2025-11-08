@@ -35,6 +35,312 @@ def terminate_workers(comm, myrank=0):
     print(f"rank {myrank}: DEBUG: terminate_workers: All workers terminated.")
 
 
+def run_projection(comm, sampler, projection_config,
+                   num_generations=100000,
+                   max_num_to_evolve=None,
+                   plot_callback=None,
+                   plot_interval=100,
+                   save_plots=False,
+                   plot_dpi=150,
+                   skip_init_opt_on_warm_start=True,
+                   fig=None,
+                   axes=None,
+                   myrank=0):
+    """
+    Runs a complete projection workflow including optional grid refinement.
+
+    This high-level function encapsulates the entire projection computation,
+    including both the coarse grid run and optional refinement. It handles
+    all internal state management, cleanup, and optional plotting, providing
+    a clean API for users.
+
+    Parameters
+    ----------
+    comm : MPI.Comm
+        MPI communicator
+    sampler : GridAnchoredDESampler
+        The sampler instance (already configured)
+    projection_config : dict
+        Projection configuration. Required keys:
+        - 'dims': list of int - projection dimension indices
+        - 'grid_points': list of int - grid points per dimension
+        Optional keys:
+        - 'enable_refinement': bool - enable grid refinement (default: False)
+        - 'refinement_factor': int - refinement factor (default: 2)
+        - 'lbfgsb': bool - enable L-BFGS-B optimization (default: True)
+        - 'patching': bool - enable patching stage (default: True)
+    num_generations : int
+        Maximum number of DE generations to run
+    max_num_to_evolve : int or None
+        Maximum number of grid points to evolve per generation (None = all)
+    plot_callback : callable or None
+        Function to call for plotting. Signature: plot_callback(sampler, fig, axes)
+    plot_interval : float
+        Seconds between plot updates during workflow
+    save_plots : bool
+        Whether to save plots to disk after each stage
+    plot_dpi : int
+        DPI for saved plots
+    skip_init_opt_on_warm_start : bool
+        Whether to skip initial optimization if warm-start data exists
+    fig : matplotlib.figure.Figure or None
+        Figure for plotting
+    axes : list of matplotlib.axes.Axes or None
+        Axes for plotting
+    myrank : int
+        Master rank (usually 0)
+
+    Returns
+    -------
+    dict
+        Results dictionary containing:
+        - 'coarse_solution': dict - exported coarse grid state
+        - 'refined_solution': dict or None - exported refined grid state (if refinement enabled)
+        - 'metrics': dict - performance metrics including:
+            - 'coarse_target_calls': int - target function calls for coarse grid
+            - 'refined_target_calls': int - total calls after refinement (if enabled)
+            - 'total_target_calls': int - cumulative calls
+            - 'global_max': float - best likelihood value found
+
+    Examples
+    --------
+    >>> results = run_projection(
+    ...     comm=comm,
+    ...     sampler=sampler,
+    ...     projection_config={
+    ...         'dims': [0, 1],
+    ...         'grid_points': [50, 50],
+    ...         'enable_refinement': True,
+    ...         'refinement_factor': 3
+    ...     },
+    ...     save_plots=True
+    ... )
+    >>> print(f"Best likelihood: {results['metrics']['global_max']}")
+    """
+    # Extract refinement configuration
+    enable_refinement = projection_config.get('enable_refinement', False)
+    refinement_factor = projection_config.get('refinement_factor', 2)
+    dims_str = "_".join(map(str, projection_config['dims']))
+
+    # Initialize results structure
+    results = {
+        'coarse_solution': None,
+        'refined_solution': None,
+        'metrics': {}
+    }
+
+    # --- COARSE GRID RUN ---
+    print("\n" + "="*80)
+    print("=== Running Coarse Grid ===")
+    print("="*80 + "\n")
+
+    master_main(
+        comm=comm,
+        sampler=sampler,
+        num_generations=num_generations,
+        max_num_to_evolve=max_num_to_evolve,
+        plot_callback=plot_callback,
+        plot_interval=plot_interval,
+        skip_init_opt_on_warm_start=skip_init_opt_on_warm_start,
+        fig=fig,
+        axes=axes,
+        myrank=myrank
+    )
+
+    # Flush samples buffer after coarse grid
+    sampler._flush_samples_buffer()
+
+    # Save coarse plot if requested
+    if save_plots and fig and plot_callback:
+        plot_callback(sampler, fig, axes)
+        plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse.png"
+        fig.savefig(plot_filename, dpi=plot_dpi, bbox_inches='tight')
+        print(f"Saved coarse grid plot to: {plot_filename}")
+
+    # Export coarse solution
+    coarse_solution = sampler.export_grid_solution()
+    results['coarse_solution'] = coarse_solution
+    results['metrics']['coarse_target_calls'] = sampler.target_calls
+
+    # --- REFINEMENT RUN (if enabled) ---
+    if enable_refinement:
+        print("\n" + "="*80)
+        print("=== Starting Grid Refinement ===")
+        print("="*80 + "\n")
+
+        # Setup refined projection config
+        refined_config = projection_config.copy()
+        refined_config['grid_points'] = [
+            n * refinement_factor for n in projection_config['grid_points']
+        ]
+
+        # Configure sampler for refinement
+        sampler.setup_refinement_run(coarse_solution, refinement_factor)
+        sampler._reset_for_new_projection(refined_config)
+
+        # Run refinement workflow
+        master_main(
+            comm=comm,
+            sampler=sampler,
+            num_generations=num_generations,
+            max_num_to_evolve=max_num_to_evolve,
+            plot_callback=plot_callback,
+            plot_interval=plot_interval,
+            skip_init_opt_on_warm_start=True,  # Always skip for refinement
+            fig=fig,
+            axes=axes,
+            myrank=myrank
+        )
+
+        # Flush samples buffer after refinement
+        sampler._flush_samples_buffer()
+
+        # Save refined plot if requested
+        if save_plots and fig and plot_callback:
+            plot_callback(sampler, fig, axes)
+            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined.png"
+            fig.savefig(plot_filename, dpi=plot_dpi, bbox_inches='tight')
+            print(f"Saved refined grid plot to: {plot_filename}")
+
+        # Export refined solution
+        refined_solution = sampler.export_grid_solution()
+        results['refined_solution'] = refined_solution
+        results['metrics']['refined_target_calls'] = sampler.target_calls
+
+        # Clean up refinement state for next projection
+        sampler._cleanup_refinement_state()
+
+    # Record final metrics
+    results['metrics']['total_target_calls'] = sampler.target_calls
+    results['metrics']['global_max'] = sampler.global_max_target_val
+
+    return results
+
+
+def run_all_projections(comm, sampler, projections,
+                        num_generations=100000,
+                        max_num_to_evolve=None,
+                        plot_callback=None,
+                        plot_interval=100,
+                        save_plots=False,
+                        plot_dpi=150,
+                        fig=None,
+                        axes=None,
+                        myrank=0):
+    """
+    Runs multiple projections sequentially with automatic warm-starting.
+
+    This high-level function orchestrates multiple projection computations,
+    automatically managing state transitions and warm-starting between
+    projections. Each projection can optionally include grid refinement.
+
+    Parameters
+    ----------
+    comm : MPI.Comm
+        MPI communicator
+    sampler : GridAnchoredDESampler
+        The sampler instance (already configured with bounds, algorithm parameters)
+    projections : list of dict
+        List of projection configurations. Each dict must contain:
+        - 'dims': list of int - projection dimension indices
+        - 'grid_points': list of int - grid points per dimension
+        Optional keys per projection:
+        - 'enable_refinement': bool - enable grid refinement (default: False)
+        - 'refinement_factor': int - refinement factor (default: 2)
+        - 'lbfgsb': bool - enable L-BFGS-B optimization (default: True)
+        - 'patching': bool - enable patching stage (default: True)
+    num_generations : int
+        Maximum number of DE generations to run per projection
+    max_num_to_evolve : int or None
+        Maximum number of grid points to evolve per generation (None = all)
+    plot_callback : callable or None
+        Function to call for plotting. Signature: plot_callback(sampler, fig, axes)
+    plot_interval : float
+        Seconds between plot updates during workflow
+    save_plots : bool
+        Whether to save plots to disk after each stage
+    plot_dpi : int
+        DPI for saved plots
+    fig : matplotlib.figure.Figure or None
+        Figure for plotting
+    axes : list of matplotlib.axes.Axes or None
+        Axes for plotting
+    myrank : int
+        Master rank (usually 0)
+
+    Returns
+    -------
+    list of dict
+        List of results dictionaries (one per projection), each containing:
+        - 'projection_config': dict - the original projection configuration
+        - 'coarse_solution': dict - exported coarse grid state
+        - 'refined_solution': dict or None - exported refined grid state (if refinement enabled)
+        - 'metrics': dict - performance metrics
+
+    Notes
+    -----
+    - Warm-starting is automatically enabled after the first projection
+    - The global solution pool accumulates knowledge across all projections
+    - Total target function calls are cumulative across all projections
+
+    Examples
+    --------
+    >>> projections = [
+    ...     {'dims': [0, 1], 'grid_points': [50, 50], 'enable_refinement': True},
+    ...     {'dims': [0, 2], 'grid_points': [50, 50], 'enable_refinement': True},
+    ... ]
+    >>> results = run_all_projections(
+    ...     comm=comm,
+    ...     sampler=sampler,
+    ...     projections=projections,
+    ...     save_plots=True
+    ... )
+    >>> for i, res in enumerate(results):
+    ...     print(f"Projection {i}: {res['metrics']['total_target_calls']} calls")
+    """
+    all_results = []
+
+    for proj_idx, projection_config in enumerate(projections):
+        print("\n" + "="*80)
+        print(f"=== Starting Projection {proj_idx + 1}/{len(projections)} ===")
+        print(f"=== Dimensions: {projection_config['dims']} ===")
+        print("="*80 + "\n")
+
+        # Reset sampler for new projection (except first)
+        if proj_idx > 0:
+            sampler._reset_for_new_projection(projection_config)
+
+        # Enable warm start after first projection
+        skip_init_opt = (proj_idx > 0)
+
+        # Run projection (handles coarse + refinement automatically)
+        results = run_projection(
+            comm=comm,
+            sampler=sampler,
+            projection_config=projection_config,
+            num_generations=num_generations,
+            max_num_to_evolve=max_num_to_evolve,
+            plot_callback=plot_callback,
+            plot_interval=plot_interval,
+            save_plots=save_plots,
+            plot_dpi=plot_dpi,
+            skip_init_opt_on_warm_start=skip_init_opt,
+            fig=fig,
+            axes=axes,
+            myrank=myrank
+        )
+
+        # Add projection config to results for reference
+        results['projection_config'] = projection_config
+        all_results.append(results)
+
+        print("\n" + "="*80)
+        print(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
+        print("="*80 + "\n")
+
+    return all_results
+
+
 def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 plot_callback, plot_interval, skip_init_opt_on_warm_start=True,
                 fig=None, axes=None, myrank=0):
