@@ -38,7 +38,8 @@ def plot_profiles(sampler, filename, plot_settings=None):
         return
 
     # Create figure and axes
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [10, 1]})
+    # Width ratio [9, 1] gives colorbar ~10% of plot width, wspace controls spacing
+    fig, axes = plt.subplots(1, 2, figsize=(7, 6), gridspec_kw={'width_ratios': [20, 1], 'wspace': 0.0})
     ax = axes[0]
 
     dim1, dim2 = sampler.projection_dims
@@ -52,17 +53,24 @@ def plot_profiles(sampler, filename, plot_settings=None):
     extent = [sampler.grid_axes[0][0], sampler.grid_axes[0][-1],
               sampler.grid_axes[1][0], sampler.grid_axes[1][-1]]
 
-    plot_baseline = sampler.global_max_target_val
-    vmin = plot_baseline - 3.0
-    vmax = plot_baseline
+    # Fixed colorbar range
+    vmin = -4.0
+    vmax = 0.0
 
     masked_profile = np.ma.masked_where(profile_2d == -np.inf, profile_2d)
 
     cmap = plt.get_cmap('viridis')
-    cmap.set_bad(color='white')
+    cmap.set_bad(color='0.75')
 
     im = ax.imshow(masked_profile.T, extent=extent, aspect='equal', origin='lower',
                    cmap=cmap, vmin=vmin, vmax=vmax)
+
+    # Add white contour lines at -1.0 and -3.0
+    contour_levels = [-3.0, -1.0]
+    # Create meshgrid for contour plotting
+    X, Y = np.meshgrid(sampler.grid_axes[0], sampler.grid_axes[1])
+    # Use transposed profile to match imshow orientation
+    ax.contour(X, Y, masked_profile.T, levels=contour_levels, colors='white', linewidths=1.0)
 
     active_points = []
     for grid_idx, state in sampler.population.items():
@@ -75,7 +83,7 @@ def plot_profiles(sampler, filename, plot_settings=None):
         ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                    edgecolor='black', lw=0.5, label='Active DE Points')
 
-    ax.set_title(f'Profile Likelihood (Gen: {sampler.current_generation}, Dims: {sampler.projection_dims})')
+    ax.set_title(f'Profile likelihood for parameters {sampler.projection_dims}')
     ax.set_xlabel(f'Parameter {dim1}')
     ax.set_ylabel(f'Parameter {dim2}')
     ax.legend()
@@ -89,5 +97,6 @@ def plot_profiles(sampler, filename, plot_settings=None):
     # Save the plot
     output_filename = f"{filename}.{filetype}"
     fig.savefig(output_filename, dpi=dpi, bbox_inches='tight')
+    fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
     print(f"Saved plot to: {output_filename}")

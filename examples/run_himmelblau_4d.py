@@ -62,7 +62,7 @@ if myrank == 0:
         mutation_strategy='current-to-pbest/1',
         pbest_fraction=0.1,
         n_initial_optimizations=100, # Increased
-        roi_threshold=3.5,
+        roi_threshold=4.0,
         convergence_threshold=1e-7, # Tighter -> Looser (match serial)
         convergence_window=3,      # Longer window -> Shorter (match serial)
         neighbor_pull_probability=0.5,
