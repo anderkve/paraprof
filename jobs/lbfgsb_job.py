@@ -408,7 +408,7 @@ class LBFGSBJob(Job):
         if not self.success:
             # For optimization, if it fails, set status back to 'converged'
             # so it can be picked up by patching later.
-            if self.type == 'LBFGSB' and self.grid_idx in self.sampler.population:
+            if self.type in ['LBFGSB', 'PATCHING_LBFGSB'] and self.grid_idx in self.sampler.population:
                 self.sampler.population[self.grid_idx]['status'] = 'converged'
             return None # Don't record failed jobs
 
@@ -423,7 +423,7 @@ class LBFGSBJob(Job):
             # Update global solution pool with discovered maximum
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
-        elif self.type == 'LBFGSB':
+        elif self.type in ['LBFGSB', 'PATCHING_LBFGSB']:
             grid_idx = self.grid_idx
             if grid_idx in self.sampler.population:
                 state = self.sampler.population[grid_idx]
