@@ -801,7 +801,7 @@ class GridAnchoredDESampler:
 
             # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
-            fine_end = tuple(min(fe, self.grid_shape[i]) for i, fe in enumerate(fine_end))
+            fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
 
             # Iterate through all points in this cell
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
