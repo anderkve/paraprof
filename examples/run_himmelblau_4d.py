@@ -21,7 +21,6 @@ except ImportError:
 from sampler import GridAnchoredDESampler
 from master import run_all_projections, terminate_workers
 from worker import worker_main
-from visualization import plot_profiles
 from test_functions import get_test_function
 
 # Get MPI info
@@ -48,15 +47,6 @@ log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
 
 if myrank == 0:
     # --- Master process ---
-
-    # Setup plotting
-    try:
-        import matplotlib.pyplot as plt
-        plt.ioff() # Interactive mode off
-        fig, axes = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [10, 1]})
-    except ImportError:
-        fig, axes = None, None
-        print("Matplotlib not found. Plotting will be disabled.")
 
     # Calculate memory size based on max grid points across all projections
     max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
@@ -85,9 +75,6 @@ if myrank == 0:
         samples_output_file=output_file,  # Single file for all projections
     )
 
-    def plot_func_wrapper(s, fig, axes):
-        plot_profiles(s, fig, axes)
-
     # Broadcast the target function to all workers (once, before all projections)
     print("Master: Broadcasting target function to workers...")
     comm.bcast(sampler.target_func, root=0)
@@ -99,12 +86,8 @@ if myrank == 0:
         projections=PROJECTIONS_TO_RUN,
         num_generations=100000,
         max_num_to_evolve=None,
-        plot_callback=plot_func_wrapper,
-        plot_interval=100,
         save_plots=True,
-        plot_dpi=150,
-        fig=fig,
-        axes=axes,
+        plot_settings={'dpi': 300, 'filetype': 'png'},
         myrank=myrank
     )
 

@@ -4,35 +4,42 @@ Visualization utilities for profile likelihood plots.
 import numpy as np
 
 
-def plot_profiles(sampler, fig, axes):
+def plot_profiles(sampler, filename, plot_settings=None):
     """
-    Generates and displays the 2D profile likelihood plot.
+    Generates and saves the 2D profile likelihood plot.
 
     Parameters
     ----------
     sampler : GridAnchoredDESampler
         The sampler instance containing the profile likelihood grid
-    fig : matplotlib.figure.Figure
-        The figure to plot on
-    axes : list of matplotlib.axes.Axes
-        List containing [main_axis, colorbar_axis]
+    filename : str
+        Output filename (without extension)
+    plot_settings : dict, optional
+        Plot settings with keys:
+        - 'dpi': int (default: 300)
+        - 'filetype': str (default: 'png')
     """
     try:
         import matplotlib
+        matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
     except ImportError:
         print("\nMatplotlib not found. Skipping visualization.")
         return
 
-    ax = axes[0]
-    ax.clear()
+    # Set default plot settings
+    if plot_settings is None:
+        plot_settings = {}
+    dpi = plot_settings.get('dpi', 300)
+    filetype = plot_settings.get('filetype', 'png')
 
     if sampler.n_proj_dims != 2:
-        ax.text(0.5, 0.5, 'Plotting only supported for 2D projections.',
-                horizontalalignment='center', verticalalignment='center')
-        fig.canvas.draw()
-        plt.pause(0.01)
+        print('Plotting only supported for 2D projections. Skipping plot.')
         return
+
+    # Create figure and axes
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6), gridspec_kw={'width_ratios': [10, 1]})
+    ax = axes[0]
 
     dim1, dim2 = sampler.projection_dims
 
@@ -71,12 +78,16 @@ def plot_profiles(sampler, fig, axes):
     ax.set_title(f'Profile Likelihood (Gen: {sampler.current_generation}, Dims: {sampler.projection_dims})')
     ax.set_xlabel(f'Parameter {dim1}')
     ax.set_ylabel(f'Parameter {dim2}')
-    if ax.get_legend() is None: # Avoid duplicate legends
-        ax.legend()
+    ax.legend()
     ax.grid(True, linestyle='--', alpha=0.5)
 
     cax = axes[1]
-    cax.clear()
     fig.colorbar(im, cax=cax, orientation='vertical', label='Log Likelihood')
 
     fig.tight_layout()
+
+    # Save the plot
+    output_filename = f"{filename}.{filetype}"
+    fig.savefig(output_filename, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved plot to: {output_filename}")
