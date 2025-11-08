@@ -38,13 +38,9 @@ def terminate_workers(comm, myrank=0):
 def run_projection(comm, sampler, projection_config,
                    num_generations=100000,
                    max_num_to_evolve=None,
-                   plot_callback=None,
-                   plot_interval=100,
                    save_plots=False,
-                   plot_dpi=150,
+                   plot_settings=None,
                    skip_init_opt_on_warm_start=True,
-                   fig=None,
-                   axes=None,
                    myrank=0):
     """
     Runs a complete projection workflow including optional grid refinement.
@@ -73,20 +69,14 @@ def run_projection(comm, sampler, projection_config,
         Maximum number of DE generations to run
     max_num_to_evolve : int or None
         Maximum number of grid points to evolve per generation (None = all)
-    plot_callback : callable or None
-        Function to call for plotting. Signature: plot_callback(sampler, fig, axes)
-    plot_interval : float
-        Seconds between plot updates during workflow
     save_plots : bool
         Whether to save plots to disk after each stage
-    plot_dpi : int
-        DPI for saved plots
+    plot_settings : dict, optional
+        Plot settings dictionary with keys:
+        - 'dpi': int (default: 300)
+        - 'filetype': str (default: 'png')
     skip_init_opt_on_warm_start : bool
         Whether to skip initial optimization if warm-start data exists
-    fig : matplotlib.figure.Figure or None
-        Figure for plotting
-    axes : list of matplotlib.axes.Axes or None
-        Axes for plotting
     myrank : int
         Master rank (usually 0)
 
@@ -139,11 +129,8 @@ def run_projection(comm, sampler, projection_config,
         sampler=sampler,
         num_generations=num_generations,
         max_num_to_evolve=max_num_to_evolve,
-        plot_callback=plot_callback,
-        plot_interval=plot_interval,
+        plot_settings=plot_settings,
         skip_init_opt_on_warm_start=skip_init_opt_on_warm_start,
-        fig=fig,
-        axes=axes,
         myrank=myrank
     )
 
@@ -151,11 +138,10 @@ def run_projection(comm, sampler, projection_config,
     sampler._flush_samples_buffer()
 
     # Save coarse plot if requested
-    if save_plots and fig and plot_callback:
-        plot_callback(sampler, fig, axes)
-        plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse.png"
-        fig.savefig(plot_filename, dpi=plot_dpi, bbox_inches='tight')
-        print(f"Saved coarse grid plot to: {plot_filename}")
+    if save_plots:
+        from visualization import plot_profiles
+        plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse"
+        plot_profiles(sampler, plot_filename, plot_settings)
 
     # Export coarse solution
     coarse_solution = sampler.export_grid_solution()
@@ -184,11 +170,8 @@ def run_projection(comm, sampler, projection_config,
             sampler=sampler,
             num_generations=num_generations,
             max_num_to_evolve=max_num_to_evolve,
-            plot_callback=plot_callback,
-            plot_interval=plot_interval,
+            plot_settings=plot_settings,
             skip_init_opt_on_warm_start=True,  # Always skip for refinement
-            fig=fig,
-            axes=axes,
             myrank=myrank
         )
 
@@ -196,11 +179,10 @@ def run_projection(comm, sampler, projection_config,
         sampler._flush_samples_buffer()
 
         # Save refined plot if requested
-        if save_plots and fig and plot_callback:
-            plot_callback(sampler, fig, axes)
-            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined.png"
-            fig.savefig(plot_filename, dpi=plot_dpi, bbox_inches='tight')
-            print(f"Saved refined grid plot to: {plot_filename}")
+        if save_plots:
+            from visualization import plot_profiles
+            plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined"
+            plot_profiles(sampler, plot_filename, plot_settings)
 
         # Export refined solution
         refined_solution = sampler.export_grid_solution()
@@ -220,12 +202,8 @@ def run_projection(comm, sampler, projection_config,
 def run_all_projections(comm, sampler, projections,
                         num_generations=100000,
                         max_num_to_evolve=None,
-                        plot_callback=None,
-                        plot_interval=100,
                         save_plots=False,
-                        plot_dpi=150,
-                        fig=None,
-                        axes=None,
+                        plot_settings=None,
                         myrank=0):
     """
     Runs multiple projections sequentially with automatic warm-starting.
@@ -253,18 +231,12 @@ def run_all_projections(comm, sampler, projections,
         Maximum number of DE generations to run per projection
     max_num_to_evolve : int or None
         Maximum number of grid points to evolve per generation (None = all)
-    plot_callback : callable or None
-        Function to call for plotting. Signature: plot_callback(sampler, fig, axes)
-    plot_interval : float
-        Seconds between plot updates during workflow
     save_plots : bool
         Whether to save plots to disk after each stage
-    plot_dpi : int
-        DPI for saved plots
-    fig : matplotlib.figure.Figure or None
-        Figure for plotting
-    axes : list of matplotlib.axes.Axes or None
-        Axes for plotting
+    plot_settings : dict, optional
+        Plot settings dictionary with keys:
+        - 'dpi': int (default: 300)
+        - 'filetype': str (default: 'png')
     myrank : int
         Master rank (usually 0)
 
@@ -320,13 +292,9 @@ def run_all_projections(comm, sampler, projections,
             projection_config=projection_config,
             num_generations=num_generations,
             max_num_to_evolve=max_num_to_evolve,
-            plot_callback=plot_callback,
-            plot_interval=plot_interval,
             save_plots=save_plots,
-            plot_dpi=plot_dpi,
+            plot_settings=plot_settings,
             skip_init_opt_on_warm_start=skip_init_opt,
-            fig=fig,
-            axes=axes,
             myrank=myrank
         )
 
@@ -342,8 +310,8 @@ def run_all_projections(comm, sampler, projections,
 
 
 def master_main(comm, sampler, num_generations, max_num_to_evolve,
-                plot_callback, plot_interval, skip_init_opt_on_warm_start=True,
-                fig=None, axes=None, myrank=0):
+                plot_settings=None, skip_init_opt_on_warm_start=True,
+                myrank=0):
     """
     Main control loop for the master process.
     Acts as a state machine, dispatching jobs and processing results.
@@ -358,16 +326,13 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         Number of DE generations to run
     max_num_to_evolve : int or None
         Maximum number of grid points to evolve per generation (None = all)
-    plot_callback : callable or None
-        Function to call for plotting (signature: plot_callback(sampler, fig, axes))
-    plot_interval : float
-        Seconds between plot updates
+    plot_settings : dict, optional
+        Plot settings dictionary with keys:
+        - 'dpi': int (default: 300)
+        - 'filetype': str (default: 'png')
+        Not used in master_main directly (only passed for compatibility)
     skip_init_opt_on_warm_start : bool
         Whether to skip initial optimization if initial_maxima already exist
-    fig : matplotlib.figure.Figure or None
-        Figure for plotting
-    axes : list of matplotlib.axes.Axes or None
-        Axes for plotting
     myrank : int
         Master rank (usually 0)
     """
@@ -418,7 +383,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     patching_wave_test_jobs = set()  # IDs of test jobs in current wave
     patching_wave_lbfgsb_jobs = set()  # IDs of L-BFGS-B jobs spawned by current wave
 
-    last_plot_time = time.time()
     de_gen_start_time = time.time() # Add timer for DE generations
 
     # --- Main Event Loop ---
@@ -698,15 +662,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         #    ... (old blocking recv logic removed) ...
         # --- (END MODIFICATION) ---
 
-        # --- 4. Plotting (optional) & Polite Sleep ---
-        current_time = time.time()
-        if plot_callback and (current_time - last_plot_time > plot_interval):
-             # Only plot during DE phase for this example
-            if sampler.current_generation > 0:
-                print(f"Plotting... (Gen {sampler.current_generation})")
-                plot_callback(sampler, fig, axes)
-                last_plot_time = current_time
-
+        # --- 4. Polite Sleep ---
         # If no tasks are ready to send and no workers are free,
         # but we are still waiting for results, sleep for a tiny bit
         # to prevent a 100% CPU busy-wait.

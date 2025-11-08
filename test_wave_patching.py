@@ -63,11 +63,7 @@ if myrank == 0:
         sampler=sampler,
         num_generations=100,
         max_num_to_evolve=None,
-        plot_callback=None,
-        plot_interval=1000,
         skip_init_opt_on_warm_start=False,
-        fig=None,
-        axes=None,
         myrank=myrank
     )
 

@@ -64,8 +64,6 @@ if myrank == 0:
         sampler=sampler,
         num_generations=3,  # Just 3 generations for testing
         max_num_to_evolve=None,
-        plot_callback=None,
-        plot_interval=10.0,
         skip_init_opt_on_warm_start=False
     )
 
