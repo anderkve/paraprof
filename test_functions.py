@@ -4,7 +4,7 @@ Test functions for benchmarking the optimization algorithm.
 import numpy as np
 
 
-def rosenbrock_4D(params):
+def rosenbrock_4d(params):
     """
     4D Rosenbrock function (negated for maximization).
 
@@ -33,7 +33,7 @@ def get_test_function(name):
     Parameters
     ----------
     name : str
-        Name of the test function ('rosenbrock_4D' or 'himmelblau_4d')
+        Name of the test function ('rosenbrock_4d' or 'himmelblau_4d')
 
     Returns
     -------
@@ -44,10 +44,10 @@ def get_test_function(name):
     peaks : list of numpy arrays
         Known peak locations
     """
-    if name == "rosenbrock_4D":
-        bounds = [[-5, 5], [-5, 5], [-5, 5], [-5, 5]]
+    if name == "rosenbrock_4d":
+        bounds = [[-6, 6], [-6, 6], [-6, 6], [-6, 6]]
         peaks = [np.array([1.0, 1.0, 1.0, 1.0])]
-        return rosenbrock_4D, bounds, peaks
+        return rosenbrock_4d, bounds, peaks
 
     elif name == "himmelblau_4d":
         bounds = [[-6, 6], [-6, 6], [-6, 6], [-6, 6]]
