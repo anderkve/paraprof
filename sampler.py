@@ -149,7 +149,8 @@ class GridAnchoredDESampler:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
         self.enable_lbfgsb = True  # Default to True (controlled per-projection)
-        self.enable_patching = True  # Default to True (controlled per-projection)
+        self.patching_coarse = True  # Default to True (controlled per-projection)
+        self.patching_refined = False  # Default to False (controlled per-projection)
 
         # --- Per-Projection State (reset) ---
         self._reset_for_new_projection(self.projections[0])
@@ -175,11 +176,22 @@ class GridAnchoredDESampler:
 
         # Read optional flags from projection config
         self.enable_lbfgsb = projection_config.get('lbfgsb', True)
-        self.enable_patching = projection_config.get('patching', True)
+
+        # Read patching configuration with backward compatibility
+        if 'patching_coarse' in projection_config or 'patching_refined' in projection_config:
+            self.patching_coarse = projection_config.get('patching_coarse', True)
+            self.patching_refined = projection_config.get('patching_refined', False)
+        else:
+            # Backward compatibility: old 'patching' flag applies to coarse grid only
+            legacy_patching = projection_config.get('patching', True)
+            self.patching_coarse = legacy_patching
+            self.patching_refined = False
 
         # Print configuration
         print(f"  L-BFGS-B after DE convergence: {'Enabled' if self.enable_lbfgsb else 'Disabled'}")
-        print(f"  Patching stage: {'Enabled' if self.enable_patching else 'Disabled'}")
+        print(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
+        if self.is_refinement_run:
+            print(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
 
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
