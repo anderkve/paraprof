@@ -115,8 +115,6 @@ class GridAnchoredDESampler:
         self.global_pool_size = global_pool_size
         if activation_mix_ratios is None:
             self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
-            # self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
-            # self.activation_mix_ratios = {'neighbors': 0.2, 'global': 0.6, 'random': 0.2}  # <--- This does not work very well
         else:
             self.activation_mix_ratios = activation_mix_ratios
 
@@ -163,7 +161,7 @@ class GridAnchoredDESampler:
         print("="*80 + "\n")
 
         self.projection_dims = sorted(projection_config['dims'])
-        # _Anders: Add +1 to number of grid points, to get nicer coordinates
+        # Add +1 to grid points to include both endpoints in linspace
         grid_points = list(projection_config['grid_points']) # Copy
         for i in range(len(grid_points)):
             grid_points[i] += 1
