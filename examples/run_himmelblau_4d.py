@@ -34,6 +34,11 @@ TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
 
+    # 1D projections
+    {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+
+    # 2D projections
     {'dims': [0, 1], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     {'dims': [0, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     {'dims': [0, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
