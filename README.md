@@ -20,7 +20,9 @@ paraprof/
 ├── visualization.py               # Plotting utilities
 ├── test_functions.py              # Benchmark test functions
 └── examples/
-    └── run_himmelblau_4d.py       # Example usage script
+    ├── run_himmelblau_1d.py       # 1D projection example
+    ├── run_himmelblau_4d.py       # 2D projections example
+    └── run_himmelblau_3d.py       # 3D projection example
 ```
 
 ## Module Responsibilities
@@ -41,15 +43,23 @@ paraprof/
 
 ### Utilities
 
-- **`visualization.py`**: 2D profile likelihood plotting
+- **`visualization.py`**: N-dimensional profile likelihood plotting (1D, 2D, 3D+ supported)
 - **`test_functions.py`**: Benchmark optimization problems (Rosenbrock, Himmelblau)
+- **`interpolation.py`**: Grid interpolation for refinement runs
 
 ## Usage
 
-### Running the Example
+### Running the Examples
 
 ```bash
+# 2D projections (original example)
 mpiexec -n <num_cores> python examples/run_himmelblau_4d.py
+
+# 1D projections
+mpiexec -n <num_cores> python examples/run_himmelblau_1d.py
+
+# 3D projection
+mpiexec -n <num_cores> python examples/run_himmelblau_3d.py
 ```
 
 Replace `<num_cores>` with the number of MPI processes (1 master + N workers).
@@ -69,9 +79,11 @@ myrank = comm.Get_rank()
 # Define your target function and bounds
 log_likelihood, bounds, _ = get_test_function("himmelblau_4d")
 
-# Configure projections
+# Configure projections (supports 1D, 2D, 3D, or higher-dimensional grids)
 projections = [
-    {'dims': [0, 1], 'grid_points': [100, 100]},
+    {'dims': [0], 'grid_points': [100]},              # 1D projection
+    {'dims': [0, 1], 'grid_points': [100, 100]},      # 2D projection
+    {'dims': [0, 1, 2], 'grid_points': [20, 20, 20]}, # 3D projection
 ]
 
 if myrank == 0:
@@ -125,6 +137,41 @@ The master process executes a 4-stage workflow:
 - **Priority Queues**: Optimization jobs get priority over population evaluations
 - **State Machine**: Master orchestrates workflow through well-defined stages
 - **Sparse Grid**: Only activated grid points consume memory
+
+## Visualization
+
+The `visualization.py` module provides automatic plotting for profile likelihood grids of any dimensionality:
+
+### 1D Projections
+- **Line plot** showing likelihood vs. parameter
+- Confidence level lines (68% and 95% CL)
+- Markers for active DE points
+
+### 2D Projections
+- **Heatmap** with contour lines
+- Customizable colorbar range
+- Markers for active grid points
+
+### 3D+ Projections
+Creates 2D slice plots showing all pairwise dimension combinations. Two modes available:
+
+- **`slice_mode='max'`**: Slices through maximum likelihood point (default)
+- **`slice_mode='all'`**: Marginalized projections (maximum over all other dimensions)
+
+### Plot Settings
+
+Configure plots using the `plot_settings` dictionary:
+
+```python
+plot_settings = {
+    'dpi': 300,                      # Resolution
+    'filetype': 'png',               # Format (png, pdf, svg, etc.)
+    'slice_mode': 'max',             # For 3D+: 'max' or 'all'
+    'vmin': -4.0,                    # Colorbar minimum
+    'vmax': 0.0,                     # Colorbar maximum
+    'contour_levels': [-3.0, -1.0]  # Contour line positions
+}
+```
 
 ## Original File
 
