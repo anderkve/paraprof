@@ -255,9 +255,6 @@ class LBFGSBJob(Job):
         self.gradient_components[(dim, sign)] = -result['target_val'] # Store objective
         self.pending_grad_evals -= 1
 
-        if self.pending_grad_evals < 0:
-            raise Exception("LBFGSBJob: pending_grad_evals < 0. This should not happen.")
-
         # Check if all components for the gradient have been computed
         if self.pending_grad_evals == 0:
             grad = np.zeros(self.n_opt_dims)

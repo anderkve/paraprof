@@ -388,8 +388,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     patching_wave_test_jobs = set()  # IDs of test jobs in current wave
     patching_wave_lbfgsb_jobs = set()  # IDs of L-BFGS-B jobs spawned by current wave
 
-    de_gen_start_time = time.time() # Add timer for DE generations
-
     # --- Main Event Loop ---
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
 
@@ -459,9 +457,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 new_jobs = new_de_jobs + new_act_jobs
 
                 # --- Print Generation Summary ---
-                elapsed = time.time() - de_gen_start_time
-                de_gen_start_time = time.time() # Reset timer
-
                 total_grid_points = len(sampler.population)
                 active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
                 converged_count = total_grid_points - active_count
@@ -470,8 +465,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 print(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
                       f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
                       f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                      f"New Activations: {newly_activated_count:3d} | "
-                      f"Elapsed: {elapsed:.1f}s")
+                      f"New Activations: {newly_activated_count:3d}")
                 # --- End Print ---
 
                 if not new_jobs and not de_successful_F: # DE converged and no new activations
