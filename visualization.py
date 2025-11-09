@@ -96,7 +96,6 @@ def plot_profiles(sampler, filename, plot_settings=None):
 
     # Save the plot
     output_filename = f"{filename}.{filetype}"
-    fig.savefig(output_filename, dpi=dpi, bbox_inches='tight')
     fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
     print(f"Saved plot to: {output_filename}")

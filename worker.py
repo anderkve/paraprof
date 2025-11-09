@@ -10,8 +10,7 @@ except ImportError:
     import sys
     sys.exit(1)
 
-from constants import TASK_TERMINATE
-
+TASK_TERMINATE = -1
 
 def worker_main(comm, myrank):
     """
