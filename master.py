@@ -361,11 +361,9 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
     active_jobs = {} # {job_id: Job object}
 
-    # --- MODIFICATION: Create priority task queues ---
+    # Create priority task queues
     high_prio_tasks = collections.deque()
     low_prio_tasks = collections.deque()
-    # task_queue = collections.deque() # Old queue
-    # --- END MODIFICATION ---
 
     next_job_id = 0
     tasks_sent = 0
@@ -386,15 +384,11 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     de_gen_start_time = time.time() # Add timer for DE generations
 
     # --- Main Event Loop ---
-    # --- MODIFICATION: Update loop condition to check both queues ---
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
-    # --- END MODIFICATION ---
 
         # --- 1. Generate new jobs if a stage is starting or continuing ---
         # This block only runs when no jobs are active and no tasks are queued.
-        # --- MODIFICATION: Update check to include both queues ---
         if not active_jobs and not high_prio_tasks and not low_prio_tasks and (tasks_sent == tasks_completed):
-        # --- END MODIFICATION ---
 
             if not current_stage:
                 break # All stages and jobs are complete
@@ -545,18 +539,17 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 active_jobs[job.id] = job
                 initial_tasks = job.start()
 
-                # --- MODIFICATION: Add to correct priority queue ---
+                # Add to correct priority queue
                 if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                     high_prio_tasks.extend(initial_tasks)
                 else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                     low_prio_tasks.extend(initial_tasks)
-                # --- END MODIFICATION ---
 
             # If we just finished a non-looping stage, advance to the next
             if current_stage not in ['DE_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
-        # --- 3. (MODIFIED) Check for and process ALL available results ---
+        # --- 2. Check for and process ALL available results ---
         while comm.Iprobe(source=MPI.ANY_SOURCE):
             # A message is waiting, so now we do a blocking (but instant) receive
             result = comm.recv(source=MPI.ANY_SOURCE)
@@ -575,12 +568,11 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             job = active_jobs[job_id]
             new_tasks = job.process_result(result)
 
-            # --- MODIFICATION: Add to correct priority queue ---
+            # Add to correct priority queue
             if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                 high_prio_tasks.extend(new_tasks)
             else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                 low_prio_tasks.extend(new_tasks)
-            # --- END MODIFICATION ---
 
             if job.is_finished():
                 job_id_finished = job.id
@@ -608,12 +600,11 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     if is_wave_test_job and new_job.type == 'PATCHING_LBFGSB':
                         patching_wave_lbfgsb_jobs.add(new_job.id)
 
-                    # --- MODIFICATION: Add to correct priority queue ---
+                    # Add to correct priority queue
                     if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
                         high_prio_tasks.extend(initial_tasks)
                     else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
                         low_prio_tasks.extend(initial_tasks)
-                    # --- END MODIFICATION ---
 
                 # Check if the patching wave is now complete
                 if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
@@ -641,8 +632,8 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         # --- End of Iprobe receive loop ---
 
 
-        # --- 2. (Now Step 3) Dispatch tasks to free workers ---
-        # --- MODIFICATION: Prioritize high_prio_tasks ---
+        # --- 3. Dispatch tasks to free workers ---
+        # Prioritize high priority tasks
         while free_workers and (high_prio_tasks or low_prio_tasks):
             worker_rank = free_workers.pop(0)
 
@@ -653,14 +644,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
             comm.send(task, dest=worker_rank)
             tasks_sent += 1
-        # --- END MODIFICATION ---
-
-        # --- 3. Wait for and process a result ---
-        # Only check for results if we are expecting any
-        # --- (MODIFICATION: This block is now removed and replaced by Iprobe loop) ---
-        # if tasks_sent > tasks_completed:
-        #    ... (old blocking recv logic removed) ...
-        # --- (END MODIFICATION) ---
 
         # --- 4. Polite Sleep ---
         # If no tasks are ready to send and no workers are free,
