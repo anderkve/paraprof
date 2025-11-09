@@ -364,6 +364,14 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     high_prio_tasks = collections.deque()
     low_prio_tasks = collections.deque()
 
+    # Helper function to queue tasks
+    def _queue_tasks(tasks, job_type):
+        """Add tasks to appropriate priority queue based on job type."""
+        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
+            high_prio_tasks.extend(tasks)
+        else:
+            low_prio_tasks.extend(tasks)
+
     next_job_id = 0
     tasks_sent = 0
     tasks_completed = 0
@@ -396,12 +404,6 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_jobs = []
 
             if current_stage == 'INITIAL_OPTIMIZATION':
-                # Skip initial optimization if this is a refinement run
-                if sampler.is_refinement_run:
-                    print("Skipping initial optimization - refinement run mode.")
-                    new_jobs = []
-                    current_stage = stages.pop(0) if stages else None
-                    continue
 
                 # Try to initialize from warm start file first
                 if skip_init_opt_on_warm_start and sampler.samples_output_file:
@@ -539,10 +541,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 initial_tasks = job.start()
 
                 # Add to correct priority queue
-                if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
-                    high_prio_tasks.extend(initial_tasks)
-                else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
-                    low_prio_tasks.extend(initial_tasks)
+                _queue_tasks(initial_tasks, job.type)
 
             # If we just finished a non-looping stage, advance to the next
             if current_stage not in ['DE_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
@@ -568,10 +567,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             new_tasks = job.process_result(result)
 
             # Add to correct priority queue
-            if job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
-                high_prio_tasks.extend(new_tasks)
-            else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
-                low_prio_tasks.extend(new_tasks)
+            _queue_tasks(new_tasks, job.type)
 
             if job.is_finished():
                 job_id_finished = job.id
@@ -600,10 +596,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                         patching_wave_lbfgsb_jobs.add(new_job.id)
 
                     # Add to correct priority queue
-                    if new_job.type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
-                        high_prio_tasks.extend(initial_tasks)
-                    else: # 'ACTIVATE_GRID_POINT', 'DE_GRID_POINT'
-                        low_prio_tasks.extend(initial_tasks)
+                    _queue_tasks(initial_tasks, new_job.type)
 
                 # Check if the patching wave is now complete
                 if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
