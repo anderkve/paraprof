@@ -33,6 +33,13 @@ class DEGridPointJob(Job):
 
     def start(self):
         """Generate all trial points and return their evaluation tasks."""
+        # Direct evaluation mode: no continuous dimensions, so no evolution needed
+        if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
+            # Grid point already evaluated by ActivationJob, mark as converged
+            self.success = True
+            self._is_finished = True
+            return []
+
         tasks = []
         grid_state = self.grid_state
 
@@ -162,6 +169,10 @@ class DEGridPointJob(Job):
         If converged, spawn a new LBFGSB job.
         """
         if not self.success:
+            return None
+
+        # Direct evaluation mode: already marked as converged by ActivationJob
+        if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
             return None
 
         grid_state = self.grid_state
