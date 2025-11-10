@@ -101,6 +101,11 @@ class LBFGSBJob(Job):
 
     def start(self):
         """Returns the first task(s) for the job."""
+        # Safety check: if there are no dimensions to optimize, finish immediately
+        if self.n_opt_dims == 0:
+            self.success = False
+            self._is_finished = True
+            return []
 
         if self.status == 'NEEDS_NEIGHBOR_TEST':
             best_neighbor_state = None

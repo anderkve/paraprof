@@ -199,15 +199,10 @@ class GridAnchoredDESampler:
         self.direct_eval_mode = (self.n_cont_dims == 0)
 
         if self.direct_eval_mode:
-            print("\n" + "!"*80)
-            print("  DIRECT EVALUATION MODE")
-            print("  " + "-"*76)
-            print(f"  Grid dimensionality equals function dimensionality ({self.dims}D)")
-            print("  No continuous dimensions to optimize - will evaluate at grid points directly")
-            print("  Workflow: Initial optimization → Sparse grid activation → Direct evaluation")
-            print("  Skipping: DE optimization and L-BFGS-B refinement stages")
-            print("  Benefit: Efficient sparse likelihood map vs. dense grid scanning")
-            print("!"*80 + "\n")
+            print()
+            print(f"  NOTE: Grid dimensionality equals function dimensionality ({self.dims}D).")
+            print("  No continuous dimensions to optimize - will evaluate at grid points directly.")
+            print()
 
         self.grid_shape = tuple(self.grid_points_per_dim)
 
@@ -970,6 +965,14 @@ class GridAnchoredDESampler:
         """
         Creates a new L-BFGS-B optimization job for a single converged grid point.
         """
+        # Direct evaluation mode: no continuous dimensions to optimize
+        if self.direct_eval_mode or self.n_cont_dims == 0:
+            # Mark as optimized without L-BFGS-B refinement
+            state = self.population.get(grid_idx)
+            if state:
+                state['status'] = 'optimized'
+            return None
+
         state = self.population.get(grid_idx)
 
         # Safety check: only optimize active/converged/optimized points

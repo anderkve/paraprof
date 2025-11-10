@@ -57,7 +57,8 @@ TEST_FUNCTION = "beale_2d"
 
 PROJECTIONS_TO_RUN = [
     # For 2D functions with DIRECT EVALUATION MODE (projects onto both dims)
-    {'dims': [0, 1], 'grid_points': [75, 75], 'enable_refinement': True, 'refinement_factor': 2},
+    # Iteration 4: Higher resolution grid for better coverage
+    {'dims': [0, 1], 'grid_points': [300, 300], 'enable_refinement': False, 'refinement_factor': 1},
 
     # Alternative: 1D projections with optimization (one continuous dim)
     # {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -85,19 +86,19 @@ if myrank == 0:
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,
-        pop_per_grid_point=10, # Increased for better DE
+        pop_per_grid_point=3,
         mutation_strategy='current-to-pbest/1',
         pbest_fraction=0.1,
-        n_initial_optimizations=100, # Increased
-        roi_threshold=4.0,
-        convergence_threshold=1e-7, # Tighter -> Looser (match serial)
-        convergence_window=3,      # Longer window -> Shorter (match serial)
+        n_initial_optimizations=100,  # Iteration 4: More for finer grid
+        roi_threshold=4.0,          # Iteration 4: Keep threshold
+        convergence_threshold=1e-7,
+        convergence_window=3,
         neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
         LBFGSB_max_iter=20,
-        LBFGSB_gradient_method="forward", # "central",
-        max_patching_waves=20,  # Maximum number of patching waves
-        patching_n_neighbors=1,  # Test only the best neighbor
+        LBFGSB_gradient_method="forward",
+        max_patching_waves=20,
+        patching_n_neighbors=1,
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
     )

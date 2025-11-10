@@ -126,11 +126,17 @@ class ActivationJob(Job):
         self.sampler.profile_likelihood_grid[self.grid_idx] = best_fitness
 
         if self.sampler.direct_eval_mode:
-            # Direct evaluation mode: simpler state (no population, just the value)
+            # Direct evaluation mode: use standard state structure but mark as converged
+            # (no continuous params to optimize, so it's immediately "converged")
             self.sampler.population[self.grid_idx] = {
-                'fitness': best_fitness,
-                'status': 'evaluated',
-                'full_params': self.all_full_params[0]
+                'continuous_params': self.all_continuous_params,  # Empty array (shape: 1x0)
+                'fitnesses': self.fitnesses,
+                'best_fitness': best_fitness,
+                'status': 'converged',  # Mark as converged to enable dynamic activation
+                'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
+                'last_update_gen': 0,
+                'optimizer_state': None,
+                'full_params': self.all_full_params[0]  # Store for convenience
             }
         else:
             # Normal mode: full population-based state
