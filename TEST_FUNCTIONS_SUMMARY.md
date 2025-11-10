@@ -135,6 +135,38 @@ func, bounds, peaks = get_test_function("schwefel_4d")
 # ... and 40 more
 ```
 
+### **IMPORTANT: Projection Constraints for 2D Functions**
+
+⚠️ **For 2D functions, use 1D projections (not 2D projections)!**
+
+ParaProf requires at least ONE continuous dimension to optimize. For an N-dimensional function, you can project onto **at most (N-1) dimensions**.
+
+**Correct configuration for 2D functions:**
+```python
+# ✓ CORRECT: 1D projection for 2D function
+TEST_FUNCTION = "beale_2d"
+PROJECTIONS_TO_RUN = [
+    {'dims': [0], 'grid_points': [75]},  # Project on dim 0, optimize dim 1
+]
+```
+
+**Incorrect configuration (will raise error):**
+```python
+# ✗ WRONG: 2D projection for 2D function - NO continuous dims!
+TEST_FUNCTION = "beale_2d"
+PROJECTIONS_TO_RUN = [
+    {'dims': [0, 1], 'grid_points': [75, 75]},  # ERROR!
+]
+```
+
+**Quick Reference:**
+- 2D functions → 1D projection: `dims=[0]` or `dims=[1]`
+- 4D functions → 2D projection: `dims=[0, 1]` (standard)
+- 6D functions → 2D projection: `dims=[0, 1]` (standard)
+- 10D functions → 2D projection: `dims=[0, 1]` (standard)
+
+See `PROJECTION_CONSTRAINTS.md` for detailed explanation and examples.
+
 ### All Available Functions by Category
 
 **Unimodal (8):**
