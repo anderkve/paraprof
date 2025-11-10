@@ -171,6 +171,14 @@ class GridAnchoredDESampler:
             raise ValueError("Length of projection_dims must match length of grid_points_per_dim.")
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
+        if len(self.projection_dims) >= self.dims:
+            raise ValueError(
+                f"Invalid projection configuration: projection_dims={self.projection_dims} "
+                f"uses all {self.dims} dimensions. ParaProf requires at least 1 continuous "
+                f"dimension to optimize. For a {self.dims}D function, use at most "
+                f"{self.dims-1} projection dimensions. Example: for 2D functions use "
+                f"dims=[0] or dims=[1], not dims=[0,1]."
+            )
 
         # Read optional flags from projection config
         self.enable_lbfgsb = projection_config.get('lbfgsb', True)
