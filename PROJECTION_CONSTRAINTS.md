@@ -1,18 +1,47 @@
-# Projection Constraints for ParaProf
+# Projection Modes and Configurations for ParaProf
 
-## Critical Constraint: Continuous Dimensions Requirement
+## Two Operating Modes
 
-**ParaProf requires at least ONE continuous dimension to optimize.**
+**ParaProf now supports TWO modes depending on your projection configuration:**
 
-For a function with `N` dimensions, you can project onto **at most `N-1` dimensions**.
+### 1. Normal Mode (Profile Likelihood with Optimization)
+**When:** `len(projection_dims) < total_dimensions` (has continuous dimensions)
+- Projects onto fewer dimensions than the function has
+- Optimizes continuous dimensions at each grid point using DE + L-BFGS-B
+- **Use for:** Profile likelihood computations, parameter inference
 
-## Why This Constraint Exists
+### 2. Direct Evaluation Mode (NEW!)
+**When:** `len(projection_dims) == total_dimensions` (no continuous dimensions)
+- Projects onto ALL dimensions of the function
+- Evaluates directly at grid points (no optimization)
+- Uses intelligent sparse grid activation for efficiency
+- **Use for:** 2D likelihood surface visualization, efficient 2D scanning
 
-ParaProf computes **profile likelihoods** by:
-1. Fixing some parameters on a grid (projection dimensions)
-2. Optimizing over the remaining parameters (continuous dimensions) at each grid point
+## Mode Selection
 
-If you project onto ALL dimensions, there are no parameters left to optimize!
+**The mode is automatically detected based on your projection configuration:**
+
+```python
+if len(projection_dims) < total_dimensions:
+    # Normal Mode: Has continuous dimensions to optimize
+    mode = "Profile Likelihood with Optimization"
+elif len(projection_dims) == total_dimensions:
+    # Direct Evaluation Mode: No continuous dimensions
+    mode = "Direct Evaluation at Grid Points"
+```
+
+When direct evaluation mode activates, you'll see:
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  DIRECT EVALUATION MODE
+  ----------------------------------------------------------------------------
+  Grid dimensionality equals function dimensionality (2D)
+  No continuous dimensions to optimize - will evaluate at grid points directly
+  Workflow: Initial optimization → Sparse grid activation → Direct evaluation
+  Skipping: DE optimization and L-BFGS-B refinement stages
+  Benefit: Efficient sparse likelihood map vs. dense grid scanning
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
 
 ## Valid Projection Configurations
 
@@ -25,17 +54,27 @@ len(projection_dims) < total_dimensions
 
 #### 2D Functions (beale_2d, eggholder_2d, sphere_2d, etc.)
 
-| Configuration | Status | Explanation |
-|---------------|--------|-------------|
-| `dims=[0]` | ✓ Valid | 1D projection, optimizes dimension 1 |
-| `dims=[1]` | ✓ Valid | 1D projection, optimizes dimension 0 |
-| `dims=[0, 1]` | ✗ **INVALID** | No continuous dimensions left! |
+| Configuration | Mode | Explanation |
+|---------------|------|-------------|
+| `dims=[0]` | ✓ Normal | 1D projection, optimizes dimension 1 |
+| `dims=[1]` | ✓ Normal | 1D projection, optimizes dimension 0 |
+| `dims=[0, 1]` | ✓ **Direct Eval** | 2D projection, direct evaluation (NEW!) |
 
-**Example Configuration:**
+**Example Configurations:**
+
+**Option 1: Direct Evaluation Mode (NEW!)**
 ```python
-# CORRECT: 1D projection for 2D function
+# Projects onto both dimensions - evaluates at grid points directly
 PROJECTIONS_TO_RUN = [
-    {'dims': [0], 'grid_points': [75]},
+    {'dims': [0, 1], 'grid_points': [75, 75]},  # Direct evaluation mode
+]
+```
+
+**Option 2: Normal Mode (with optimization)**
+```python
+# 1D projection - optimizes the other dimension at each point
+PROJECTIONS_TO_RUN = [
+    {'dims': [0], 'grid_points': [75]},  # Normal mode
 ]
 ```
 
@@ -111,25 +150,32 @@ PROJECTIONS_TO_RUN = [
 ]
 ```
 
-## Common Mistakes and Fixes
+## Common Use Cases
 
-### Mistake 1: Using 2D projection for 2D function
+### Use Case 1: 2D Likelihood Surface Visualization
 
-❌ **WRONG:**
+✓ **Direct Evaluation Mode (NEW!):**
 ```python
 TEST_FUNCTION = "beale_2d"
 PROJECTIONS_TO_RUN = [
-    {'dims': [0, 1], 'grid_points': [75, 75]},  # ERROR!
+    {'dims': [0, 1], 'grid_points': [75, 75]},  # Direct eval - efficient!
 ]
 ```
+- Evaluates at sparse grid points (intelligently activated)
+- Much faster than dense grid scanning
+- Produces full 2D likelihood surface
 
-✓ **CORRECT:**
+### Use Case 2: Profile Likelihood with Optimization
+
+✓ **Normal Mode:**
 ```python
 TEST_FUNCTION = "beale_2d"
 PROJECTIONS_TO_RUN = [
-    {'dims': [0], 'grid_points': [75]},  # 1D projection
+    {'dims': [0], 'grid_points': [75]},  # Profile likelihood of dim 0
 ]
 ```
+- Optimizes dimension 1 at each point on dimension 0 grid
+- True profile likelihood computation
 
 ### Mistake 2: Projecting onto all dimensions
 
@@ -203,14 +249,26 @@ PL(θ_p) = max_{θ_c} L(θ_p, θ_c)
 
 ## Summary
 
-✓ **Always ensure:** `len(projection_dims) < total_dimensions`
+### Two Modes, More Flexibility
 
-✓ **For 2D functions:** Use 1D projections (`dims=[0]` or `dims=[1]`)
+**Normal Mode** (`len(projection_dims) < total_dimensions`):
+- ✓ Profile likelihood computation with optimization
+- ✓ For 2D functions: Use 1D projections (`dims=[0]` or `dims=[1]`)
+- ✓ For 4D+ functions: Use 2D projections (`dims=[0, 1]`)
 
-✓ **For 4D+ functions:** Use 2D projections for visualization (`dims=[0, 1]`)
+**Direct Evaluation Mode** (`len(projection_dims) == total_dimensions`) - NEW!:
+- ✓ Efficient 2D surface visualization
+- ✓ For 2D functions: Use 2D projections (`dims=[0, 1]`)
+- ✓ Sparse grid activation reduces evaluations vs. dense scanning
+- ✓ No optimization overhead - perfect for visualization
 
-✗ **Never** project onto all dimensions - leave at least 1 for optimization
+### Key Benefits
+
+1. **Flexibility**: Choose the mode that fits your needs
+2. **Efficiency**: Direct eval mode uses sparse grids intelligently
+3. **Simplicity**: Mode is automatically detected
+4. **Backward Compatible**: All existing code still works
 
 ---
 
-**Updated:** 2025 (with extended test function suite)
+**Updated:** 2025 (with Direct Evaluation Mode and extended test function suite)

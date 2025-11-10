@@ -36,22 +36,38 @@ TEST_FUNCTION = "beale_2d"
 # TEST_FUNCTION = "eggholder_2d"
 # TEST_FUNCTION = "michalewicz_4d"
 
-# IMPORTANT: For 2D functions, use 1D projections (dims=[0] or dims=[1])
-#            ParaProf requires at least 1 continuous dimension to optimize
-#            For nD functions, use at most (n-1) projection dimensions
+# ============================================================================
+# PROJECTION CONFIGURATION GUIDE
+# ============================================================================
+#
+# ParaProf now supports two modes:
+#
+# 1. NORMAL MODE (n_continuous_dims > 0):
+#    - Projects onto fewer dimensions than the function has
+#    - Optimizes continuous dimensions at each grid point
+#    - Example: 4D function with dims=[0,1] projects onto 2D, optimizes [2,3]
+#
+# 2. DIRECT EVALUATION MODE (n_continuous_dims == 0):
+#    - NEW! Projects onto ALL dimensions of the function
+#    - Evaluates directly at grid points (no optimization needed)
+#    - Uses intelligent sparse grid activation for efficiency
+#    - Example: 2D function with dims=[0,1] evaluates at 2D grid points
+#
+# ============================================================================
 
 PROJECTIONS_TO_RUN = [
-    # For 2D functions: 1D projection on dimension 0 (optimizes dimension 1)
-    {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # For 2D functions with DIRECT EVALUATION MODE (projects onto both dims)
+    {'dims': [0, 1], 'grid_points': [75, 75], 'enable_refinement': True, 'refinement_factor': 2},
 
-    # You can also add projection on dimension 1:
-    # {'dims': [1], 'grid_points': [75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # Alternative: 1D projections with optimization (one continuous dim)
+    # {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [1], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
 ]
 
-# For higher dimensional functions, use 2D projections:
+# For higher dimensional functions with NORMAL MODE (optimization at each grid point):
 # Example for 4D function:
 # PROJECTIONS_TO_RUN = [
-#     {'dims': [0, 1], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+#     {'dims': [0, 1], 'grid_points': [50, 50], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
 # ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)

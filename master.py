@@ -345,12 +345,16 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # --- Master state ---
     free_workers = list(range(1, n_workers + 1))
 
-    # Define the workflow stages (different for refinement runs)
+    # Define the workflow stages (different for refinement runs and direct eval mode)
     if sampler.is_refinement_run:
         stages = ['REFINEMENT_LBFGSB']
         if sampler.patching_refined:
             stages.append('PATCHING_WAVES')
         print("--- Refinement mode: Using direct LBFGSB optimization ---")
+    elif sampler.direct_eval_mode:
+        # Direct evaluation mode: skip DE and L-BFGS-B stages
+        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION']
+        print("--- Direct Evaluation Mode: Skipping DE and L-BFGS-B stages ---")
     else:
         stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP']
         if sampler.patching_coarse:

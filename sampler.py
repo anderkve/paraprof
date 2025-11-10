@@ -171,14 +171,6 @@ class GridAnchoredDESampler:
             raise ValueError("Length of projection_dims must match length of grid_points_per_dim.")
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
-        if len(self.projection_dims) >= self.dims:
-            raise ValueError(
-                f"Invalid projection configuration: projection_dims={self.projection_dims} "
-                f"uses all {self.dims} dimensions. ParaProf requires at least 1 continuous "
-                f"dimension to optimize. For a {self.dims}D function, use at most "
-                f"{self.dims-1} projection dimensions. Example: for 2D functions use "
-                f"dims=[0] or dims=[1], not dims=[0,1]."
-            )
 
         # Read optional flags from projection config
         self.enable_lbfgsb = projection_config.get('lbfgsb', True)
@@ -202,6 +194,20 @@ class GridAnchoredDESampler:
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
         self.n_cont_dims = len(self.continuous_dims)
+
+        # Detect direct evaluation mode (no continuous dimensions to optimize)
+        self.direct_eval_mode = (self.n_cont_dims == 0)
+
+        if self.direct_eval_mode:
+            print("\n" + "!"*80)
+            print("  DIRECT EVALUATION MODE")
+            print("  " + "-"*76)
+            print(f"  Grid dimensionality equals function dimensionality ({self.dims}D)")
+            print("  No continuous dimensions to optimize - will evaluate at grid points directly")
+            print("  Workflow: Initial optimization → Sparse grid activation → Direct evaluation")
+            print("  Skipping: DE optimization and L-BFGS-B refinement stages")
+            print("  Benefit: Efficient sparse likelihood map vs. dense grid scanning")
+            print("!"*80 + "\n")
 
         self.grid_shape = tuple(self.grid_points_per_dim)
 
@@ -265,18 +271,27 @@ class GridAnchoredDESampler:
         solutions = {}
 
         for grid_idx, state in self.population.items():
-            # Only export converged/optimized points
-            if state['status'] in ['converged', 'optimized']:
-                best_ind_idx = np.argmax(state['fitnesses'])
-                continuous_params = state['continuous_params'][best_ind_idx]
-                likelihood = state['fitnesses'][best_ind_idx]
-                full_params = self._construct_params(grid_idx, continuous_params)
+            if self.direct_eval_mode:
+                # Direct evaluation mode: simpler state structure
+                if state['status'] == 'evaluated':
+                    solutions[grid_idx] = {
+                        'continuous_params': np.empty(0),  # Empty array
+                        'likelihood': state['fitness'],
+                        'full_params': state['full_params'].copy()
+                    }
+            else:
+                # Normal mode: only export converged/optimized points
+                if state['status'] in ['converged', 'optimized']:
+                    best_ind_idx = np.argmax(state['fitnesses'])
+                    continuous_params = state['continuous_params'][best_ind_idx]
+                    likelihood = state['fitnesses'][best_ind_idx]
+                    full_params = self._construct_params(grid_idx, continuous_params)
 
-                solutions[grid_idx] = {
-                    'continuous_params': continuous_params.copy(),
-                    'likelihood': likelihood,
-                    'full_params': full_params.copy()
-                }
+                    solutions[grid_idx] = {
+                        'continuous_params': continuous_params.copy(),
+                        'likelihood': likelihood,
+                        'full_params': full_params.copy()
+                    }
 
         return {
             'grid_axes': [ax.copy() for ax in self.grid_axes],
@@ -533,6 +548,10 @@ class GridAnchoredDESampler:
             current projection, or None if pool is empty
         """
         if not self.global_solution_pool or n_samples == 0:
+            return None
+
+        # In direct evaluation mode, there are no continuous dimensions to sample
+        if self.direct_eval_mode:
             return None
 
         # Sample with replacement if needed
