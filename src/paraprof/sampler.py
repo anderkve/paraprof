@@ -5,9 +5,9 @@ import os
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
-from jobs.lbfgsb_job import LBFGSBJob
-from jobs.activation_job import ActivationJob
-from jobs.de_job import DEGridPointJob
+from .jobs.lbfgsb_job import LBFGSBJob
+from .jobs.activation_job import ActivationJob
+from .jobs.de_job import DEGridPointJob
 
 
 class GridAnchoredDESampler:
@@ -313,7 +313,7 @@ class GridAnchoredDESampler:
         refinement_factor : int
             Grid refinement factor (e.g., 2 for 2x finer grid in each dimension)
         """
-        from interpolation import GridInterpolator
+        from .interpolation import GridInterpolator
 
         self.is_refinement_run = True
         self.refinement_factor = refinement_factor
@@ -1115,7 +1115,7 @@ class GridAnchoredDESampler:
         next_job_id : int
             Updated job ID counter
         """
-        from jobs.patching_test_job import PatchingTestJob
+        from .jobs.patching_test_job import PatchingTestJob
 
         # Determine candidate grid points for this wave
         if wave_number == 0:
