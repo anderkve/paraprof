@@ -348,16 +348,19 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # Define the workflow stages (different for refinement runs only)
     if sampler.is_refinement_run:
         stages = ['REFINEMENT_LBFGSB']
-        if sampler.patching_refined:
+        # Disable patching in direct evaluation mode (no continuous params to share)
+        if sampler.patching_refined and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
         print("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
         # Normal mode: always use full workflow (DE handles direct eval mode gracefully)
         stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP']
-        if sampler.patching_coarse:
+        # Disable patching in direct evaluation mode (no continuous params to share)
+        if sampler.patching_coarse and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
         if sampler.direct_eval_mode:
             print("--- Direct Evaluation Mode: Using degenerate DE workflow (pop=1, immediate convergence) ---")
+            print("    Patching automatically disabled (no continuous parameters to share)")
 
     current_stage = stages.pop(0) if stages else None
 
