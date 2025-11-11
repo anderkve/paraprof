@@ -138,7 +138,7 @@ def run_projection(comm, sampler, projection_config,
 
     # Save coarse plot if requested
     if save_plots:
-        from visualization import plot_profiles
+        from .visualization import plot_profiles
         plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse"
         plot_profiles(sampler, plot_filename, plot_settings)
 
@@ -179,7 +179,7 @@ def run_projection(comm, sampler, projection_config,
 
         # Save refined plot if requested
         if save_plots:
-            from visualization import plot_profiles
+            from .visualization import plot_profiles
             plot_filename = f"profile_plot_rank_{myrank}_dims_{dims_str}_refined"
             plot_profiles(sampler, plot_filename, plot_settings)
 
