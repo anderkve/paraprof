@@ -32,9 +32,13 @@ np.random.seed(750123)
 
 # TEST_FUNCTION = "rosenbrock_6d"
 # TEST_FUNCTION = "sphere_6d"
-TEST_FUNCTION = "beale_2d"
+# TEST_FUNCTION = "beale_2d"
 # TEST_FUNCTION = "eggholder_2d"
-# TEST_FUNCTION = "michalewicz_4d"
+# TEST_FUNCTION = "eggholder_4d"
+# TEST_FUNCTION = "rastrigin_2d"
+# TEST_FUNCTION = "ackley_4d"
+# TEST_FUNCTION = "michalewicz_2d"
+TEST_FUNCTION = "michalewicz_4d"
 
 # ============================================================================
 # PROJECTION CONFIGURATION GUIDE
@@ -58,7 +62,7 @@ TEST_FUNCTION = "beale_2d"
 PROJECTIONS_TO_RUN = [
     # For 2D functions with DIRECT EVALUATION MODE (projects onto both dims)
     # Iteration 4: Higher resolution grid for better coverage
-    {'dims': [0, 1], 'grid_points': [300, 300], 'enable_refinement': False, 'refinement_factor': 1},
+    {'dims': [0, 1], 'grid_points': [100, 100], 'enable_refinement': True, 'refinement_factor': 2},
 
     # Alternative: 1D projections with optimization (one continuous dim)
     # {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -89,8 +93,8 @@ if myrank == 0:
         pop_per_grid_point=3,
         mutation_strategy='current-to-pbest/1',
         pbest_fraction=0.1,
-        n_initial_optimizations=100,  # Iteration 4: More for finer grid
-        roi_threshold=4.0,          # Iteration 4: Keep threshold
+        n_initial_optimizations=100,
+        roi_threshold=1.5,
         convergence_threshold=1e-7,
         convergence_window=3,
         neighbor_pull_probability=0.5,
