@@ -673,7 +673,7 @@ Note: Benchmarks must be run with mpiexec and at least 2 processes.
                 run_all_benchmarks(output_dir=args.output)
             else:
                 if args.benchmark == 'grid_sizes':
-                    suite.benchmark_grid_sizes(grid_sizes=[10, 12, 15, 18, 20], num_cores=num_cores)
+                    suite.benchmark_grid_sizes(grid_sizes=[10, 20, 40, 80], num_cores=num_cores)
                 elif args.benchmark == 'mutation_strategies':
                     suite.benchmark_mutation_strategies(grid_size=args.grid_size, num_cores=num_cores)
                 elif args.benchmark == 'convergence':
