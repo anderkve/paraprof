@@ -1,13 +1,16 @@
 """
 MPI worker process logic.
 """
+import sys
 import numpy as np
+from .logger import setup_logger
+
 try:
     from mpi4py import MPI
 except ImportError:
-    print("Error: mpi4py is not installed. This script requires MPI.")
-    print("Please install it with: pip install mpi4py")
-    import sys
+    # Can't use logger here since MPI isn't available yet
+    print("Error: mpi4py is not installed. This script requires MPI.", file=sys.stderr)
+    print("Please install it with: pip install mpi4py", file=sys.stderr)
     sys.exit(1)
 
 TASK_TERMINATE = -1
@@ -23,16 +26,18 @@ def worker_main(comm, myrank):
     myrank : int
         Worker rank
     """
+    logger = setup_logger(rank=myrank)
+
     # First, receive the target function from the master.
     target_func = comm.bcast(None, root=0)
-    print(f"Worker {myrank}: Received target function. Ready for tasks.")
+    logger.info("Received target function. Ready for tasks.")
 
     while True:
         # Wait for a task from the master
         task = comm.recv(source=0, tag=MPI.ANY_TAG)
 
         if task == TASK_TERMINATE:
-            print(f"Worker {myrank}: Received terminate signal. Exiting.")
+            logger.info("Received terminate signal. Exiting.")
             break
 
         # Execute the task (a single target evaluation)
@@ -40,7 +45,7 @@ def worker_main(comm, myrank):
         try:
             target_val = target_func(params)
         except Exception as e:
-            print(f"Worker {myrank}: Error evaluating target function at params {params}: {e}")
+            logger.error(f"Error evaluating target function at params {params}: {e}")
             target_val = -np.inf  # Return -inf for failed evaluations
 
         # Send the result back to the master

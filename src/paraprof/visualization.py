@@ -4,6 +4,9 @@ Supports 1D, 2D, and N-D projections.
 """
 import numpy as np
 import itertools
+from .logger import get_logger
+
+logger = get_logger()
 
 
 def plot_profiles(sampler, filename, plot_settings=None):
@@ -30,7 +33,7 @@ def plot_profiles(sampler, filename, plot_settings=None):
         matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
     except ImportError:
-        print("\nMatplotlib not found. Skipping visualization.")
+        logger.info("\nMatplotlib not found. Skipping visualization.")
         return
 
     # Set default plot settings
@@ -45,7 +48,7 @@ def plot_profiles(sampler, filename, plot_settings=None):
     elif sampler.n_proj_dims >= 3:
         _plot_nd_profile(sampler, filename, plot_settings)
     else:
-        print(f"Invalid projection dimensions: {sampler.n_proj_dims}")
+        logger.info(f"Invalid projection dimensions: {sampler.n_proj_dims}")
 
 
 def _plot_1d_profile(sampler, filename, plot_settings):
@@ -116,7 +119,7 @@ def _plot_1d_profile(sampler, filename, plot_settings):
     output_filename = f"{filename}.{filetype}"
     fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
-    print(f"Saved 1D plot to: {output_filename}")
+    logger.info(f"Saved 1D plot to: {output_filename}")
 
 
 def _plot_2d_profile(sampler, filename, plot_settings):
@@ -194,7 +197,7 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     output_filename = f"{filename}.{filetype}"
     fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
-    print(f"Saved 2D plot to: {output_filename}")
+    logger.info(f"Saved 2D plot to: {output_filename}")
 
 
 def _plot_nd_profile(sampler, filename, plot_settings):
@@ -235,7 +238,7 @@ def _plot_nd_profile(sampler, filename, plot_settings):
             max_grid_idx = grid_idx
 
     if max_grid_idx is None:
-        print("No profile likelihood data found. Skipping plot.")
+        logger.info("No profile likelihood data found. Skipping plot.")
         return
 
     # Generate all pairwise dimension combinations
@@ -306,7 +309,7 @@ def _plot_nd_profile(sampler, filename, plot_settings):
     output_filename = f"{filename}.{filetype}"
     fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
-    print(f"Saved {n_dims}D plot ({n_pairs} slices) to: {output_filename}")
+    logger.info(f"Saved {n_dims}D plot ({n_pairs} slices) to: {output_filename}")
 
 
 def _extract_2d_slice(sampler, dim_i, dim_j, anchor_idx):

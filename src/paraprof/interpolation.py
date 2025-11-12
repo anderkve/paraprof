@@ -3,6 +3,9 @@ Grid interpolation utilities for refinement runs.
 """
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
+from .logger import get_logger
+
+logger = get_logger()
 
 
 class GridInterpolator:
@@ -71,12 +74,12 @@ class GridInterpolator:
             n_valid = np.sum(valid_mask)
 
             if n_valid == 0:
-                print(f"Warning: No valid data for continuous dim {cont_dim_idx}. "
+                logger.warning(f" No valid data for continuous dim {cont_dim_idx}. "
                       f"Interpolator will return NaN.")
                 # Create dummy interpolator that returns NaN
                 interpolator = None
             elif n_valid < 2**self.n_proj_dims:
-                print(f"Warning: Sparse data ({n_valid} points) for continuous dim {cont_dim_idx}. "
+                logger.warning(f" Sparse data ({n_valid} points) for continuous dim {cont_dim_idx}. "
                       f"Using nearest neighbor interpolation.")
                 # Use nearest neighbor for sparse data
                 interpolator = RegularGridInterpolator(
@@ -133,7 +136,7 @@ class GridInterpolator:
                 try:
                     interpolated_params[i] = interpolator(coords_for_interp)[0]
                 except Exception as e:
-                    print(f"Warning: Interpolation failed for continuous dim {i}: {e}")
+                    logger.warning(f"Warning: Interpolation failed for continuous dim {i}: {e}")
                     interpolated_params[i] = np.nan
 
         return interpolated_params

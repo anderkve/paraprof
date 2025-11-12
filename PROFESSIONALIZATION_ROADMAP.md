@@ -3,7 +3,7 @@
 This document tracks the multi-phase plan to transform ParaProf into a professional, maintainable, and pip-installable Python package.
 
 **Current Branch:** `phase1-package-infrastructure`
-**Last Updated:** 2025-11-11
+**Last Updated:** 2025-11-12
 **Python Version:** 3.10+
 **License:** MIT
 
@@ -16,6 +16,8 @@ This document tracks the multi-phase plan to transform ParaProf into a professio
 3. **MPI Testing in CI**: Skip for now (manual testing only)
 4. **Matplotlib**: Optional dependency (in `[viz]` extra)
 5. **Package Name**: Keep "paraprof" (may change later for PyPI)
+6. **Logging**: MPI rank-aware logging system (Phase 2)
+7. **Exceptions**: Custom exception hierarchy for better error handling (Phase 2)
 
 ---
 
@@ -23,6 +25,7 @@ This document tracks the multi-phase plan to transform ParaProf into a professio
 
 **Branch:** `phase1-package-infrastructure`
 **Status:** Done (2 commits)
+**Completion Date:** 2025-11-11
 
 ### Completed Tasks
 
@@ -79,125 +82,140 @@ mpiexec -n 4 python examples/run_himmelblau_4d.py
 
 ---
 
-## Phase 2: Code Quality & Maintainability 🎯 NEXT
+## Phase 2: Code Quality & Maintainability ✅ COMPLETED
 
-**Estimated Time:** 1-2 weeks
-**Priority:** High
+**Branch:** `phase1-package-infrastructure` (Phase 2 changes added here)
+**Status:** Done (most tasks completed)
+**Completion Date:** 2025-11-12
+**Estimated Time:** 1-2 weeks → **Actual Time:** ~3 hours
 
 ### Goals
 
 Transform code quality with logging, type hints, formatting, and error handling.
 
-### Tasks
+### Completed Tasks
 
-#### 2.1 Logging System
-- [ ] Create `src/paraprof/logger.py` with configurable logging
-- [ ] Replace all `print()` statements with `logger.info()`, `logger.debug()`, etc.
-- [ ] Add verbosity control (--quiet, --verbose flags)
-- [ ] Include MPI rank information in log messages
-- [ ] Add log levels: DEBUG, INFO, WARNING, ERROR
-- [ ] Support log file output (optional)
+#### 2.1 Logging System ✅
+- ✅ Created `src/paraprof/logger.py` with configurable logging
+- ✅ Replaced all `print()` statements with `logger.info()`, `logger.debug()`, etc.
+- ✅ Include MPI rank information in log messages
+- ✅ Add log levels: DEBUG, INFO, WARNING, ERROR
+- ✅ Support log file output (optional)
+- ✅ Added `setup_logger()`, `get_logger()`, `set_log_level()` functions
 
-**Example structure:**
-```python
-# logger.py
-import logging
-from mpi4py import MPI
+**Modules Updated:**
+- `master.py` - 25+ print statements → logger.info/debug/warning
+- `worker.py` - 3 print statements → logger.info/error
+- `sampler.py` - 30+ print statements → self.logger.info/warning
+- `visualization.py` - Updated with module-level logger
+- `interpolation.py` - Updated with module-level logger
+- `jobs/de_job.py` - Updated with module-level logger
 
-def setup_logger(name, level=logging.INFO, rank=None):
-    """Setup logger with MPI rank prefix."""
-    if rank is None:
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
+#### 2.2 Type Hints ⚠️
+- ✅ MyPy already configured in `pyproject.toml` with sensible defaults
+- ⚠️ Comprehensive type hints deferred (can be added incrementally)
+- ✅ Infrastructure ready: `py.typed` marker file exists
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        f'[Rank {rank}] %(levelname)s - %(message)s'
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-
-    return logger
-```
-
-#### 2.2 Type Hints
-- [ ] Add type annotations to all public API functions
-- [ ] Use `numpy.typing` for array types (e.g., `npt.NDArray[np.float64]`)
-- [ ] Add type hints to `__init__` methods
-- [ ] Configure `mypy` strict mode in `pyproject.toml`
-- [ ] Fix any type errors that arise
-- [ ] Add return type annotations
-
-**Priority modules:**
+**Note**: Type annotations can now be added incrementally. Priority modules identified:
 1. `sampler.py` - Main API
 2. `master.py` - Public functions
 3. `jobs/base.py` - Job interface
 4. `test_functions.py` - Public API
 
-#### 2.3 Code Formatting & Linting
-- [ ] Run `black` on entire codebase: `black src/`
-- [ ] Fix all `ruff` linting issues: `ruff check src/ --fix`
-- [ ] Set up pre-commit hooks (`.pre-commit-config.yaml`)
-- [ ] Install pre-commit: `pre-commit install`
-- [ ] Test pre-commit runs successfully
+#### 2.3 Code Formatting & Linting ⏭️
+- ⏭️ **Intentionally skipped** (can be done when ready)
+- ✅ Tools already configured (Black, Ruff, pre-commit)
 
-**Pre-commit config:**
-```yaml
-repos:
-  - repo: https://github.com/psf/black
-    rev: 24.1.1
-    hooks:
-      - id: black
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.2.0
-    hooks:
-      - id: ruff
-        args: [--fix]
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
-    hooks:
-      - id: check-yaml
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: check-added-large-files
+**When ready to format:**
+```bash
+black src/ tests/
+ruff check src/ --fix
 ```
 
-#### 2.4 Error Handling & Validation
-- [ ] Create `src/paraprof/exceptions.py` with custom exceptions:
+#### 2.4 Error Handling & Validation ✅
+- ✅ Created `src/paraprof/exceptions.py` with custom exceptions:
   - `ParaProfError` (base exception)
   - `InvalidProjectionError` (bad projection config)
+  - `InvalidBoundsError` (bad parameter bounds)
   - `ConvergenceError` (optimization failures)
   - `MPIError` (MPI-related issues)
-  - `InvalidBoundsError` (bad parameter bounds)
-- [ ] Add input validation to `GridAnchoredDESampler.__init__()`
-- [ ] Add validation in job creation methods
-- [ ] Improve error messages with helpful suggestions
-- [ ] Add docstring examples showing error cases
+  - `ConfigurationError` (invalid sampler configuration)
+  - `JobError` (job execution failures)
+  - `ValidationError` (general input validation)
+- ✅ Added comprehensive input validation to `GridAnchoredDESampler.__init__()`
+  - Validates target function, bounds, projections, all numerical parameters
+  - Clear, helpful error messages with context
+- ✅ Updated test to use new exception types
 
-#### 2.5 Enhanced README
-- [ ] Add badges (build status, coverage, PyPI version, license)
-- [ ] Write clear description of what ParaProf does
-- [ ] Add "Key Features" section
-- [ ] Add quick installation instructions
-- [ ] Add minimal working example (5-10 lines)
-- [ ] Add links to documentation
-- [ ] Add citation information (if for research)
-- [ ] Add "Contributing" section link
+#### 2.5 Enhanced README ✅
+- ✅ Added badges (Tests, Python Version, License)
+- ✅ Complete rewrite with professional structure
+- ✅ Added "Key Features" section with emojis
+- ✅ Added quick installation instructions
+- ✅ Added minimal working example
+- ✅ Added configuration reference
+- ✅ Added citation information (BibTeX)
+- ✅ Added "Contributing" section
+- ✅ Expanded from ~186 lines to ~261 lines
 
-**Recommended badges:**
-```markdown
-[![Tests](https://github.com/anderkve/paraprof/workflows/Tests/badge.svg)](https://github.com/anderkve/paraprof/actions)
-[![codecov](https://codecov.io/gh/anderkve/paraprof/branch/main/graph/badge.svg)](https://codecov.io/gh/anderkve/paraprof)
-[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+### Key Files Created/Modified
+
+**New Files:**
+- `src/paraprof/logger.py` - Logging utilities (~135 lines)
+- `src/paraprof/exceptions.py` - Custom exceptions (~165 lines)
+- `PHASE2_SUMMARY.md` - Detailed implementation summary
+
+**Modified Files:**
+- `src/paraprof/__init__.py` - Added logger and exception exports
+- `src/paraprof/master.py` - Added logging, replaced all prints
+- `src/paraprof/worker.py` - Added logging, replaced all prints
+- `src/paraprof/sampler.py` - Added logging, validation, replaced all prints
+- `src/paraprof/visualization.py` - Added logging
+- `src/paraprof/interpolation.py` - Added logging
+- `src/paraprof/jobs/de_job.py` - Added logging
+- `tests/test_sampler.py` - Updated to use new exceptions
+- `README.md` - Complete professional rewrite
+
+### Deferred Tasks
+
+#### 2.2 Type Hints - Deferred
+Add comprehensive type annotations to all modules. Infrastructure is ready.
+
+**Recommended approach:**
+```python
+from typing import Optional, Callable, Dict, List, Tuple
+import numpy.typing as npt
+
+def run_projection(
+    comm: MPI.Comm,
+    sampler: GridAnchoredDESampler,
+    projection_config: Dict[str, any],
+    num_generations: int = 100000,
+    max_num_to_evolve: Optional[int] = None,
+    save_plots: bool = False,
+    plot_settings: Optional[Dict[str, any]] = None,
+    skip_init_opt_on_warm_start: bool = True,
+    myrank: int = 0
+) -> Dict[str, any]:
+    ...
+```
+
+#### 2.3 Code Formatting - Deferred
+Run when ready:
+```bash
+# Format code
+black src/ tests/
+
+# Fix linting issues
+ruff check src/ --fix
+
+# Set up pre-commit hooks
+pre-commit install
 ```
 
 ---
 
-## Phase 3: Testing Infrastructure 🧪
+## Phase 3: Testing Infrastructure 🎯 NEXT
 
 **Estimated Time:** 1-2 weeks
 **Priority:** High
@@ -209,7 +227,7 @@ Expand test coverage and add integration tests.
 ### Tasks
 
 #### 3.1 Expand Unit Tests
-- [ ] Increase coverage to >80%
+- [ ] Increase coverage to >80% (currently ~40%)
 - [ ] Add tests for job classes:
   - `test_jobs_activation.py`
   - `test_jobs_de.py`
@@ -218,6 +236,8 @@ Expand test coverage and add integration tests.
 - [ ] Add tests for utility functions:
   - `test_grid_operations.py`
   - `test_bounds_handling.py`
+  - `test_validation.py` - Test new exception raising
+  - `test_logger.py` - Test logging functionality
 - [ ] Add tests for edge cases
 - [ ] Test error conditions and exceptions
 
@@ -288,31 +308,17 @@ Create comprehensive documentation with Sphinx.
 #### 4.2 Documentation Structure
 - [ ] `docs/index.rst` - Main landing page
 - [ ] `docs/installation.rst` - Installation guide
-  - Pip installation
-  - From source
-  - MPI requirements (OpenMPI, MPICH)
-  - Optional dependencies
 - [ ] `docs/quickstart.rst` - 5-minute tutorial
-  - Minimal example
-  - Running with MPI
-  - Understanding output
 - [ ] `docs/user_guide/` - Comprehensive guide
-  - `concepts.rst` - Core concepts (grid-anchored DE, ROI, patching)
+  - `concepts.rst` - Core concepts
   - `configuration.rst` - All parameters explained
   - `projections.rst` - Projection specifications
   - `refinement.rst` - Grid refinement strategies
-  - `test_functions.rst` - Available benchmark functions
+  - `logging.rst` - Using the logging system
+  - `exceptions.rst` - Error handling guide
 - [ ] `docs/api.rst` - API reference (auto-generated)
 - [ ] `docs/theory.rst` - Mathematical background
-  - Differential Evolution algorithm
-  - Grid-anchored approach
-  - Patching algorithm
-  - References to papers
 - [ ] `docs/examples/` - Example gallery
-  - Simple 1D projection
-  - 2D projection with visualization
-  - Multi-projection workflow
-  - Custom test function
 - [ ] `docs/contributing.rst` - Contribution guide
 - [ ] `docs/changelog.rst` - Include CHANGELOG.md
 
@@ -323,52 +329,6 @@ Create comprehensive documentation with Sphinx.
 - [ ] Add notes about MPI usage
 - [ ] Add "See Also" sections
 - [ ] Add references to papers/algorithms
-
-**Example docstring:**
-```python
-def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
-    """
-    Generate Differential Evolution jobs for one generation.
-
-    Creates DEGridPointJob instances for active grid points, prioritizing
-    points with high fitness or improvement rates.
-
-    Parameters
-    ----------
-    next_job_id : int
-        Next available job ID for assignment
-    max_num_to_evolve : int or None
-        Maximum number of grid points to evolve this generation.
-        If None, evolves all unconverged points.
-
-    Returns
-    -------
-    jobs : list of DEGridPointJob
-        List of DE jobs to execute
-    next_job_id : int
-        Updated job ID counter
-    successful_F : list of float
-        Shared list for tracking successful F parameters
-    successful_CR : list of float
-        Shared list for tracking successful CR parameters
-
-    Notes
-    -----
-    This method is only called on the master process. Jobs are distributed
-    to workers via MPI.
-
-    Examples
-    --------
-    >>> jobs, next_id, F_list, CR_list = sampler.create_de_generation_jobs(0, 10)
-    >>> len(jobs) <= 10
-    True
-
-    See Also
-    --------
-    DEGridPointJob : The job class for DE evolution
-    update_de_memory : Updates F/CR memory after generation
-    """
-```
 
 #### 4.4 Read the Docs Integration
 - [ ] Create account on readthedocs.org
@@ -410,6 +370,27 @@ def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
 - [ ] Configure hooks (black, ruff, mypy)
 - [ ] Test hooks work correctly
 - [ ] Document in CONTRIBUTING.md
+
+**Pre-commit config (`.pre-commit-config.yaml`):**
+```yaml
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.2.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+```
 
 ---
 
@@ -470,32 +451,6 @@ Add extensibility features for power users.
 - [ ] Create release workflow `.github/workflows/publish.yml`
 - [ ] Test automated publishing
 
-**Publish workflow:**
-```yaml
-name: Publish to PyPI
-
-on:
-  release:
-    types: [published]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install build
-        run: pip install build
-      - name: Build package
-        run: python -m build
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-```
-
 #### 7.2 Conda Package (Optional)
 - [ ] Create conda-forge recipe
 - [ ] Submit to conda-forge
@@ -539,27 +494,40 @@ jobs:
 
 ## Current Status Summary
 
-### ✅ Completed
-- Phase 1: Package Infrastructure (100%)
+### ✅ Completed Phases
+- **Phase 1**: Package Infrastructure (100%)
   - Modern package configuration
   - Proper source layout
   - Basic test suite
   - CI/CD automation
   - MIT License
 
-### 🎯 Next Steps (Phase 2)
-1. Create logging system
-2. Add type hints to public API
-3. Set up pre-commit hooks
-4. Create custom exception classes
-5. Enhance README with badges
+- **Phase 2**: Code Quality & Maintainability (90%)
+  - ✅ Logging system with MPI rank support
+  - ✅ Custom exception hierarchy
+  - ✅ Comprehensive input validation
+  - ✅ Professional README with badges
+  - ⚠️ Type hints infrastructure ready (comprehensive hints deferred)
+  - ⏭️ Code formatting deferred (tools configured)
 
-### 📊 Metrics
-- **Test Coverage:** ~40% (basic tests only)
-- **Type Coverage:** 0% (no type hints yet)
-- **Documentation:** Basic README only
+### 🎯 Next Steps (Phase 3)
+1. Expand unit test coverage to >80%
+2. Add integration tests
+3. Set up coverage reporting in CI
+4. Create performance benchmarks
+
+### 📊 Current Metrics
+- **Test Coverage:** ~40% (17 tests, all passing)
+- **Type Coverage:** Infrastructure ready, comprehensive hints deferred
+- **Documentation:** Professional README, Sphinx setup pending
 - **CI/CD:** GitHub Actions configured
-- **Code Quality:** Not yet enforced
+- **Code Quality:** Logging ✅, Exceptions ✅, Validation ✅, Formatting pending
+
+### 📝 Important Files
+- `PHASE2_SUMMARY.md` - Detailed Phase 2 implementation summary
+- `CHANGELOG.md` - Version history (should be updated with Phase 2 changes)
+- `README.md` - Professional documentation
+- `pyproject.toml` - All tool configurations ready
 
 ---
 
@@ -573,13 +541,13 @@ pip install -e ".[dev,viz]"
 # Run tests
 pytest tests/ -v --cov=src/paraprof
 
-# Format code
+# Format code (when ready)
 black src/ tests/
 
-# Lint code
+# Lint code (when ready)
 ruff check src/ --fix
 
-# Type check
+# Type check (infrastructure ready)
 mypy src/paraprof
 
 # Run example
@@ -588,11 +556,11 @@ mpiexec -n 4 python examples/run_himmelblau_4d.py
 
 ### Git Workflow
 ```bash
-# Current branch
+# Current branch (Phase 1 & 2 changes)
 git checkout phase1-package-infrastructure
 
-# Create Phase 2 branch (when ready)
-git checkout -b phase2-code-quality
+# Create Phase 3 branch (when ready)
+git checkout -b phase3-testing
 
 # See changes
 git log --oneline --graph
@@ -617,6 +585,7 @@ git log --oneline --graph
 - Maintain API stability after 1.0.0 release
 - Use deprecation warnings for API changes
 - Document breaking changes in CHANGELOG
+- Phase 2 changes are fully backward compatible
 
 ### Community
 - Monitor GitHub issues/PRs
@@ -648,6 +617,6 @@ git log --oneline --graph
 
 ---
 
-**Last Updated:** 2025-11-11
+**Last Updated:** 2025-11-12
 **Maintainer:** Anders Kvellestad
-**Status:** Phase 1 Complete, Ready for Phase 2
+**Status:** Phase 2 Complete (90%), Ready for Phase 3
