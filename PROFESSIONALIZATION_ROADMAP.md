@@ -3,7 +3,7 @@
 This document tracks the multi-phase plan to transform ParaProf into a professional, maintainable, and pip-installable Python package.
 
 **Current Branch:** `phase1-package-infrastructure`
-**Last Updated:** 2025-11-12
+**Last Updated:** 2025-11-12 (Phase 3.3 complete)
 **Python Version:** 3.10+
 **License:** MIT
 
@@ -215,10 +215,11 @@ pre-commit install
 
 ---
 
-## Phase 3: Testing Infrastructure 🎯 NEXT
+## Phase 3: Testing Infrastructure 🔄 IN PROGRESS
 
 **Estimated Time:** 1-2 weeks
 **Priority:** High
+**Status:** Phase 3.3 complete (Performance Benchmarks)
 
 ### Goals
 
@@ -269,12 +270,38 @@ def test_complete_workflow_2d():
     # Assert results are reasonable
 ```
 
-#### 3.3 Performance Benchmarks
-- [ ] Create `benchmarks/benchmark_suite.py`
-- [ ] Benchmark different grid sizes
-- [ ] Benchmark different mutation strategies
-- [ ] Track function evaluation counts
-- [ ] Compare serial vs parallel performance
+#### 3.3 Performance Benchmarks ✅
+- ✅ Create `benchmarks/benchmark_suite.py`
+- ✅ Benchmark different grid sizes
+- ✅ Benchmark different mutation strategies
+- ✅ Track function evaluation counts
+- ✅ Benchmark convergence efficiency
+- ✅ Benchmark refinement efficiency
+- ✅ Compare performance across test functions
+- ✅ Create `benchmarks/README.md` with usage instructions
+- ✅ JSON output for results tracking
+
+**Files Created:**
+- `benchmarks/benchmark_suite.py` - Complete benchmark suite (~690 lines)
+- `benchmarks/README.md` - Documentation and usage guide
+
+**Key Features:**
+- 5 comprehensive benchmark types (grid sizes, mutation strategies, convergence, refinement, test functions)
+- MPI-aware benchmarking with proper worker management
+- JSON result output with timestamps and metrics
+- Command-line interface for running specific or all benchmarks
+- Tracks timing, evaluation counts, and solution quality metrics
+
+**Usage:**
+```bash
+# Run all benchmarks
+mpiexec -n 4 python benchmarks/benchmark_suite.py --all
+
+# Run specific benchmark
+mpiexec -n 4 python benchmarks/benchmark_suite.py --benchmark grid_sizes
+```
+
+**Completion Date:** 2025-11-12
 
 #### 3.4 Continuous Integration Enhancements
 - [ ] Add coverage reporting to GitHub Actions
@@ -513,8 +540,8 @@ Add extensibility features for power users.
 ### 🎯 Next Steps (Phase 3)
 1. Expand unit test coverage to >80%
 2. Add integration tests
-3. Set up coverage reporting in CI
-4. Create performance benchmarks
+3. ✅ Create performance benchmarks (Phase 3.3 complete)
+4. Set up coverage reporting in CI
 
 ### 📊 Current Metrics
 - **Test Coverage:** ~40% (17 tests, all passing)
