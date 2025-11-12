@@ -90,10 +90,12 @@ class TestGridAnchoredDESampler:
 
     def test_invalid_projection_raises_error(self, simple_2d_function, simple_bounds_2d):
         """Test that invalid projections raise errors."""
+        from paraprof.exceptions import InvalidProjectionError
+
         # Dimension out of bounds
         invalid_projection = {'dims': [5], 'grid_points': [10]}
 
-        with pytest.raises(ValueError, match="out of bounds"):
+        with pytest.raises(InvalidProjectionError, match="invalid dimension index"):
             sampler = GridAnchoredDESampler(
                 target_func=simple_2d_function,
                 bounds=simple_bounds_2d,

@@ -5,6 +5,7 @@ import os
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
+from .logger import get_logger
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
@@ -86,10 +87,123 @@ class GridAnchoredDESampler:
         samples_output_file : str, optional
             File to save sampled points
         """
-        self.target_func = target_func
+        from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
+
+        # --- Input Validation ---
+
+        # Validate target function
+        if not callable(target_func):
+            raise ConfigurationError("target_func must be callable", parameter="target_func", value=target_func)
+
+        # Validate and set bounds
         self.bounds = np.array(bounds)
+        if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
+            raise InvalidBoundsError(
+                f"bounds must be shape (n_dims, 2), got {self.bounds.shape}",
+                bounds=bounds
+            )
+        if np.any(self.bounds[:, 0] >= self.bounds[:, 1]):
+            raise InvalidBoundsError(
+                "Lower bounds must be < upper bounds for all dimensions",
+                bounds=bounds
+            )
+
+        self.target_func = target_func
         self.dims = len(self.bounds)
+
+        # Validate projections
+        if not isinstance(projections, list) or len(projections) == 0:
+            raise InvalidProjectionError("projections must be a non-empty list")
+
+        for i, proj in enumerate(projections):
+            if not isinstance(proj, dict):
+                raise InvalidProjectionError(f"Projection {i} must be a dictionary", projection=proj)
+            if 'dims' not in proj:
+                raise InvalidProjectionError(f"Projection {i} missing 'dims' key", projection=proj)
+            if 'grid_points' not in proj:
+                raise InvalidProjectionError(f"Projection {i} missing 'grid_points' key", projection=proj)
+
+            dims = proj['dims']
+            grid_points = proj['grid_points']
+
+            if not isinstance(dims, (list, tuple)) or len(dims) == 0:
+                raise InvalidProjectionError(
+                    f"Projection {i} 'dims' must be a non-empty list/tuple",
+                    projection=proj
+                )
+            if not isinstance(grid_points, (list, tuple)) or len(grid_points) != len(dims):
+                raise InvalidProjectionError(
+                    f"Projection {i} 'grid_points' length must match 'dims' length",
+                    projection=proj
+                )
+
+            # Check dimension indices are valid
+            for dim in dims:
+                if not isinstance(dim, int) or dim < 0 or dim >= self.dims:
+                    raise InvalidProjectionError(
+                        f"Projection {i} has invalid dimension index {dim} (must be 0-{self.dims-1})",
+                        projection=proj
+                    )
+
+            # Check grid points are positive integers
+            for gp in grid_points:
+                if not isinstance(gp, int) or gp <= 0:
+                    raise InvalidProjectionError(
+                        f"Projection {i} grid_points must be positive integers, got {gp}",
+                        projection=proj
+                    )
+
         self.projections = projections
+
+        # Validate numerical parameters
+        if not isinstance(pop_per_grid_point, int) or pop_per_grid_point < 1:
+            raise ConfigurationError(
+                "pop_per_grid_point must be a positive integer",
+                parameter="pop_per_grid_point",
+                value=pop_per_grid_point
+            )
+
+        if not isinstance(n_initial_optimizations, int) or n_initial_optimizations < 0:
+            raise ConfigurationError(
+                "n_initial_optimizations must be a non-negative integer",
+                parameter="n_initial_optimizations",
+                value=n_initial_optimizations
+            )
+
+        if not isinstance(roi_threshold, (int, float)) or roi_threshold <= 0:
+            raise ConfigurationError(
+                "roi_threshold must be a positive number",
+                parameter="roi_threshold",
+                value=roi_threshold
+            )
+
+        if not isinstance(convergence_threshold, (int, float)) or convergence_threshold <= 0:
+            raise ConfigurationError(
+                "convergence_threshold must be a positive number",
+                parameter="convergence_threshold",
+                value=convergence_threshold
+            )
+
+        if not isinstance(convergence_window, int) or convergence_window < 1:
+            raise ConfigurationError(
+                "convergence_window must be a positive integer",
+                parameter="convergence_window",
+                value=convergence_window
+            )
+
+        if not isinstance(neighbor_pull_probability, (int, float)) or not (0 <= neighbor_pull_probability <= 1):
+            raise ConfigurationError(
+                "neighbor_pull_probability must be between 0 and 1",
+                parameter="neighbor_pull_probability",
+                value=neighbor_pull_probability
+            )
+
+        if not isinstance(pbest_fraction, (int, float)) or not (0 < pbest_fraction <= 1):
+            raise ConfigurationError(
+                "pbest_fraction must be between 0 and 1 (exclusive of 0)",
+                parameter="pbest_fraction",
+                value=pbest_fraction
+            )
 
         # --- Algorithm parameters ---
         self.pop_per_grid_point = pop_per_grid_point
@@ -151,14 +265,17 @@ class GridAnchoredDESampler:
         self.patching_refined = False  # Default to False (controlled per-projection)
 
         # --- Per-Projection State (reset) ---
+        # --- Logger ---
+        self.logger = get_logger()
+
         self._reset_for_new_projection(self.projections[0])
 
 
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""
-        print("\n" + "="*80)
-        print(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
-        print("="*80 + "\n")
+        self.logger.info("=" * 80)
+        self.logger.info(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
+        self.logger.info("=" * 80)
 
         self.projection_dims = sorted(projection_config['dims'])
         # Add +1 to grid points to include both endpoints in linspace
@@ -186,10 +303,10 @@ class GridAnchoredDESampler:
             self.patching_refined = False
 
         # Print configuration
-        print(f"  L-BFGS-B after DE convergence: {'Enabled' if self.enable_lbfgsb else 'Disabled'}")
-        print(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
+        self.logger.info(f"  L-BFGS-B after DE convergence: {'Enabled' if self.enable_lbfgsb else 'Disabled'}")
+        self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
         if self.is_refinement_run:
-            print(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
+            self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
 
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
@@ -199,10 +316,10 @@ class GridAnchoredDESampler:
         self.direct_eval_mode = (self.n_cont_dims == 0)
 
         if self.direct_eval_mode:
-            print()
-            print(f"  NOTE: Grid dimensionality equals function dimensionality ({self.dims}D).")
-            print("  No continuous dimensions to optimize - will evaluate at grid points directly.")
-            print()
+            self.logger.info("")
+            self.logger.info(f"  NOTE: Grid dimensionality equals function dimensionality ({self.dims}D).")
+            self.logger.info("  No continuous dimensions to optimize - will evaluate at grid points directly.")
+            self.logger.info("")
 
         self.grid_shape = tuple(self.grid_points_per_dim)
 
@@ -221,7 +338,7 @@ class GridAnchoredDESampler:
 
         # --- Handle refinement run: Transfer coarse grid solutions to profile grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
-            print("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
+            self.logger.info("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
             coarse_solutions = self.coarse_grid_solution['solutions']
             n_transferred = 0
 
@@ -231,7 +348,7 @@ class GridAnchoredDESampler:
 
                 # Verify the fine grid point is valid
                 if not all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
-                    print(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
+                    self.logger.warning(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
                     continue
 
                 likelihood = solution['likelihood']
@@ -242,8 +359,8 @@ class GridAnchoredDESampler:
 
                 n_transferred += 1
 
-            print(f"Transferred {n_transferred} coarse grid values to profile likelihood grid")
-            print("="*80 + "\n")
+            self.logger.info(f"Transferred {n_transferred} coarse grid values to profile likelihood grid")
+            self.logger.info("=" * 80)
 
 
     def export_grid_solution(self):
@@ -325,16 +442,16 @@ class GridAnchoredDESampler:
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
             self.global_solution_pool = [s.copy() for s in coarse_solution['global_solution_pool']]
-            print(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
+            self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
-        print("\n" + "="*80)
-        print("--- Refinement Run Configuration ---")
-        print(f"Refinement factor: {refinement_factor}x")
-        print(f"Coarse grid shape: {coarse_solution['grid_shape']}")
-        print(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
-        print(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
-        print(f"Global solution pool size: {len(self.global_solution_pool)}")
-        print("="*80 + "\n")
+        self.logger.info("=" * 80)
+        self.logger.info("--- Refinement Run Configuration ---")
+        self.logger.info(f"Refinement factor: {refinement_factor}x")
+        self.logger.info(f"Coarse grid shape: {coarse_solution['grid_shape']}")
+        self.logger.info(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
+        self.logger.info(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
+        self.logger.info(f"Global solution pool size: {len(self.global_solution_pool)}")
+        self.logger.info("=" * 80)
 
 
     def _is_coarse_grid_point(self, fine_idx, refinement_factor):
@@ -423,7 +540,7 @@ class GridAnchoredDESampler:
 
             self.samples_buffer = []
         except IOError as e:
-            print(f"Warning: Could not write to sample file: {e}")
+            self.logger.warning(f"Warning: Could not write to sample file: {e}")
 
 
     def _register_target_call(self, params, target_val):
@@ -574,16 +691,16 @@ class GridAnchoredDESampler:
             Path to CSV file containing previous samples (params, target_val)
         """
         if not warm_start_file or not os.path.exists(warm_start_file):
-            print("  No warm-start file found or provided. Skipping warm start.")
+            self.logger.info("  No warm-start file found or provided. Skipping warm start.")
             return
 
-        print(f"--- Initializing from warm-start file: {warm_start_file} ---")
+        self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
             samples = np.loadtxt(warm_start_file, delimiter=',')
             if samples.ndim == 1:
                 samples = samples.reshape(1, -1)
         except Exception as e:
-            print(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")
+            self.logger.info(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")
             return
 
         # Group samples by grid index and keep the best for each
@@ -602,7 +719,7 @@ class GridAnchoredDESampler:
                 best_candidates[grid_idx] = {'params': params, 'target_val': target_val}
 
         if not best_candidates:
-            print("  No valid samples found in warm-start file for the current grid.")
+            self.logger.info("  No valid samples found in warm-start file for the current grid.")
             return
 
         # Update global maximum from warm start samples
@@ -627,14 +744,14 @@ class GridAnchoredDESampler:
         # Add to initial_maxima list
         self.initial_maxima.extend(warm_start_maxima)
 
-        print(f"--- Loaded {len(warm_start_maxima)} warm-start maxima from file. New Global Max: {self.global_max_target_val:.4e} ---")
+        self.logger.info(f"--- Loaded {len(warm_start_maxima)} warm-start maxima from file. New Global Max: {self.global_max_target_val:.4e} ---")
 
 
     # --- Job Factory Methods (Master Only) ---
 
     def create_initial_optimization_jobs(self, next_job_id):
         """Generates L-BFGS-B jobs for finding initial maxima."""
-        print(f"--- Generating {self.n_initial_optimizations} initial optimization jobs ---")
+        self.logger.info(f"--- Generating {self.n_initial_optimizations} initial optimization jobs ---")
         jobs = []
         sampler = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
         unit_samples = sampler.random(n=self.n_initial_optimizations)
@@ -660,7 +777,7 @@ class GridAnchoredDESampler:
     def create_activation_jobs(self, next_job_id):
         """Generates ActivationJobs for grid points near found maxima."""
         if not self.initial_maxima:
-            print("Warning: No initial maxima found. Cannot create activation jobs.")
+            self.logger.warning("Warning: No initial maxima found. Cannot create activation jobs.")
             return [], next_job_id
 
         jobs = []
@@ -689,7 +806,7 @@ class GridAnchoredDESampler:
                 self.pending_activation_indices.add(neighbor_idx)
                 next_job_id += 1
 
-        print(f"--- Generating {len(jobs)} activation jobs ---")
+        self.logger.info(f"--- Generating {len(jobs)} activation jobs ---")
         return jobs, next_job_id
 
 
@@ -714,7 +831,7 @@ class GridAnchoredDESampler:
             Updated job ID counter
         """
         if not self.is_refinement_run or self.refinement_interpolator is None:
-            print("Warning: create_refinement_activation_jobs called but not in refinement mode.")
+            self.logger.warning("Warning: create_refinement_activation_jobs called but not in refinement mode.")
             return [], next_job_id
 
         jobs = []
@@ -725,7 +842,7 @@ class GridAnchoredDESampler:
                              if (state['status'] == 'optimized') and 
                                 (state['best_fitness'] >= (self.global_max_target_val - self.roi_threshold))]
 
-        print(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
+        self.logger.info(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
 
         # Activate all neighbors of transferred points
         for grid_idx in transferred_points:
@@ -762,7 +879,7 @@ class GridAnchoredDESampler:
                 self.pending_activation_indices.add(neighbor_idx)
                 next_job_id += 1
 
-        print(f"--- Generating {len(jobs)} refinement activation jobs ---")
+        self.logger.info(f"--- Generating {len(jobs)} refinement activation jobs ---")
         return jobs, next_job_id
 
 
@@ -786,7 +903,7 @@ class GridAnchoredDESampler:
             Updated job ID counter
         """
         if not self.is_refinement_run or self.refinement_interpolator is None:
-            print("Warning: create_refinement_lbfgsb_jobs called but not in refinement mode.")
+            self.logger.warning("Warning: create_refinement_lbfgsb_jobs called but not in refinement mode.")
             return [], next_job_id
 
         jobs = []
@@ -802,10 +919,10 @@ class GridAnchoredDESampler:
                 if all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
                     transferred_points.append(fine_idx)
 
-        print(f"--- Creating refinement LBFGSB jobs from {len(transferred_points)} transferred points ---")
+        self.logger.info(f"--- Creating refinement LBFGSB jobs from {len(transferred_points)} transferred points ---")
 
         if not transferred_points:
-            print("--- No transferred points found. No refinement jobs created. ---")
+            self.logger.info("--- No transferred points found. No refinement jobs created. ---")
             return jobs, next_job_id
 
         # For each coarse grid point in ROI, activate all fine points in its cell
@@ -867,7 +984,7 @@ class GridAnchoredDESampler:
                 lbfgsb_job_created_for_grid_points.add(fine_idx)
                 next_job_id += 1
 
-        print(f"--- Generating {len(jobs)} refinement LBFGSB jobs ---")
+        self.logger.info(f"--- Generating {len(jobs)} refinement LBFGSB jobs ---")
         return jobs, next_job_id
 
 
@@ -880,7 +997,7 @@ class GridAnchoredDESampler:
         unconverged_indices = [idx for idx, state in self.population.items() if state['status'] == 'active']
 
         if not unconverged_indices:
-            print("All active points have converged. Ending DE phase.")
+            self.logger.info("All active points have converged. Ending DE phase.")
             return [], next_job_id, successful_F, successful_CR
 
         # --- Prioritize which grid points to evolve ---
@@ -914,7 +1031,7 @@ class GridAnchoredDESampler:
 
         active_pop_list = list(self.active_grid_indices)
         if len(active_pop_list) < 4:
-            print("Not enough active points (<4) to perform DE. Waiting.")
+            self.logger.info("Not enough active points (<4) to perform DE. Waiting.")
             return [], next_job_id, successful_F, successful_CR
 
         # --- Create parent and p-best pools ---
@@ -1142,7 +1259,7 @@ class GridAnchoredDESampler:
                     if neighbor_count > 0 and (roi_neighbor_count / neighbor_count) > 0.5:
                         candidates.append(idx)
 
-            print(f"--- Patching Wave 0: Testing {len(candidates)} ROI and border points ---")
+            self.logger.info(f"--- Patching Wave 0: Testing {len(candidates)} ROI and border points ---")
         else:
             # Wave 1+: Test neighbors of recently updated points
             candidates = set()
@@ -1151,7 +1268,7 @@ class GridAnchoredDESampler:
                     if neighbor_idx in self.population:
                         candidates.add(neighbor_idx)
             candidates = list(candidates)
-            print(f"--- Patching Wave {wave_number}: Testing {len(candidates)} neighbor points ---")
+            self.logger.info(f"--- Patching Wave {wave_number}: Testing {len(candidates)} neighbor points ---")
 
         if not candidates:
             return [], next_job_id
@@ -1188,5 +1305,5 @@ class GridAnchoredDESampler:
                 tests_created += 1
                 next_job_id += 1
 
-        print(f"    Created {tests_created} test jobs for wave {wave_number}")
+        self.logger.info(f"    Created {tests_created} test jobs for wave {wave_number}")
         return jobs, next_job_id

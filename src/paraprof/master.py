@@ -4,12 +4,17 @@ MPI master process orchestration logic.
 import time
 import collections
 import numpy as np
+import sys
+import logging
+
+from .logger import setup_logger
+
 try:
     from mpi4py import MPI
 except ImportError:
-    print("Error: mpi4py is not installed. This script requires MPI.")
-    print("Please install it with: pip install mpi4py")
-    import sys
+    # Can't use logger here since MPI isn't available yet
+    print("Error: mpi4py is not installed. This script requires MPI.", file=sys.stderr)
+    print("Please install it with: pip install mpi4py", file=sys.stderr)
     sys.exit(1)
 
 TASK_TERMINATE = -1
@@ -25,13 +30,14 @@ def terminate_workers(comm, myrank=0):
     myrank : int
         Master rank (usually 0)
     """
+    logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
 
-    print(f"rank {myrank}: DEBUG: terminate_workers: Sending TASK_TERMINATE to workers.", flush=True)
+    logger.debug("terminate_workers: Sending TASK_TERMINATE to workers.")
     for rank in range(1, n_workers + 1):
         comm.send(TASK_TERMINATE, dest=rank)
 
-    print(f"rank {myrank}: DEBUG: terminate_workers: All workers terminated.")
+    logger.debug("terminate_workers: All workers terminated.")
 
 
 def run_projection(comm, sampler, projection_config,
@@ -111,6 +117,8 @@ def run_projection(comm, sampler, projection_config,
     refinement_factor = projection_config.get('refinement_factor', 2)
     dims_str = "_".join(map(str, projection_config['dims']))
 
+    logger = setup_logger(rank=myrank)
+
     # Initialize results structure
     results = {
         'coarse_solution': None,
@@ -119,9 +127,9 @@ def run_projection(comm, sampler, projection_config,
     }
 
     # --- COARSE GRID RUN ---
-    print("\n" + "="*80)
-    print("=== Running Coarse Grid ===")
-    print("="*80 + "\n")
+    logger.info("=" * 80)
+    logger.info("=== Running Coarse Grid ===")
+    logger.info("=" * 80)
 
     master_main(
         comm=comm,
@@ -149,9 +157,9 @@ def run_projection(comm, sampler, projection_config,
 
     # --- REFINEMENT RUN (if enabled) ---
     if enable_refinement:
-        print("\n" + "="*80)
-        print("=== Starting Grid Refinement ===")
-        print("="*80 + "\n")
+        logger.info("=" * 80)
+        logger.info("=== Starting Grid Refinement ===")
+        logger.info("=" * 80)
 
         # Setup refined projection config
         refined_config = projection_config.copy()
@@ -269,13 +277,14 @@ def run_all_projections(comm, sampler, projections,
     >>> for i, res in enumerate(results):
     ...     print(f"Projection {i}: {res['metrics']['total_target_calls']} calls")
     """
+    logger = setup_logger(rank=myrank)
     all_results = []
 
     for proj_idx, projection_config in enumerate(projections):
-        print("\n" + "="*80)
-        print(f"=== Starting Projection {proj_idx + 1}/{len(projections)} ===")
-        print(f"=== Dimensions: {projection_config['dims']} ===")
-        print("="*80 + "\n")
+        logger.info("=" * 80)
+        logger.info(f"=== Starting Projection {proj_idx + 1}/{len(projections)} ===")
+        logger.info(f"=== Dimensions: {projection_config['dims']} ===")
+        logger.info("=" * 80)
 
         # Reset sampler for new projection (except first)
         if proj_idx > 0:
@@ -301,9 +310,9 @@ def run_all_projections(comm, sampler, projections,
         results['projection_config'] = projection_config
         all_results.append(results)
 
-        print("\n" + "="*80)
-        print(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
-        print("="*80 + "\n")
+        logger.info("=" * 80)
+        logger.info(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
+        logger.info("=" * 80)
 
     return all_results
 
@@ -335,12 +344,13 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     myrank : int
         Master rank (usually 0)
     """
+    logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
     if n_workers <= 0:
-        print("Error: This script requires at least 2 MPI processes (1 master, 1+ workers).")
+        logger.error("This script requires at least 2 MPI processes (1 master, 1+ workers).")
         return
 
-    print(f"rank {myrank}: DEBUG: master_main: STARTING with {n_workers} workers.")
+    logger.debug(f"master_main: STARTING with {n_workers} workers.")
 
     # --- Master state ---
     free_workers = list(range(1, n_workers + 1))
@@ -351,7 +361,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         # Disable patching in direct evaluation mode (no continuous params to share)
         if sampler.patching_refined and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
-        print("--- Refinement mode: Using direct LBFGSB optimization ---")
+        logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
         # Normal mode: always use full workflow (DE handles direct eval mode gracefully)
         stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP']
@@ -359,8 +369,8 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         if sampler.patching_coarse and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
         if sampler.direct_eval_mode:
-            print("--- Direct Evaluation Mode: Using degenerate DE workflow (pop=1, immediate convergence) ---")
-            print("    Patching automatically disabled (no continuous parameters to share)")
+            logger.info("--- Direct Evaluation Mode: Using degenerate DE workflow (pop=1, immediate convergence) ---")
+            logger.info("    Patching automatically disabled (no continuous parameters to share)")
 
     current_stage = stages.pop(0) if stages else None
 
@@ -404,7 +414,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             if not current_stage:
                 break # All stages and jobs are complete
 
-            print(f"--- Master: Entering stage: {current_stage} ---")
+            logger.info(f"--- Master: Entering stage: {current_stage} ---")
             new_jobs = []
 
             if current_stage == 'INITIAL_OPTIMIZATION':
@@ -417,7 +427,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 if not sampler.initial_maxima:
                     new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
                 else:
-                    print("Skipping initial optimization - using warm start from file.")
+                    logger.info("Skipping initial optimization - using warm start from file.")
                     new_jobs = []
 
                 if not new_jobs:
@@ -429,20 +439,20 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 if sampler.is_refinement_run:
                     new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
                     if not new_jobs:
-                        print("No refinement activation jobs created. Moving to next stage.")
+                        logger.info("No refinement activation jobs created. Moving to next stage.")
                         current_stage = stages.pop(0) if stages else None
                         continue
                 else:
                     new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
                     if not new_jobs:
-                        print("No activation jobs created (no initial maxima?). Moving to next stage.")
+                        logger.info("No activation jobs created (no initial maxima?). Moving to next stage.")
                         current_stage = stages.pop(0) if stages else None
                         continue
 
             elif current_stage == 'DE_LOOP':
                 # This stage loops
                 if de_generation >= num_generations:
-                    print("--- Master: DE generations complete. ---")
+                    logger.info("--- Master: DE generations complete. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
@@ -452,7 +462,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
                 de_generation += 1
                 sampler.current_generation = de_generation # Update sampler state
-                print(f"--- Master: Starting DE Generation {de_generation} ---")
+                logger.info(f"--- Master: Starting DE Generation {de_generation} ---")
 
                 new_de_jobs, next_job_id, de_successful_F, de_successful_CR = sampler.create_de_generation_jobs(
                     next_job_id, max_num_to_evolve
@@ -468,14 +478,14 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 converged_count = total_grid_points - active_count
                 newly_activated_count = len(new_act_jobs)
 
-                print(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                logger.info(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
                       f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
                       f"Global Max logL: {sampler.global_max_target_val:.4e} | "
                       f"New Activations: {newly_activated_count:3d}")
                 # --- End Print ---
 
                 if not new_jobs and not de_successful_F: # DE converged and no new activations
-                    print("--- Master: DE converged and no new activations. ---")
+                    logger.info("--- Master: DE converged and no new activations. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
@@ -483,17 +493,17 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 # Check appropriate flag based on run type
                 patching_enabled = sampler.patching_refined if sampler.is_refinement_run else sampler.patching_coarse
                 if not patching_enabled:
-                    print("--- Master: Patching disabled for this stage. Skipping. ---")
+                    logger.info("--- Master: Patching disabled for this stage. Skipping. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
                 # Check if max waves reached
                 if patching_wave_number >= sampler.max_patching_waves:
-                    print(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
+                    logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                print(f"\n--- Master: Starting Patching Wave {patching_wave_number} ---")
+                logger.info(f"--- Master: Starting Patching Wave {patching_wave_number} ---")
 
                 # Create jobs for this wave
                 new_jobs, next_job_id = sampler.create_patching_wave_jobs(
@@ -503,7 +513,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 )
 
                 if not new_jobs:
-                    print("--- Master: No patching candidates found. Ending patching. ---")
+                    logger.info("--- Master: No patching candidates found. Ending patching. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
@@ -530,7 +540,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
 
                 if not new_jobs:
-                    print("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
+                    logger.info("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
@@ -560,7 +570,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:
-                print(f"Warning: Received result for unknown/finished job {job_id}. Ignoring.")
+                logger.warning(f"Received result for unknown/finished job {job_id}. Ignoring.")
                 continue
 
             job = active_jobs[job_id]
@@ -609,7 +619,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                         if state['best_fitness'] > baseline_fitness:
                             updated_points.append(idx)
 
-                    print(f"--- Master: Patching Wave {patching_wave_number} complete. Updated {len(updated_points)} points ---")
+                    logger.info(f"--- Master: Patching Wave {patching_wave_number} complete. Updated {len(updated_points)} points ---")
 
                     if updated_points:
                         # Start next wave with updated points as seeds
@@ -618,7 +628,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                         current_stage = 'PATCHING_WAVES'  # Loop back to start next wave
                     else:
                         # No updates, patching converged
-                        print("--- Master: No updates in wave. Patching converged. ---")
+                        logger.info("--- Master: No updates in wave. Patching converged. ---")
                         current_stage = stages.pop(0) if stages else None
 
         # --- End of Iprobe receive loop ---
@@ -647,15 +657,15 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
     # --- End of Main Event Loop ---
 
-    print(f"rank {myrank}: DEBUG: master_main: Workflow finished.")
+    logger.debug("master_main: Workflow finished.")
 
     # Final flush of sample buffer
     sampler._flush_samples_buffer()
 
     # --- Print Final Summary ---
-    print("\n" + "="*80)
-    print("--- Master: Workflow Complete ---")
-    print(f"  Total Target Function Calls: {sampler.target_calls}")
-    print(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
-    print(f"  Total Grid Points Explored: {len(sampler.population)}")
-    print("="*80 + "\n")
+    logger.info("=" * 80)
+    logger.info("--- Master: Workflow Complete ---")
+    logger.info(f"  Total Target Function Calls: {sampler.target_calls}")
+    logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
+    logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
+    logger.info("=" * 80)
