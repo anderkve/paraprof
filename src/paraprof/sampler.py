@@ -42,6 +42,7 @@ class GridAnchoredDESampler:
                  use_de_prescreening=False,
                  emulator_confidence_threshold=2.0,
                  emulator_min_neighbors=10,
+                 emulator_max_neighbors=100,
                  emulator_length_scale=1.0,
                  emulator_noise_level=0.01):
         """
@@ -98,6 +99,9 @@ class GridAnchoredDESampler:
             Higher values are more conservative (fewer trials skipped)
         emulator_min_neighbors : int, optional
             Minimum evaluated points required to build emulator (default: 10)
+        emulator_max_neighbors : int, optional
+            Maximum evaluated points to use for emulator training (default: 100)
+            Limits GP training time by capping the dataset size
         emulator_length_scale : float, optional
             Initial RBF kernel length scale (default: 1.0, auto-tuned)
         emulator_noise_level : float, optional
@@ -252,6 +256,7 @@ class GridAnchoredDESampler:
         self.use_de_prescreening = use_de_prescreening
         self.emulator_confidence_threshold = emulator_confidence_threshold
         self.emulator_min_neighbors = emulator_min_neighbors
+        self.emulator_max_neighbors = emulator_max_neighbors
         self.emulator_length_scale = emulator_length_scale
         self.emulator_noise_level = emulator_noise_level
 
@@ -582,8 +587,8 @@ class GridAnchoredDESampler:
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
 
-        # Add to eval cache for emulator training
-        if hasattr(self, 'eval_cache'):
+        # Add to eval cache for emulator training (only if pre-screening enabled)
+        if self.use_de_prescreening and hasattr(self, 'eval_cache'):
             self.eval_cache.append({
                 'params': params.copy(),
                 'fitness': target_val,

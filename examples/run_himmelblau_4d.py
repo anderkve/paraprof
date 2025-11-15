@@ -18,8 +18,8 @@ from paraprof import GridAnchoredDESampler, run_all_projections, terminate_worke
 from paraprof import get_test_function
 
 from paraprof import set_log_level
-set_log_level('DEBUG')
-# set_log_level('INFO')
+# set_log_level('DEBUG')
+set_log_level('INFO')
 # set_log_level('WARNING')
 
 # Get MPI info
@@ -41,7 +41,7 @@ PROJECTIONS_TO_RUN = [
 
     # 2D projections
     # {'dims': [0, 1], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
     # {'dims': [0, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -79,6 +79,12 @@ if myrank == 0:
         patching_n_neighbors=1,  # Test only the best neighbor
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
+        use_de_prescreening=True,
+        emulator_max_neighbors=100,
+        emulator_confidence_threshold=2.0,
+        emulator_min_neighbors=10,
+        emulator_length_scale=1e-2,
+        emulator_noise_level=0.01,
     )
 
     # Broadcast the target function to all workers (once, before all projections)
