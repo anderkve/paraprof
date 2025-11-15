@@ -80,7 +80,8 @@ class DEGridPointJob(Job):
         emulator = build_local_emulator(
             sampler=self.sampler,
             center_params=full_trial_params,
-            min_points=self.sampler.emulator_min_neighbors
+            min_points=self.sampler.emulator_min_neighbors,
+            max_points=getattr(self.sampler, 'emulator_max_neighbors', None)
         )
 
         if emulator is None:
@@ -236,12 +237,13 @@ class DEGridPointJob(Job):
 
         # Log pre-screening effectiveness
         if self.trials_generated > 0:
-            screen_rate = 100 * self.trials_screened_out / self.trials_generated
-            logger.info(
-                f"DE job {self.id} (grid {self.grid_idx}): "
-                f"Screened out {self.trials_screened_out}/{self.trials_generated} "
-                f"trials ({screen_rate:.1f}%)"
-            )
+            if self.sampler.use_de_prescreening:
+                screen_rate = 100 * self.trials_screened_out / self.trials_generated
+                logger.info(
+                    f"DE job {self.id} (grid {self.grid_idx}): "
+                    f"Screened out {self.trials_screened_out}/{self.trials_generated} "
+                    f"trials ({screen_rate:.1f}%)"
+                )
 
         return tasks
 

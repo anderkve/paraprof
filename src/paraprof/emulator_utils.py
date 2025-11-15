@@ -121,7 +121,7 @@ class LocalEmulator:
         return self.gp.score(X_test, y_test)
 
 
-def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_points=10):
+def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_points=10, max_points=None):
     """
     Gather evaluated points near a center location.
 
@@ -135,6 +135,8 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
         Radius in units of ROI threshold (default: 2.0)
     min_points : int, optional
         Minimum points to return (expands radius if needed, default: 10)
+    max_points : int, optional
+        Maximum points to return (selects closest if exceeded, default: None = no limit)
 
     Returns
     -------
@@ -187,10 +189,26 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     nearby_params = all_params[nearby_mask]
     nearby_fitness = all_fitness[nearby_mask]
 
-    logger.debug(
-        f"Gathered {len(nearby_params)} points within radius {radius:.2e} "
-        f"of center (target: {min_points})"
-    )
+    # Cap at max_points if specified (select closest points)
+    if max_points is not None and len(nearby_params) > max_points:
+        # Sort by distance to prioritize closer points
+        nearby_distances = distances[nearby_mask]
+        sorted_indices = np.argsort(nearby_distances)
+
+        # Take closest max_points
+        selected_indices = sorted_indices[:max_points]
+        nearby_params = nearby_params[selected_indices]
+        nearby_fitness = nearby_fitness[selected_indices]
+
+        logger.debug(
+            f"Gathered {len(selected_indices)} points (capped from {np.sum(nearby_mask)}) "
+            f"within radius {radius:.2e}"
+        )
+    else:
+        logger.debug(
+            f"Gathered {len(nearby_params)} points within radius {radius:.2e} "
+            f"of center (target: {min_points})"
+        )
 
     return {
         'X': nearby_params,
@@ -199,7 +217,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     }
 
 
-def build_local_emulator(sampler, center_params, min_points=10):
+def build_local_emulator(sampler, center_params, min_points=10, max_points=None):
     """
     Build a local GP emulator around a center point.
 
@@ -211,6 +229,9 @@ def build_local_emulator(sampler, center_params, min_points=10):
         Center point for local emulator
     min_points : int, optional
         Minimum points required to build emulator (default: 10)
+    max_points : int, optional
+        Maximum points to use for training (default: None = no limit)
+        Limits GP training time by capping dataset size
 
     Returns
     -------
@@ -221,7 +242,7 @@ def build_local_emulator(sampler, center_params, min_points=10):
         return None
 
     # Gather nearby evaluations
-    data = gather_nearby_evaluations(sampler, center_params, min_points=min_points)
+    data = gather_nearby_evaluations(sampler, center_params, min_points=min_points, max_points=max_points)
 
     if data['n_points'] < min_points:
         logger.debug(f"Insufficient data for emulator: {data['n_points']} < {min_points}")
