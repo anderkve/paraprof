@@ -17,6 +17,11 @@ except ImportError:
 from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function
 
+from paraprof import set_log_level
+set_log_level('DEBUG')
+# set_log_level('INFO')
+# set_log_level('WARNING')
+
 # Get MPI info
 comm = MPI.COMM_WORLD
 myrank = comm.Get_rank()
