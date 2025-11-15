@@ -80,10 +80,10 @@ if myrank == 0:
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
         use_de_prescreening=True,
+        emulator_min_neighbors=10,
         emulator_max_neighbors=100,
         emulator_confidence_threshold=2.0,
-        emulator_min_neighbors=10,
-        emulator_length_scale=1e-2,
+        emulator_length_scale=0.1,
         emulator_noise_level=0.01,
     )
 
