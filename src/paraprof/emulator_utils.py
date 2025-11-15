@@ -12,7 +12,7 @@ logger = get_logger()
 # Check if scikit-learn is available
 try:
     from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+    from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -54,14 +54,14 @@ class LocalEmulator:
         self.y = y
         self.is_fitted = False
 
-        # Build GP with RBF kernel + white noise
-        kernel = RBF(length_scale=length_scale) + WhiteKernel(noise_level=noise_level)
+        # Build GP with RBF kernel
+        kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-05, 1e5)) * RBF(length_scale=length_scale)
 
         self.gp = GaussianProcessRegressor(
             kernel=kernel,
-            normalize_y=True,
-            n_restarts_optimizer=2,
-            random_state=42
+            normalize_y=False,
+            n_restarts_optimizer=0,
+            alpha=1e-4,
         )
 
         try:
