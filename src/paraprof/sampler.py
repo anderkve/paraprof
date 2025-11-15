@@ -38,7 +38,12 @@ class GridAnchoredDESampler:
                  memory_size=100,
                  global_pool_size=200,
                  activation_mix_ratios=None,
-                 samples_output_file=None):
+                 samples_output_file=None,
+                 use_de_prescreening=False,
+                 emulator_confidence_threshold=2.0,
+                 emulator_min_neighbors=10,
+                 emulator_length_scale=1.0,
+                 emulator_noise_level=0.01):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -86,6 +91,17 @@ class GridAnchoredDESampler:
             Defaults to {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
         samples_output_file : str, optional
             File to save sampled points
+        use_de_prescreening : bool, optional
+            Enable emulator-based pre-screening of DE trial points (default: False)
+        emulator_confidence_threshold : float, optional
+            Confidence multiplier for UCB acquisition function (default: 2.0)
+            Higher values are more conservative (fewer trials skipped)
+        emulator_min_neighbors : int, optional
+            Minimum evaluated points required to build emulator (default: 10)
+        emulator_length_scale : float, optional
+            Initial RBF kernel length scale (default: 1.0, auto-tuned)
+        emulator_noise_level : float, optional
+            White noise level for GP (default: 0.01)
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -232,6 +248,13 @@ class GridAnchoredDESampler:
         else:
             self.activation_mix_ratios = activation_mix_ratios
 
+        # --- Emulator configuration ---
+        self.use_de_prescreening = use_de_prescreening
+        self.emulator_confidence_threshold = emulator_confidence_threshold
+        self.emulator_min_neighbors = emulator_min_neighbors
+        self.emulator_length_scale = emulator_length_scale
+        self.emulator_noise_level = emulator_noise_level
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         if self.samples_output_file:
@@ -242,6 +265,14 @@ class GridAnchoredDESampler:
         self.target_calls = 0
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # List of {'continuous_params', 'fitness', 'grid_idx'}
+
+        # --- Evaluation cache for emulator training ---
+        self.eval_cache = []
+        self.eval_cache_max_size = 5000
+
+        # --- DE pre-screening statistics ---
+        self.de_trials_generated = 0
+        self.de_trials_screened_out = 0
 
         # --- Refinement State ---
         self.is_refinement_run = False
@@ -550,9 +581,58 @@ class GridAnchoredDESampler:
             self.samples_buffer.append((params, target_val))
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
+
+        # Add to eval cache for emulator training
+        if hasattr(self, 'eval_cache'):
+            self.eval_cache.append({
+                'params': params.copy(),
+                'fitness': target_val,
+                'call_number': self.target_calls
+            })
+
+            # Prune cache if too large
+            if len(self.eval_cache) > self.eval_cache_max_size:
+                self.eval_cache = self._prune_eval_cache()
+
         # Updating global max is now handled by the jobs
         # to ensure it happens at the right time (e.g., after refinement).
 
+    def _prune_eval_cache(self):
+        """
+        Prunes eval cache to max size, keeping best and most recent evaluations.
+
+        Strategy: Keep top 50% by fitness + most recent 50% by call number.
+
+        Returns
+        -------
+        list
+            Pruned evaluation cache
+        """
+        # Sort by fitness (keep best)
+        sorted_by_fitness = sorted(
+            self.eval_cache,
+            key=lambda x: x['fitness'],
+            reverse=True
+        )
+        keep_best = sorted_by_fitness[:self.eval_cache_max_size // 2]
+
+        # Sort by recency (keep recent)
+        sorted_by_time = sorted(
+            self.eval_cache,
+            key=lambda x: x['call_number'],
+            reverse=True
+        )
+        keep_recent = sorted_by_time[:self.eval_cache_max_size // 2]
+
+        # Merge and deduplicate by call_number
+        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
+        pruned = list(combined.values())
+
+        self.logger.debug(
+            f"Pruned eval cache from {len(self.eval_cache)} to {len(pruned)} entries"
+        )
+
+        return pruned
 
     def _get_grid_indices_from_point(self, point, grid_axes=None):
         """Converts a point's projection coordinates to the closest grid indices."""
