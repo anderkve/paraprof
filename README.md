@@ -13,6 +13,7 @@
 - 🎯 **Adaptive Sampling**: Dynamic grid activation focuses computational effort on high-likelihood regions
 - 🔄 **Grid Refinement**: Interpolation-based refinement for increased resolution without full re-computation
 - 🔧 **Patching Algorithm**: Wave-based gradient refinement to escape local optima
+- 🧠 **Emulator-Enhanced Sampling**: Optional GP-based trial pre-screening reduces evaluations by 30-50%
 - 📈 **Built-in Visualization**: Automatic plotting for 1D, 2D, and N-D projections
 - 🧪 **Benchmark Suite**: Comprehensive test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
 - 💾 **Warm Starting**: Reuse results across multiple projections
@@ -31,6 +32,9 @@ pip install -e .
 # With visualization support
 pip install -e ".[viz]"
 
+# With emulator support (recommended for 30-50% fewer evaluations)
+pip install -e ".[emulator]"
+
 # With development tools
 pip install -e ".[dev]"
 
@@ -45,6 +49,7 @@ pip install -e ".[all]"
 - SciPy
 - mpi4py (requires MPI implementation like OpenMPI or MPICH)
 - Matplotlib (optional, for visualization)
+- scikit-learn (optional, for emulator-based optimization)
 
 ## Quick Start
 
@@ -148,6 +153,8 @@ mpiexec -n 4 python examples/run_himmelblau_3d.py
 - `roi_threshold`: Region of interest threshold in χ² units (default: 3.0)
 - `convergence_threshold`: DE convergence threshold (default: 1e-5)
 - `max_patching_waves`: Maximum patching iterations (default: 10)
+- `use_de_prescreening`: Enable emulator-based trial filtering (default: False)
+- `emulator_confidence_threshold`: UCB exploration parameter (default: 2.0)
 
 ### Projection Options
 
