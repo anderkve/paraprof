@@ -13,6 +13,7 @@ logger = get_logger()
 try:
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Matern
+    from sklearn.preprocessing import StandardScaler
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -32,16 +33,21 @@ class LocalEmulator:
 
     def __init__(self, X, y, length_scale=1.0, noise_level=0.01):
         """
-        Initialize and fit a local GP emulator.
+        Initialize and fit a local GP emulator with input standardization.
+
+        Training inputs are standardized (z-score normalization) to improve
+        GP performance by making the kernel isotropic. Each local emulator
+        uses its own scaler fitted to its training data.
 
         Parameters
         ----------
         X : np.ndarray, shape (n_samples, n_features)
-            Training input points
+            Training input points (will be standardized internally)
         y : np.ndarray, shape (n_samples,)
-            Training target values (fitness/likelihood)
+            Training target values (fitness/likelihood, not scaled)
         length_scale : float, optional
-            RBF kernel length scale (default: 1.0, auto-optimized)
+            Matern kernel length scale in standardized units (default: 1.0)
+            Note: After standardization, length_scale ~ 1.0 is typically good
         noise_level : float, optional
             White noise level for GP (default: 0.01)
         """
@@ -50,28 +56,48 @@ class LocalEmulator:
             self.is_fitted = False
             return
 
-        self.X = X
+        self.X_raw = X  # Store raw data for reference
         self.y = y
         self.is_fitted = False
+        self.X_scaler = None
 
         n_dims = X.shape[1]
 
-        # Build GP with RBF kernel
-        # kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-3, 1e5))
-        kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * Matern(length_scale=length_scale, length_scale_bounds=(1e-2, 1e4), nu=1.5)
-        # kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * Matern(length_scale=[length_scale]*n_dims, length_scale_bounds=[(1e-2, 1e4)]*n_dims, nu=1.5)
+        # Standardize input features (z-score normalization)
+        # Each local emulator scales based on its own training data distribution
+        self.X_scaler = StandardScaler()
+        try:
+            X_scaled = self.X_scaler.fit_transform(X)
+        except Exception as e:
+            logger.warning(f"Input standardization failed: {e}. Using raw inputs.")
+            X_scaled = X
+            self.X_scaler = None
+
+        # Build GP with Matern kernel
+        # After standardization, a single isotropic length scale works well
+        kernel = ConstantKernel(
+            constant_value=1.0,
+            constant_value_bounds=(1e-08, 1e8)
+        ) * Matern(
+            length_scale=length_scale,
+            length_scale_bounds=(1e-2, 1e4),
+            nu=1.5
+        )
 
         self.gp = GaussianProcessRegressor(
             kernel=kernel,
-            normalize_y=False,
-            n_restarts_optimizer=0,
+            normalize_y=True,
+            n_restarts_optimizer=2,
             alpha=1e-6,
         )
 
         try:
-            self.gp.fit(X, y)
+            # Fit GP on standardized inputs
+            self.gp.fit(X_scaled, y)
             self.is_fitted = True
-            logger.debug(f"GP emulator fitted with {len(X)} points")
+            logger.debug(
+                f"GP emulator fitted with {len(X)} points (inputs standardized)"
+            )
         except Exception as e:
             logger.warning(f"GP fit failed: {e}. Emulator disabled.")
             self.is_fitted = False
@@ -80,10 +106,13 @@ class LocalEmulator:
         """
         Predict fitness at test points.
 
+        Test points are automatically standardized using the same scaler
+        fitted to the training data.
+
         Parameters
         ----------
         X_test : np.ndarray, shape (n_test, n_features)
-            Test points
+            Test points (in original parameter space)
         return_std : bool, optional
             Whether to return uncertainty estimates (default: True)
 
@@ -102,16 +131,30 @@ class LocalEmulator:
             else:
                 return np.zeros(n_test)
 
-        return self.gp.predict(X_test, return_std=return_std)
+        # Standardize test points using training scaler
+        if self.X_scaler is not None:
+            try:
+                X_test_scaled = self.X_scaler.transform(X_test)
+            except Exception as e:
+                logger.warning(f"Test point standardization failed: {e}. Using raw inputs.")
+                X_test_scaled = X_test
+        else:
+            # Scaler not fitted (fallback to raw inputs)
+            X_test_scaled = X_test
+
+        return self.gp.predict(X_test_scaled, return_std=return_std)
 
     def score(self, X_test, y_test):
         """
         Calculate R² score on test data.
 
+        Test points are automatically standardized using the same scaler
+        fitted to the training data.
+
         Parameters
         ----------
         X_test : np.ndarray
-            Test input points
+            Test input points (in original parameter space)
         y_test : np.ndarray
             Test target values
 
@@ -122,7 +165,18 @@ class LocalEmulator:
         """
         if not self.is_fitted:
             return -np.inf
-        return self.gp.score(X_test, y_test)
+
+        # Standardize test points using training scaler
+        if self.X_scaler is not None:
+            try:
+                X_test_scaled = self.X_scaler.transform(X_test)
+            except Exception as e:
+                logger.warning(f"Test point standardization failed: {e}. Using raw inputs.")
+                X_test_scaled = X_test
+        else:
+            X_test_scaled = X_test
+
+        return self.gp.score(X_test_scaled, y_test)
 
 
 def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_points=10, max_points=None, grid_idx=None):
