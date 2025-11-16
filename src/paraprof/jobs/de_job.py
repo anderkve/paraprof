@@ -148,7 +148,8 @@ class DEGridPointJob(Job):
                     sampler=self.sampler,
                     center_params=full_trial_params,
                     min_points=self.sampler.emulator_min_neighbors,
-                    max_points=getattr(self.sampler, 'emulator_max_neighbors', None)
+                    max_points=getattr(self.sampler, 'emulator_max_neighbors', None),
+                    grid_idx=self.grid_idx  # Pass grid index for local cache gathering
                 )
             # === END EMULATOR PREPARATION ===
 

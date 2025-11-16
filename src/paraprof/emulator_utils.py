@@ -125,9 +125,12 @@ class LocalEmulator:
         return self.gp.score(X_test, y_test)
 
 
-def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_points=10, max_points=None):
+def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_points=10, max_points=None, grid_idx=None):
     """
     Gather evaluated points near a center location.
+
+    Uses local per-grid-point caches for efficient gathering. If grid_idx is provided,
+    gathers from that grid point and its neighbors. Otherwise, falls back to global cache.
 
     Parameters
     ----------
@@ -141,6 +144,8 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
         Minimum points to return (expands radius if needed, default: 10)
     max_points : int, optional
         Maximum points to return (selects closest if exceeded, default: None = no limit)
+    grid_idx : tuple, optional
+        Grid index for local cache gathering (default: None = use global cache)
 
     Returns
     -------
@@ -150,78 +155,97 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
         - 'y': np.ndarray of fitness values
         - 'n_points': int number of points
     """
-    # Start with eval cache if available
-    if hasattr(sampler, 'eval_cache') and sampler.eval_cache:
-        all_params = np.array([e['params'] for e in sampler.eval_cache])
-        all_fitness = np.array([e['fitness'] for e in sampler.eval_cache])
-    else:
-        # Fallback: gather from population
-        all_params = []
-        all_fitness = []
+    all_params = []
+    all_fitness = []
 
-        for grid_idx, state in sampler.population.items():
+    # Strategy 1: Use local caches if grid_idx provided
+    if grid_idx is not None and hasattr(sampler, 'local_eval_caches'):
+        # Gather from center grid point's cache
+        if grid_idx in sampler.local_eval_caches:
+            for e in sampler.local_eval_caches[grid_idx]:
+                all_params.append(e['params'])
+                all_fitness.append(e['fitness'])
+
+        # Gather from neighboring grid points' caches
+        if hasattr(sampler, '_get_valid_neighbors'):
+            neighbors = sampler._get_valid_neighbors(grid_idx)
+            for neighbor_idx in neighbors:
+                if neighbor_idx in sampler.local_eval_caches:
+                    for e in sampler.local_eval_caches[neighbor_idx]:
+                        all_params.append(e['params'])
+                        all_fitness.append(e['fitness'])
+
+        logger.debug(
+            f"Gathered {len(all_params)} points from local cache (grid {grid_idx} + neighbors)"
+        )
+
+    # Strategy 2: Use global cache if no grid_idx or local caches insufficient
+    if len(all_params) < min_points and hasattr(sampler, 'global_eval_cache') and sampler.global_eval_cache:
+        for e in sampler.global_eval_cache:
+            all_params.append(e['params'])
+            all_fitness.append(e['fitness'])
+        logger.debug(
+            f"Added {len(sampler.global_eval_cache)} points from global cache"
+        )
+
+    # Strategy 3: Fallback to legacy eval_cache
+    if len(all_params) < min_points and hasattr(sampler, 'eval_cache') and sampler.eval_cache:
+        for e in sampler.eval_cache:
+            all_params.append(e['params'])
+            all_fitness.append(e['fitness'])
+        logger.debug(
+            f"Added {len(sampler.eval_cache)} points from legacy eval_cache"
+        )
+
+    # Strategy 4: Ultimate fallback - gather from population
+    if len(all_params) < min_points:
+        for gidx, state in sampler.population.items():
             for i in range(len(state['fitnesses'])):
                 cont_params = state['continuous_params'][i]
-                full_params = sampler._construct_params(grid_idx, cont_params)
+                full_params = sampler._construct_params(gidx, cont_params)
                 all_params.append(full_params)
                 all_fitness.append(state['fitnesses'][i])
 
-        if not all_params:
-            return {
-                'X': np.empty((0, len(center_params))),
-                'y': np.empty(0),
-                'n_points': 0
-            }
+    if not all_params:
+        return {
+            'X': np.empty((0, len(center_params))),
+            'y': np.empty(0),
+            'n_points': 0
+        }
 
-        all_params = np.array(all_params)
-        all_fitness = np.array(all_fitness)
+    all_params = np.array(all_params)
+    all_fitness = np.array(all_fitness)
 
-    # Calculate distances from center
-    distances = np.linalg.norm(all_params - center_params, axis=1)
+    # If we already have enough points from local caches, just cap at max_points
+    # This avoids expensive distance calculations on the full dataset
+    if len(all_params) <= max_points if max_points else True:
+        # We have few enough points, return all
+        return {
+            'X': all_params,
+            'y': all_fitness,
+            'n_points': len(all_params)
+        }
 
-    # Adaptive radius to ensure minimum points
-    radius = radius_factor * sampler.roi_threshold
-    nearby_mask = distances <= radius
-
-    # Expand radius if too few points
-    expansion_count = 0
-    while np.sum(nearby_mask) < min_points and expansion_count < 10:
-        radius *= 1.5
-        nearby_mask = distances <= radius
-        expansion_count += 1
-
-    nearby_params = all_params[nearby_mask]
-    nearby_fitness = all_fitness[nearby_mask]
-
-    # Cap at max_points if specified (select closest points)
-    if max_points is not None and len(nearby_params) > max_points:
-        # Sort by distance to prioritize closer points
-        nearby_distances = distances[nearby_mask]
-        sorted_indices = np.argsort(nearby_distances)
-
-        # Take closest max_points
-        selected_indices = sorted_indices[:max_points]
-        nearby_params = nearby_params[selected_indices]
-        nearby_fitness = nearby_fitness[selected_indices]
+    # We have too many points - select closest to center
+    if max_points is not None and len(all_params) > max_points:
+        # Use argpartition for O(n) selection instead of O(n log n) sort
+        distances = np.linalg.norm(all_params - center_params, axis=1)
+        closest_indices = np.argpartition(distances, max_points)[:max_points]
+        all_params = all_params[closest_indices]
+        all_fitness = all_fitness[closest_indices]
 
         logger.debug(
-            f"Gathered {len(selected_indices)} points (capped from {np.sum(nearby_mask)}) "
-            f"within radius {radius:.2e}"
-        )
-    else:
-        logger.debug(
-            f"Gathered {len(nearby_params)} points within radius {radius:.2e} "
-            f"of center (target: {min_points})"
+            f"Selected {max_points} closest points from {len(distances)} total"
         )
 
     return {
-        'X': nearby_params,
-        'y': nearby_fitness,
-        'n_points': len(nearby_params)
+        'X': all_params,
+        'y': all_fitness,
+        'n_points': len(all_params)
     }
 
 
-def build_local_emulator(sampler, center_params, min_points=10, max_points=None):
+def build_local_emulator(sampler, center_params, min_points=10, max_points=None, grid_idx=None):
     """
     Build a local GP emulator around a center point.
 
@@ -236,6 +260,8 @@ def build_local_emulator(sampler, center_params, min_points=10, max_points=None)
     max_points : int, optional
         Maximum points to use for training (default: None = no limit)
         Limits GP training time by capping dataset size
+    grid_idx : tuple, optional
+        Grid index for local cache gathering (default: None)
 
     Returns
     -------
@@ -245,8 +271,14 @@ def build_local_emulator(sampler, center_params, min_points=10, max_points=None)
     if not SKLEARN_AVAILABLE:
         return None
 
-    # Gather nearby evaluations
-    data = gather_nearby_evaluations(sampler, center_params, min_points=min_points, max_points=max_points)
+    # Gather nearby evaluations (using local caches if grid_idx provided)
+    data = gather_nearby_evaluations(
+        sampler,
+        center_params,
+        min_points=min_points,
+        max_points=max_points,
+        grid_idx=grid_idx
+    )
 
     if data['n_points'] < min_points:
         logger.debug(f"Insufficient data for emulator: {data['n_points']} < {min_points}")
@@ -265,7 +297,7 @@ def build_local_emulator(sampler, center_params, min_points=10, max_points=None)
     return emulator
 
 
-def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max_points=None):
+def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max_points=None, grid_idx=None):
     """
     Prepare evaluation cache data to send to worker for emulator-based pre-screening.
 
@@ -284,6 +316,8 @@ def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max
     max_points : int, optional
         Maximum points to send (default: None = no limit)
         Limits data transfer size and GP training time
+    grid_idx : tuple, optional
+        Grid index for local cache gathering (default: None)
 
     Returns
     -------
@@ -303,8 +337,14 @@ def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max
     if not SKLEARN_AVAILABLE:
         return None
 
-    # Gather nearby evaluations
-    data = gather_nearby_evaluations(sampler, center_params, min_points=min_points, max_points=max_points)
+    # Gather nearby evaluations (using local caches if grid_idx provided)
+    data = gather_nearby_evaluations(
+        sampler,
+        center_params,
+        min_points=min_points,
+        max_points=max_points,
+        grid_idx=grid_idx
+    )
 
     if data['n_points'] < min_points:
         logger.debug(f"Insufficient data for worker emulator: {data['n_points']} < {min_points}")
