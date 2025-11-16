@@ -273,7 +273,7 @@ class GridAnchoredDESampler:
 
         # --- Evaluation cache for emulator training ---
         self.eval_cache = []
-        self.eval_cache_max_size = 5000
+        self.eval_cache_max_size = 5000 # 5000
 
         # --- DE pre-screening statistics ---
         self.de_trials_generated = 0

@@ -12,7 +12,7 @@ logger = get_logger()
 # Check if scikit-learn is available
 try:
     from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+    from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Matern
     SKLEARN_AVAILABLE = True
 except ImportError:
     SKLEARN_AVAILABLE = False
@@ -54,14 +54,18 @@ class LocalEmulator:
         self.y = y
         self.is_fitted = False
 
+        n_dims = X.shape[1]
+
         # Build GP with RBF kernel
-        kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-05, 1e5)) * RBF(length_scale=length_scale)
+        # kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * RBF(length_scale=length_scale, length_scale_bounds=(1e-3, 1e5))
+        kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * Matern(length_scale=length_scale, length_scale_bounds=(1e-2, 1e4), nu=1.5)
+        # kernel = ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-08, 1e8)) * Matern(length_scale=[length_scale]*n_dims, length_scale_bounds=[(1e-2, 1e4)]*n_dims, nu=1.5)
 
         self.gp = GaussianProcessRegressor(
             kernel=kernel,
             normalize_y=False,
             n_restarts_optimizer=0,
-            alpha=1e-4,
+            alpha=1e-6,
         )
 
         try:
@@ -254,6 +258,102 @@ def build_local_emulator(sampler, center_params, min_points=10, max_points=None)
 
     # Build emulator
     emulator = LocalEmulator(data['X'], data['y'], length_scale, noise_level)
+
+    if not emulator.is_fitted:
+        return None
+
+    return emulator
+
+
+def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max_points=None):
+    """
+    Prepare evaluation cache data to send to worker for emulator-based pre-screening.
+
+    This function gathers nearby evaluations and packages them in a compact format
+    for transmission to workers. Workers will use this data to build local GP
+    emulators and perform trial pre-screening independently.
+
+    Parameters
+    ----------
+    sampler : GridAnchoredDESampler
+        The sampler instance with eval_cache
+    center_params : np.ndarray
+        Center point for local emulator (typically the trial point)
+    min_points : int, optional
+        Minimum points required (default: 10)
+    max_points : int, optional
+        Maximum points to send (default: None = no limit)
+        Limits data transfer size and GP training time
+
+    Returns
+    -------
+    dict or None
+        Dictionary with keys for worker-side emulator building:
+        - 'X': np.ndarray of parameter vectors
+        - 'y': np.ndarray of fitness values
+        - 'length_scale': float, RBF kernel length scale
+        - 'noise_level': float, GP noise level
+        - 'confidence_threshold': float, UCB beta parameter
+        Returns None if insufficient data or emulator disabled
+    """
+    # Check if pre-screening is enabled
+    if not getattr(sampler, 'use_de_prescreening', False):
+        return None
+
+    if not SKLEARN_AVAILABLE:
+        return None
+
+    # Gather nearby evaluations
+    data = gather_nearby_evaluations(sampler, center_params, min_points=min_points, max_points=max_points)
+
+    if data['n_points'] < min_points:
+        logger.debug(f"Insufficient data for worker emulator: {data['n_points']} < {min_points}")
+        return None
+
+    # Package data with hyperparameters
+    return {
+        'X': data['X'],
+        'y': data['y'],
+        'length_scale': getattr(sampler, 'emulator_length_scale', 1.0),
+        'noise_level': getattr(sampler, 'emulator_noise_level', 0.01),
+        'confidence_threshold': getattr(sampler, 'emulator_confidence_threshold', 2.0)
+    }
+
+
+def build_emulator_from_cache(cache_data):
+    """
+    Build a GP emulator from pre-gathered cache data (worker-side).
+
+    This function is designed to be called on worker processes that receive
+    pre-packaged evaluation cache data from the master.
+
+    Parameters
+    ----------
+    cache_data : dict
+        Dictionary with keys:
+        - 'X': np.ndarray, training inputs
+        - 'y': np.ndarray, training targets
+        - 'length_scale': float
+        - 'noise_level': float
+
+    Returns
+    -------
+    LocalEmulator or None
+        Fitted emulator, or None if sklearn unavailable or fit fails
+    """
+    if not SKLEARN_AVAILABLE:
+        return None
+
+    if cache_data is None:
+        return None
+
+    X = cache_data['X']
+    y = cache_data['y']
+    length_scale = cache_data.get('length_scale', 1.0)
+    noise_level = cache_data.get('noise_level', 0.01)
+
+    # Build emulator
+    emulator = LocalEmulator(X, y, length_scale, noise_level)
 
     if not emulator.is_fitted:
         return None

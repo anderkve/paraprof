@@ -565,8 +565,10 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             free_workers.append(worker_rank)
             tasks_completed += 1
 
-            # Register the call centrally
-            sampler._register_target_call(result['params'], result['target_val'])
+            # Register the call centrally (only if not screened out by emulator)
+            was_screened = result.get('emulator_screened', False)
+            if not was_screened:
+                sampler._register_target_call(result['params'], result['target_val'])
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:
