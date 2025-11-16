@@ -10,7 +10,7 @@ logger = get_logger()
 
 # Try to import emulator utilities
 try:
-    from ..emulator_utils import build_local_emulator
+    from ..emulator_utils import prepare_emulator_cache_for_worker
     EMULATOR_AVAILABLE = True
 except ImportError:
     EMULATOR_AVAILABLE = False
@@ -46,71 +46,6 @@ class DEGridPointJob(Job):
         self.trials_generated = 0
         self.trials_screened_out = 0
 
-    def _screen_trial_with_emulator(self, trial_params, target_fitness, full_trial_params):
-        """
-        Uses GP emulator to predict if trial point is worth evaluating.
-
-        Decision criterion: Upper Confidence Bound (UCB)
-        - Evaluate if UCB = μ + β*σ > current_fitness
-        - β controlled by emulator_confidence_threshold
-
-        Parameters
-        ----------
-        trial_params : np.ndarray
-            Trial point continuous parameters
-        target_fitness : float
-            Current fitness of target individual
-        full_trial_params : np.ndarray
-            Full parameter vector (grid + continuous)
-
-        Returns
-        -------
-        should_evaluate : bool
-            True if trial should be evaluated, False to skip
-        """
-        # Check if pre-screening is enabled
-        if not getattr(self.sampler, 'use_de_prescreening', False):
-            return True
-
-        # Check if emulator is available
-        if not EMULATOR_AVAILABLE:
-            return True
-
-        # Build local GP emulator centered on trial point
-        emulator = build_local_emulator(
-            sampler=self.sampler,
-            center_params=full_trial_params,
-            min_points=self.sampler.emulator_min_neighbors,
-            max_points=getattr(self.sampler, 'emulator_max_neighbors', None)
-        )
-
-        if emulator is None:
-            # Insufficient data or GP fit failed - must evaluate
-            return True
-
-        # Predict trial fitness with uncertainty
-        pred_fitness, pred_std = emulator.predict(
-            full_trial_params.reshape(1, -1),
-            return_std=True
-        )
-        pred_fitness = float(pred_fitness[0])
-        pred_std = float(pred_std[0])
-
-        # Upper Confidence Bound acquisition function
-        beta = self.sampler.emulator_confidence_threshold
-        ucb = pred_fitness + beta * pred_std
-
-        # Decision: evaluate if UCB suggests potential improvement
-        should_evaluate = ucb > target_fitness
-
-        if not should_evaluate:
-            logger.debug(
-                f"DE pre-screen (grid {self.grid_idx}): "
-                f"Skipping trial, predicted {pred_fitness:.3e} (±{pred_std:.2e}) "
-                f"vs target {target_fitness:.3e}, UCB={ucb:.3e}"
-            )
-
-        return should_evaluate
 
     def start(self):
         """Generate all trial points and return their evaluation tasks."""
@@ -199,57 +134,74 @@ class DEGridPointJob(Job):
             # Track trial generation
             self.trials_generated += 1
 
-            # Construct full params for pre-screening
+            # Construct full params
             full_trial_params = self.sampler._construct_params(self.grid_idx, trial_params)
             target_fitness = grid_state['fitnesses'][i]
-
-            # === PRE-SCREENING WITH EMULATOR ===
-            should_evaluate = self._screen_trial_with_emulator(
-                trial_params, target_fitness, full_trial_params
-            )
-
-            if not should_evaluate:
-                # Emulator predicts no improvement - skip evaluation
-                self.trials_screened_out += 1
-                self.evals_remaining -= 1
-                # Don't add to trial_info or tasks
-                continue
-            # === END PRE-SCREENING ===
 
             # Store info needed when result comes back
             self.trial_info[i] = (trial_params, F_i, CR_i)
 
+            # === PREPARE EMULATOR DATA FOR WORKER-SIDE PRE-SCREENING ===
+            emulator_cache = None
+            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_de_prescreening', False):
+                emulator_cache = prepare_emulator_cache_for_worker(
+                    sampler=self.sampler,
+                    center_params=full_trial_params,
+                    min_points=self.sampler.emulator_min_neighbors,
+                    max_points=getattr(self.sampler, 'emulator_max_neighbors', None)
+                )
+            # === END EMULATOR PREPARATION ===
+
             context = {
                 'type': self.type,
                 'job_id': self.id,
-                'point_idx': i
+                'point_idx': i,
+                'target_fitness': target_fitness  # Worker needs this for UCB comparison
             }
-            tasks.append({'params': full_trial_params, 'context': context})
+            task = {
+                'params': full_trial_params,
+                'context': context,
+                'emulator_cache': emulator_cache  # None if disabled or insufficient data
+            }
+            tasks.append(task)
 
         if not tasks and self.evals_remaining == 0:
             self.success = True
             self._is_finished = True
 
-        # Update global statistics
+        # Update global statistics (trials_generated tracked here, screened_out tracked in process_result)
         if hasattr(self.sampler, 'de_trials_generated'):
             self.sampler.de_trials_generated += self.trials_generated
-            self.sampler.de_trials_screened_out += self.trials_screened_out
-
-        # Log pre-screening effectiveness
-        if self.trials_generated > 0:
-            if self.sampler.use_de_prescreening:
-                screen_rate = 100 * self.trials_screened_out / self.trials_generated
-                logger.info(
-                    f"DE job {self.id} (grid {self.grid_idx}): "
-                    f"Screened out {self.trials_screened_out}/{self.trials_generated} "
-                    f"trials ({screen_rate:.1f}%)"
-                )
 
         return tasks
 
     def process_result(self, result):
         """Compare trial fitness with target and store successful F/CR."""
         point_idx = result['context']['point_idx']
+
+        # Check if trial was screened out by worker-side emulator
+        was_screened = result.get('emulator_screened', False)
+        if was_screened:
+            # Worker rejected this trial - count it and skip
+            self.trials_screened_out += 1
+            if hasattr(self.sampler, 'de_trials_screened_out'):
+                self.sampler.de_trials_screened_out += 1
+
+            self.evals_remaining -= 1
+            if self.evals_remaining <= 0:
+                self.success = True
+                self._is_finished = True
+                # Log pre-screening effectiveness for this job
+                if self.trials_generated > 0 and self.sampler.use_de_prescreening:
+                    screen_rate = 100 * self.trials_screened_out / self.trials_generated
+                    logger.info(
+                        f"DE job {self.id} (grid {self.grid_idx}): "
+                        f"Screened out {self.trials_screened_out}/{self.trials_generated} "
+                        f"trials ({screen_rate:.1f}%)"
+                    )
+            return []
+
+        # Normal evaluation result
         trial_fitness = result['target_val']
 
         if point_idx not in self.trial_info:
@@ -275,6 +227,14 @@ class DEGridPointJob(Job):
         if self.evals_remaining <= 0:
             self.success = True
             self._is_finished = True
+            # Log pre-screening effectiveness for this job
+            if self.trials_generated > 0 and self.sampler.use_de_prescreening:
+                screen_rate = 100 * self.trials_screened_out / self.trials_generated
+                logger.info(
+                    f"DE job {self.id} (grid {self.grid_idx}): "
+                    f"Screened out {self.trials_screened_out}/{self.trials_generated} "
+                    f"trials ({screen_rate:.1f}%)"
+                )
 
         return [] # No new tasks
 

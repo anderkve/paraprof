@@ -82,7 +82,7 @@ if myrank == 0:
         use_de_prescreening=True,
         emulator_min_neighbors=10,
         emulator_max_neighbors=100,
-        emulator_confidence_threshold=2.0,
+        emulator_confidence_threshold=1.0,
         emulator_length_scale=0.1,
         emulator_noise_level=0.01,
     )
