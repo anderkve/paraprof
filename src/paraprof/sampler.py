@@ -272,8 +272,17 @@ class GridAnchoredDESampler:
         self.global_solution_pool = []  # List of {'continuous_params', 'fitness', 'grid_idx'}
 
         # --- Evaluation cache for emulator training ---
+        # Per-grid-point local caches for efficient emulator training
+        self.local_eval_caches = {}  # {grid_idx: [{'params': ..., 'fitness': ..., 'call_number': ...}, ...]}
+        self.local_cache_max_size = 500 # 5000  # Much smaller per grid point
+
+        # Keep small global cache for initial optimizations (before grid activation)
+        self.global_eval_cache = []
+        self.global_cache_max_size = 5000
+
+        # Legacy global cache (deprecated, kept for backward compatibility)
         self.eval_cache = []
-        self.eval_cache_max_size = 5000 # 5000
+        self.eval_cache_max_size = 5000  # Only used if use_local_caches=False
 
         # --- DE pre-screening statistics ---
         self.de_trials_generated = 0
@@ -588,23 +597,127 @@ class GridAnchoredDESampler:
                 self._flush_samples_buffer()
 
         # Add to eval cache for emulator training (only if pre-screening enabled)
-        if self.use_de_prescreening and hasattr(self, 'eval_cache'):
-            self.eval_cache.append({
-                'params': params.copy(),
-                'fitness': target_val,
-                'call_number': self.target_calls
-            })
+        if self.use_de_prescreening:
+            # Determine which grid point this evaluation belongs to
+            # If we can map it to a grid point, add to local cache; otherwise add to global cache
+            try:
+                grid_idx = self._get_grid_indices_from_point(params)
 
-            # Prune cache if too large
-            if len(self.eval_cache) > self.eval_cache_max_size:
-                self.eval_cache = self._prune_eval_cache()
+                # Add to local cache for this grid point
+                if grid_idx not in self.local_eval_caches:
+                    self.local_eval_caches[grid_idx] = []
+
+                self.local_eval_caches[grid_idx].append({
+                    'params': params.copy(),
+                    'fitness': target_val,
+                    'call_number': self.target_calls
+                })
+
+                # Prune local cache if too large (fast operation on small cache)
+                if len(self.local_eval_caches[grid_idx]) > self.local_cache_max_size:
+                    self._prune_local_cache(grid_idx)
+
+            except (AttributeError, KeyError):
+                # Grid not yet initialized or point outside grid - add to global cache
+                # This handles initial L-BFGS-B optimizations before grid activation
+                self.global_eval_cache.append({
+                    'params': params.copy(),
+                    'fitness': target_val,
+                    'call_number': self.target_calls
+                })
+
+                # Prune global cache if too large
+                if len(self.global_eval_cache) > self.global_cache_max_size:
+                    self.global_eval_cache = self._prune_global_cache()
+
+            # Also maintain legacy eval_cache for backward compatibility
+            if hasattr(self, 'eval_cache'):
+                self.eval_cache.append({
+                    'params': params.copy(),
+                    'fitness': target_val,
+                    'call_number': self.target_calls
+                })
+
+                # Prune legacy cache if too large
+                if len(self.eval_cache) > self.eval_cache_max_size:
+                    self.eval_cache = self._prune_eval_cache()
 
         # Updating global max is now handled by the jobs
         # to ensure it happens at the right time (e.g., after refinement).
 
+    def _prune_local_cache(self, grid_idx):
+        """
+        Prunes local eval cache for a specific grid point.
+
+        Strategy: Keep top 50% by fitness + most recent 50% by call number.
+
+        Parameters
+        ----------
+        grid_idx : tuple
+            Grid index of the cache to prune
+        """
+        cache = self.local_eval_caches[grid_idx]
+        target_size = self.local_cache_max_size
+
+        # Sort by fitness (keep best)
+        sorted_by_fitness = sorted(cache, key=lambda x: x['fitness'], reverse=True)
+        keep_best = sorted_by_fitness[:target_size // 2]
+
+        # Sort by recency (keep recent)
+        sorted_by_time = sorted(cache, key=lambda x: x['call_number'], reverse=True)
+        keep_recent = sorted_by_time[:target_size // 2]
+
+        # Merge and deduplicate by call_number
+        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
+        pruned = list(combined.values())
+
+        self.local_eval_caches[grid_idx] = pruned
+
+        self.logger.debug(
+            f"Pruned local cache for grid {grid_idx} from {len(cache)} to {len(pruned)} entries"
+        )
+
+    def _prune_global_cache(self):
+        """
+        Prunes global eval cache to max size, keeping best and most recent evaluations.
+
+        Strategy: Keep top 50% by fitness + most recent 50% by call number.
+
+        Returns
+        -------
+        list
+            Pruned evaluation cache
+        """
+        # Sort by fitness (keep best)
+        sorted_by_fitness = sorted(
+            self.global_eval_cache,
+            key=lambda x: x['fitness'],
+            reverse=True
+        )
+        keep_best = sorted_by_fitness[:self.global_cache_max_size // 2]
+
+        # Sort by recency (keep recent)
+        sorted_by_time = sorted(
+            self.global_eval_cache,
+            key=lambda x: x['call_number'],
+            reverse=True
+        )
+        keep_recent = sorted_by_time[:self.global_cache_max_size // 2]
+
+        # Merge and deduplicate by call_number
+        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
+        pruned = list(combined.values())
+
+        self.logger.debug(
+            f"Pruned global cache from {len(self.global_eval_cache)} to {len(pruned)} entries"
+        )
+
+        return pruned
+
     def _prune_eval_cache(self):
         """
         Prunes eval cache to max size, keeping best and most recent evaluations.
+        (Legacy method for backward compatibility)
 
         Strategy: Keep top 50% by fitness + most recent 50% by call number.
 
