@@ -90,6 +90,7 @@ def screen_trial_with_emulator(params, target_fitness, emulator_cache, logger):
 
     return should_evaluate
 
+
 def worker_main(comm, myrank):
     """
     Main loop for a worker process.
@@ -116,8 +117,8 @@ def worker_main(comm, myrank):
             break
 
         # Extract task components
-        params = task['params']
         context = task['context']
+        params = task['params']
         emulator_cache = task.get('emulator_cache', None)
 
         # === WORKER-SIDE EMULATOR PRE-SCREENING ===

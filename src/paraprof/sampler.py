@@ -772,6 +772,14 @@ class GridAnchoredDESampler:
             grid_axes = self.grid_axes
         return np.array([grid_axes[i][idx] for i, idx in enumerate(grid_idx)])
 
+    def _get_grid_point_coordinates(self, grid_idx, grid_axes=None):
+        """
+        Get the parameter values at a grid point (alias for _get_grid_coords_from_indices).
+
+        This method returns the actual parameter values (not indices) for the
+        projection dimensions at the given grid point.
+        """
+        return self._get_grid_coords_from_indices(grid_idx, grid_axes)
 
     def _construct_params(self, grid_idx, continuous_params, grid_axes=None):
         """Constructs a full parameter vector from grid and continuous parts."""
@@ -1297,6 +1305,7 @@ class GridAnchoredDESampler:
         # Mark as claimed
         state['status'] = 'LBFGSB_queued'
 
+        # === L-BFGS-B OPTIMIZATION ===
         # Find the best individual to start from
         best_ind_idx = np.argmax(state['fitnesses'])
         start_params_partial = state['continuous_params'][best_ind_idx]
