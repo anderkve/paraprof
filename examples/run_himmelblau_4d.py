@@ -42,7 +42,8 @@ PROJECTIONS_TO_RUN = [
     # 2D projections
     # {'dims': [0, 1], 'grid_points': [20, 20], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
     # {'dims': [0, 1], 'grid_points': [50, 50], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 2], 'grid_points': [100, 100], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
     # {'dims': [0, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -76,7 +77,7 @@ if myrank == 0:
         LBFGSB_ftol=1e-9,
         LBFGSB_max_iter=10, #20
         LBFGSB_gradient_method="forward", # "central",
-        max_patching_waves=20,  # Maximum number of patching waves
+        max_patching_waves=50,  # Maximum number of patching waves
         patching_n_neighbors=1,  # Test only the best neighbor
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
