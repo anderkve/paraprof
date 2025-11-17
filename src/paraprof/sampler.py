@@ -1096,6 +1096,10 @@ class GridAnchoredDESampler:
         This method bypasses DE entirely and uses interpolated starting points
         from the coarse grid solution for fast convergence.
 
+        Uses interpolation-based pre-screening to determine which coarse cells
+        should be processed: if any fine grid point within a coarse cell is
+        predicted (via interpolation) to be within the ROI, that cell is processed.
+
         Parameters
         ----------
         next_job_id : int
@@ -1131,11 +1135,65 @@ class GridAnchoredDESampler:
             self.logger.info("--- No transferred points found. No refinement jobs created. ---")
             return jobs, next_job_id
 
-        # For each coarse grid point in ROI, activate all fine points in its cell
+        # === INTERPOLATION-BASED PRE-SCREENING ===
+        # Determine which coarse cells to process by predicting fine point likelihoods
+        self.logger.info("--- Performing interpolation-based pre-screening of coarse cells ---")
+
+        coarse_cells_to_process = set()
+        n_cells_screened = 0
+        n_cells_accepted = 0
+
         for coarse_idx, solution in self.coarse_grid_solution['solutions'].items():
-            # Only process points within ROI
-            if solution['likelihood'] < roi_cutoff:
+            n_cells_screened += 1
+
+            # Check if the coarse point itself is in ROI (fast path)
+            if solution['likelihood'] >= roi_cutoff:
+                coarse_cells_to_process.add(coarse_idx)
+                n_cells_accepted += 1
                 continue
+
+            # Coarse point is outside ROI - check if any fine points might be inside
+            # Sample fine grid points within this coarse cell and predict their likelihoods
+            fine_start = tuple(ci * self.refinement_factor for ci in coarse_idx)
+            fine_end = tuple((ci + 1) * self.refinement_factor for ci in coarse_idx)
+
+            # Ensure cell boundaries are within fine grid bounds
+            fine_start = tuple(max(0, fs) for fs in fine_start)
+            fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
+
+            # Check all fine points in this cell
+            cell_has_roi_point = False
+            ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
+
+            for fine_idx in itertools.product(*ranges):
+                # Skip coarse grid points (already checked above)
+                if self._is_coarse_grid_point(fine_idx, self.refinement_factor):
+                    continue
+
+                # Get grid coordinates and interpolate likelihood
+                grid_coords = self._get_grid_coords_from_indices(fine_idx)
+                try:
+                    interpolated_likelihood = self.refinement_interpolator.get_interpolated_likelihood(grid_coords)
+
+                    # Check if interpolated likelihood suggests this point is in ROI
+                    if not np.isnan(interpolated_likelihood) and interpolated_likelihood >= roi_cutoff:
+                        cell_has_roi_point = True
+                        break  # No need to check more points in this cell
+                except Exception as e:
+                    # Interpolation failed - be conservative and include the cell
+                    self.logger.debug(f"Interpolation failed for fine point {fine_idx}: {e}")
+                    cell_has_roi_point = True
+                    break
+
+            if cell_has_roi_point:
+                coarse_cells_to_process.add(coarse_idx)
+                n_cells_accepted += 1
+
+        self.logger.info(f"--- Pre-screening complete: {n_cells_accepted}/{n_cells_screened} coarse cells selected for processing ---")
+
+        # === PROCESS SELECTED COARSE CELLS ===
+        # For each selected coarse cell, activate all fine points in its cell
+        for coarse_idx in coarse_cells_to_process:
 
             # Define the cell boundaries in fine grid coordinates
             # Coarse point (ci, cj) maps to fine cell: (ci*RF, cj*RF) to ((ci+1)*RF, (cj+1)*RF)

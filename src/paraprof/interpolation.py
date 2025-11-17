@@ -45,6 +45,9 @@ class GridInterpolator:
         # Build interpolators for each continuous parameter
         self._build_interpolators()
 
+        # Cache for likelihood interpolator (built on first use)
+        self._likelihood_interpolator = None
+
 
     def _build_interpolators(self):
         """
@@ -146,6 +149,8 @@ class GridInterpolator:
         """
         Interpolates the likelihood value at given projection coordinates.
 
+        Uses a cached interpolator for efficiency when called multiple times.
+
         Parameters
         ----------
         projection_coords : array-like
@@ -156,23 +161,24 @@ class GridInterpolator:
         float
             Interpolated likelihood value
         """
-        # Build likelihood grid
-        likelihood_grid = np.full(self.grid_shape, np.nan)
+        # Build likelihood interpolator on first use and cache it
+        if self._likelihood_interpolator is None:
+            likelihood_grid = np.full(self.grid_shape, np.nan)
 
-        for grid_idx, solution in self.solutions.items():
-            likelihood_grid[grid_idx] = solution['likelihood']
+            for grid_idx, solution in self.solutions.items():
+                likelihood_grid[grid_idx] = solution['likelihood']
 
-        # Create interpolator for likelihood
-        likelihood_interpolator = RegularGridInterpolator(
-            self.grid_axes,
-            likelihood_grid,
-            method='linear',
-            bounds_error=False,
-            fill_value=None
-        )
+            # Create interpolator for likelihood
+            self._likelihood_interpolator = RegularGridInterpolator(
+                self.grid_axes,
+                likelihood_grid,
+                method='linear',
+                bounds_error=False,
+                fill_value=None
+            )
 
         projection_coords = np.asarray(projection_coords).reshape(1, -1)
-        return likelihood_interpolator(projection_coords)[0]
+        return self._likelihood_interpolator(projection_coords)[0]
 
 
     def get_coverage_fraction(self):
