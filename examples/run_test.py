@@ -18,10 +18,14 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from sampler import GridAnchoredDESampler
-from master import run_all_projections, terminate_workers
-from worker import worker_main
-from test_functions import get_test_function
+from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import get_test_function
+
+from paraprof import set_log_level
+# set_log_level('DEBUG')
+set_log_level('INFO')
+# set_log_level('WARNING')
+
 
 # Get MPI info
 comm = MPI.COMM_WORLD
@@ -30,6 +34,7 @@ myrank = comm.Get_rank()
 # --- Configuration ---
 np.random.seed(750123)
 
+TEST_FUNCTION = "rosenbrock_4d"
 # TEST_FUNCTION = "rosenbrock_6d"
 # TEST_FUNCTION = "sphere_6d"
 # TEST_FUNCTION = "beale_2d"
@@ -38,7 +43,7 @@ np.random.seed(750123)
 # TEST_FUNCTION = "rastrigin_2d"
 # TEST_FUNCTION = "ackley_4d"
 # TEST_FUNCTION = "michalewicz_2d"
-TEST_FUNCTION = "michalewicz_4d"
+# TEST_FUNCTION = "michalewicz_4d"
 
 # ============================================================================
 # PROJECTION CONFIGURATION GUIDE
@@ -62,7 +67,7 @@ TEST_FUNCTION = "michalewicz_4d"
 PROJECTIONS_TO_RUN = [
     # For 2D functions with DIRECT EVALUATION MODE (projects onto both dims)
     # Iteration 4: Higher resolution grid for better coverage
-    {'dims': [0, 1], 'grid_points': [100, 100], 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 3], 'grid_points': [100, 100], 'enable_refinement': True, 'refinement_factor': 2},
 
     # Alternative: 1D projections with optimization (one continuous dim)
     # {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -94,17 +99,23 @@ if myrank == 0:
         mutation_strategy='current-to-pbest/1',
         pbest_fraction=0.1,
         n_initial_optimizations=100,
-        roi_threshold=1.5,
+        roi_threshold=20, #1.5,
         convergence_threshold=1e-7,
         convergence_window=3,
         neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
-        LBFGSB_max_iter=20,
+        LBFGSB_max_iter=10,
         LBFGSB_gradient_method="forward",
         max_patching_waves=20,
         patching_n_neighbors=1,
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
+        use_de_prescreening=True,
+        emulator_min_neighbors=10,
+        emulator_max_neighbors=200,
+        emulator_confidence_threshold=-1.0,
+        emulator_length_scale=1.0,  # In standardized units (inputs auto-scaled)
+        emulator_noise_level=0.0001,
     )
 
     # Broadcast the target function to all workers (once, before all projections)

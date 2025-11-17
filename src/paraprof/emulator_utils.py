@@ -5,6 +5,7 @@ This module provides Gaussian Process (GP) emulator functionality to reduce
 the number of expensive likelihood evaluations by predicting trial point fitness.
 """
 import numpy as np
+from scipy.optimize import minimize
 from .logger import get_logger
 
 logger = get_logger()
@@ -80,15 +81,24 @@ class LocalEmulator:
             constant_value_bounds=(1e-08, 1e8)
         ) * Matern(
             length_scale=length_scale,
-            length_scale_bounds=(1e-2, 1e4),
+            length_scale_bounds=(1e-4, 1e4),
             nu=1.5
         )
 
+
+        # Define own optimizer
+        def optimizer(obj_func, x0, bounds):
+            res = minimize(
+                obj_func, x0, bounds=bounds, method="L-BFGS-B", jac=True, options={"maxiter": 20_000})
+            return res.x, res.fun
+
+        # Create GP
         self.gp = GaussianProcessRegressor(
             kernel=kernel,
             normalize_y=True,
-            n_restarts_optimizer=2,
+            n_restarts_optimizer=0,
             alpha=1e-6,
+            optimizer=optimizer,
         )
 
         try:
@@ -212,13 +222,18 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     all_params = []
     all_fitness = []
 
+    # Get expected dimensionality from center_params
+    expected_ndim = len(center_params)
+
     # Strategy 1: Use local caches if grid_idx provided
     if grid_idx is not None and hasattr(sampler, 'local_eval_caches'):
         # Gather from center grid point's cache
         if grid_idx in sampler.local_eval_caches:
             for e in sampler.local_eval_caches[grid_idx]:
-                all_params.append(e['params'])
-                all_fitness.append(e['fitness'])
+                params = np.asarray(e['params'])
+                if len(params) == expected_ndim:
+                    all_params.append(params)
+                    all_fitness.append(e['fitness'])
 
         # Gather from neighboring grid points' caches
         if hasattr(sampler, '_get_valid_neighbors'):
@@ -226,8 +241,10 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
             for neighbor_idx in neighbors:
                 if neighbor_idx in sampler.local_eval_caches:
                     for e in sampler.local_eval_caches[neighbor_idx]:
-                        all_params.append(e['params'])
-                        all_fitness.append(e['fitness'])
+                        params = np.asarray(e['params'])
+                        if len(params) == expected_ndim:
+                            all_params.append(params)
+                            all_fitness.append(e['fitness'])
 
         logger.debug(
             f"Gathered {len(all_params)} points from local cache (grid {grid_idx} + neighbors)"
@@ -236,8 +253,10 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     # Strategy 2: Use global cache if no grid_idx or local caches insufficient
     if len(all_params) < min_points and hasattr(sampler, 'global_eval_cache') and sampler.global_eval_cache:
         for e in sampler.global_eval_cache:
-            all_params.append(e['params'])
-            all_fitness.append(e['fitness'])
+            params = np.asarray(e['params'])
+            if len(params) == expected_ndim:
+                all_params.append(params)
+                all_fitness.append(e['fitness'])
         logger.debug(
             f"Added {len(sampler.global_eval_cache)} points from global cache"
         )
@@ -245,8 +264,10 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     # Strategy 3: Fallback to legacy eval_cache
     if len(all_params) < min_points and hasattr(sampler, 'eval_cache') and sampler.eval_cache:
         for e in sampler.eval_cache:
-            all_params.append(e['params'])
-            all_fitness.append(e['fitness'])
+            params = np.asarray(e['params'])
+            if len(params) == expected_ndim:
+                all_params.append(params)
+                all_fitness.append(e['fitness'])
         logger.debug(
             f"Added {len(sampler.eval_cache)} points from legacy eval_cache"
         )
@@ -257,8 +278,10 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
             for i in range(len(state['fitnesses'])):
                 cont_params = state['continuous_params'][i]
                 full_params = sampler._construct_params(gidx, cont_params)
-                all_params.append(full_params)
-                all_fitness.append(state['fitnesses'][i])
+                full_params = np.asarray(full_params)
+                if len(full_params) == expected_ndim:
+                    all_params.append(full_params)
+                    all_fitness.append(state['fitnesses'][i])
 
     if not all_params:
         return {
