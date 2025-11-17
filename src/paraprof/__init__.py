@@ -17,6 +17,11 @@ from .exceptions import (
     JobError,
     ValidationError,
 )
+from .nuisance_wrapper import (
+    NuisanceParameterWrapper,
+    create_nuisance_wrapped_function,
+    register_nuisance_wrapped_test_functions,
+)
 
 __all__ = [
     'GridAnchoredDESampler',
@@ -38,6 +43,9 @@ __all__ = [
     'ConfigurationError',
     'JobError',
     'ValidationError',
+    'NuisanceParameterWrapper',
+    'create_nuisance_wrapped_function',
+    'register_nuisance_wrapped_test_functions',
 ]
 
 __version__ = '1.0.0'
