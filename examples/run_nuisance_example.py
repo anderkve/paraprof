@@ -49,7 +49,7 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True},
 
     # 2D projection over first two POI parameters
-    {'dims': [0, 1], 'grid_points': [50, 50], 'patching_coarse': True, 'lbfgsb': True,
+    {'dims': [0, 2], 'grid_points': [50, 50], 'patching_coarse': True, 'lbfgsb': True,
      'enable_refinement': True, 'patching_refined': True, 'refinement_factor': 2},
 ]
 
@@ -151,8 +151,8 @@ if myrank == 0:
         emulator_length_scale=1.0,
         emulator_noise_level=0.0001,
         # CD settings
-        use_cd_refinement=True,
-        cd_max_cycles=3,
+        use_cd_refinement=False,
+        cd_max_cycles=20,
         cd_step_fraction=0.01,
     )
 

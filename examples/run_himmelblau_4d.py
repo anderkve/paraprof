@@ -81,15 +81,15 @@ if myrank == 0:
         patching_n_neighbors=1,  # Test only the best neighbor
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
-        use_de_prescreening=False,
+        use_de_prescreening=True,
         emulator_min_neighbors=10,
-        emulator_max_neighbors=200,
+        emulator_max_neighbors=100,
         emulator_confidence_threshold=-1.0,
         emulator_length_scale=1.0,  # In standardized units (inputs auto-scaled)
         emulator_noise_level=0.0001,
         # CD settings
         use_cd_refinement=True,
-        cd_max_cycles=3,
+        cd_max_cycles=50,
         cd_step_fraction=0.01,
     )
 
