@@ -9,6 +9,7 @@ from .logger import get_logger
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
+from .jobs.cd_job import CoordinateDescentJob
 
 
 class GridAnchoredDESampler:
@@ -44,7 +45,10 @@ class GridAnchoredDESampler:
                  emulator_min_neighbors=10,
                  emulator_max_neighbors=100,
                  emulator_length_scale=1.0,
-                 emulator_noise_level=0.01):
+                 emulator_noise_level=0.01,
+                 use_cd_refinement=True,
+                 cd_max_cycles=3,
+                 cd_step_fraction=0.01):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -106,6 +110,13 @@ class GridAnchoredDESampler:
             Initial RBF kernel length scale (default: 1.0, auto-tuned)
         emulator_noise_level : float, optional
             White noise level for GP (default: 0.01)
+        use_cd_refinement : bool, optional
+            Use coordinate descent for grid refinement optimization (default: True)
+            When enabled, refinement uses fast coordinate descent instead of L-BFGS-B
+        cd_max_cycles : int, optional
+            Maximum coordinate descent cycles for refinement (default: 3)
+        cd_step_fraction : float, optional
+            CD step size as fraction of parameter range (default: 0.01)
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -259,6 +270,11 @@ class GridAnchoredDESampler:
         self.emulator_max_neighbors = emulator_max_neighbors
         self.emulator_length_scale = emulator_length_scale
         self.emulator_noise_level = emulator_noise_level
+
+        # --- Coordinate Descent configuration ---
+        self.use_cd_refinement = use_cd_refinement
+        self.cd_max_cycles = cd_max_cycles
+        self.cd_step_fraction = cd_step_fraction
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -1091,10 +1107,11 @@ class GridAnchoredDESampler:
 
     def create_refinement_lbfgsb_jobs(self, next_job_id):
         """
-        Creates LBFGSB jobs directly for fine grid neighbors during refinement.
+        Creates optimization jobs directly for fine grid neighbors during refinement.
 
         This method bypasses DE entirely and uses interpolated starting points
-        from the coarse grid solution for fast convergence.
+        from the coarse grid solution for fast convergence. Uses either coordinate
+        descent (if use_cd_refinement=True) or L-BFGS-B optimization.
 
         Uses interpolation-based pre-screening to determine which coarse cells
         should be processed: if any fine grid point within a coarse cell is
@@ -1108,7 +1125,7 @@ class GridAnchoredDESampler:
         Returns
         -------
         jobs : list
-            List of LBFGSBJob objects
+            List of CoordinateDescentJob or LBFGSBJob objects
         next_job_id : int
             Updated job ID counter
         """
@@ -1232,23 +1249,38 @@ class GridAnchoredDESampler:
                 # Construct full parameter vector for initial evaluation
                 start_params_full = self._construct_params(fine_idx, start_params_partial)
 
-                # Create LBFGSB job directly
-                job = LBFGSBJob(
-                    job_id=next_job_id,
-                    job_type='REFINEMENT_LBFGSB',
-                    sampler=self,
-                    opt_dims=tuple(self.continuous_dims),
-                    start_params=start_params_partial,
-                    grid_idx=fine_idx,
-                    start_params_full=start_params_full,
-                    seed_history=None,
-                    start_fitness=-np.inf
-                )
+                # Create optimization job (CD or L-BFGS-B based on configuration)
+                if self.use_cd_refinement:
+                    job = CoordinateDescentJob(
+                        job_id=next_job_id,
+                        job_type='REFINEMENT_CD',
+                        sampler=self,
+                        opt_dims=tuple(self.continuous_dims),
+                        start_params=start_params_partial,
+                        grid_idx=fine_idx,
+                        start_params_full=start_params_full,
+                        start_fitness=-np.inf,
+                        max_cycles=self.cd_max_cycles,
+                        step_fraction=self.cd_step_fraction
+                    )
+                else:
+                    job = LBFGSBJob(
+                        job_id=next_job_id,
+                        job_type='REFINEMENT_LBFGSB',
+                        sampler=self,
+                        opt_dims=tuple(self.continuous_dims),
+                        start_params=start_params_partial,
+                        grid_idx=fine_idx,
+                        start_params_full=start_params_full,
+                        seed_history=None,
+                        start_fitness=-np.inf
+                    )
                 jobs.append(job)
                 lbfgsb_job_created_for_grid_points.add(fine_idx)
                 next_job_id += 1
 
-        self.logger.info(f"--- Generating {len(jobs)} refinement LBFGSB jobs ---")
+        opt_method = "CD" if self.use_cd_refinement else "LBFGSB"
+        self.logger.info(f"--- Generating {len(jobs)} refinement {opt_method} jobs ---")
         return jobs, next_job_id
 
 
