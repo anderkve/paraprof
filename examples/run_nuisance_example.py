@@ -144,12 +144,16 @@ if myrank == 0:
         patching_n_neighbors=1,
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,
-        use_de_prescreening=True,  # Use emulator to reduce evaluations
+        use_de_prescreening=False,  # Use emulator to reduce evaluations
         emulator_min_neighbors=10,
         emulator_max_neighbors=100,
         emulator_confidence_threshold=-1.0,
         emulator_length_scale=1.0,
         emulator_noise_level=0.0001,
+        # CD settings
+        use_cd_refinement=True,
+        cd_max_cycles=3,
+        cd_step_fraction=0.01,
     )
 
     # Broadcast target function to all workers
