@@ -66,10 +66,12 @@ def run_projection(comm, sampler, projection_config,
         - 'dims': list of int - projection dimension indices
         - 'grid_points': list of int - grid points per dimension
         Optional keys:
+        - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
+        - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
         - 'enable_refinement': bool - enable grid refinement (default: False)
         - 'refinement_factor': int - refinement factor (default: 2)
-        - 'lbfgsb': bool - enable L-BFGS-B optimization (default: True)
-        - 'patching': bool - enable patching stage (default: True)
+        - 'patching_coarse': bool - enable patching on coarse grid (default: True)
+        - 'patching_refined': bool - enable patching on refined grid (default: False)
     num_generations : int
         Maximum number of DE generations to run
     max_num_to_evolve : int or None
@@ -230,10 +232,12 @@ def run_all_projections(comm, sampler, projections,
         - 'dims': list of int - projection dimension indices
         - 'grid_points': list of int - grid points per dimension
         Optional keys per projection:
+        - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
+        - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
         - 'enable_refinement': bool - enable grid refinement (default: False)
         - 'refinement_factor': int - refinement factor (default: 2)
-        - 'lbfgsb': bool - enable L-BFGS-B optimization (default: True)
-        - 'patching': bool - enable patching stage (default: True)
+        - 'patching_coarse': bool - enable patching on coarse grid (default: True)
+        - 'patching_refined': bool - enable patching on refined grid (default: False)
     num_generations : int
         Maximum number of DE generations to run per projection
     max_num_to_evolve : int or None
@@ -363,14 +367,24 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             stages.append('PATCHING_WAVES')
         logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
-        # Normal mode: always use full workflow (DE handles direct eval mode gracefully)
-        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION', 'DE_LOOP']
-        # Disable patching in direct evaluation mode (no continuous params to share)
+        # Normal mode: workflow depends on optimization method
+        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION']
+
+        # Add optimization stage based on configured method
+        if sampler.optimization_method == 'de':
+            stages.append('DE_LOOP')
+        elif sampler.optimization_method == 'lbfgsb':
+            stages.append('POST_ACTIVATION_LBFGSB')
+
+        # Add patching if enabled (applies to all optimization methods)
         if sampler.patching_coarse and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
+
         if sampler.direct_eval_mode:
-            logger.info("--- Direct Evaluation Mode: Using degenerate DE workflow (pop=1, immediate convergence) ---")
-            logger.info("    Patching automatically disabled (no continuous parameters to share)")
+            logger.info("--- Direct Evaluation Mode: No continuous parameters ---")
+            logger.info("    Patching automatically disabled")
+        else:
+            logger.info(f"--- Optimization method: {sampler.optimization_method} ---")
 
     current_stage = stages.pop(0) if stages else None
 
@@ -383,7 +397,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # Helper function to queue tasks
     def _queue_tasks(tasks, job_type):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
+        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
             low_prio_tasks.extend(tasks)
@@ -541,6 +555,16 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
                 if not new_jobs:
                     logger.info("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+            elif current_stage == 'POST_ACTIVATION_LBFGSB':
+                # Direct L-BFGS-B optimization of all activated points
+                # (alternative to DE when optimization_method='lbfgsb')
+                new_jobs, next_job_id = sampler.create_post_activation_lbfgsb_jobs(next_job_id)
+
+                if not new_jobs:
+                    logger.info("--- Master: No post-activation L-BFGS-B jobs created. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 

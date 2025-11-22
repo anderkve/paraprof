@@ -321,7 +321,8 @@ class GridAnchoredDESampler:
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
-        self.enable_lbfgsb = True  # Default to True (controlled per-projection)
+        self.optimization_method = 'de'  # Default optimization method
+        self.lbfgsb_refinement = True  # Default to True (controlled per-projection)
         self.patching_coarse = True  # Default to True (controlled per-projection)
         self.patching_refined = False  # Default to False (controlled per-projection)
 
@@ -350,8 +351,31 @@ class GridAnchoredDESampler:
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
 
-        # Read optional flags from projection config
-        self.enable_lbfgsb = projection_config.get('lbfgsb', True)
+        # Read optimization method
+        self.optimization_method = projection_config.get('optimization_method', 'de')
+
+        # Validate optimization method
+        valid_methods = ['de', 'lbfgsb']
+        if self.optimization_method not in valid_methods:
+            raise ConfigurationError(
+                f"Invalid optimization_method: '{self.optimization_method}'. "
+                f"Must be one of {valid_methods}",
+                parameter="optimization_method",
+                value=self.optimization_method
+            )
+
+        # Read L-BFGS-B refinement flag (with backward compatibility)
+        if 'lbfgsb_refinement' in projection_config:
+            self.lbfgsb_refinement = projection_config.get('lbfgsb_refinement', True)
+        elif 'lbfgsb' in projection_config:
+            # Backward compatibility: support old 'lbfgsb' name
+            self.lbfgsb_refinement = projection_config.get('lbfgsb', True)
+            self.logger.warning(
+                "Projection config key 'lbfgsb' is deprecated. "
+                "Please use 'lbfgsb_refinement' instead."
+            )
+        else:
+            self.lbfgsb_refinement = True  # Default
 
         # Read patching configuration with backward compatibility
         if 'patching_coarse' in projection_config or 'patching_refined' in projection_config:
@@ -364,7 +388,9 @@ class GridAnchoredDESampler:
             self.patching_refined = False
 
         # Print configuration
-        self.logger.info(f"  L-BFGS-B after DE convergence: {'Enabled' if self.enable_lbfgsb else 'Disabled'}")
+        self.logger.info(f"  Optimization method: {self.optimization_method}")
+        if self.optimization_method == 'de':
+            self.logger.info(f"  L-BFGS-B refinement after DE: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
         self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
         if self.is_refinement_run:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
@@ -1029,6 +1055,73 @@ class GridAnchoredDESampler:
                 next_job_id += 1
 
         self.logger.info(f"--- Generating {len(jobs)} activation jobs ---")
+        return jobs, next_job_id
+
+
+    def create_post_activation_lbfgsb_jobs(self, next_job_id):
+        """
+        Create L-BFGS-B jobs for all activated grid points (alternative to DE).
+
+        This is used when optimization_method='lbfgsb' to directly optimize
+        activated grid points without running differential evolution.
+
+        Each activated grid point gets a single L-BFGS-B job starting from
+        the best point in its initial population.
+
+        Parameters
+        ----------
+        next_job_id : int
+            The next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of LBFGSBJob instances
+        next_job_id : int
+            Updated job ID counter
+        """
+        from .jobs.lbfgsb_job import LBFGSBJob
+
+        jobs = []
+
+        # Find all grid points that need optimization
+        # (status 'active' means activated but not yet optimized)
+        for grid_idx, state in self.population.items():
+            if state['status'] == 'active':
+                # Direct evaluation mode: no continuous dimensions to optimize
+                if self.direct_eval_mode or self.n_cont_dims == 0:
+                    state['status'] = 'optimized'
+                    continue
+
+                # Mark as claimed
+                state['status'] = 'LBFGSB_queued'
+
+                # Find the best individual to start from
+                best_ind_idx = np.argmax(state['fitnesses'])
+                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_fitness = state['fitnesses'][best_ind_idx]
+
+                # Construct the full parameter vector for the initial task
+                start_params_full = self._construct_params(grid_idx, start_params_partial)
+
+                # Create L-BFGS-B job
+                job = LBFGSBJob(
+                    job_id=next_job_id,
+                    job_type='POST_ACTIVATION_LBFGSB',
+                    sampler=self,
+                    opt_dims=tuple(self.continuous_dims),
+                    start_params=start_params_partial,
+                    grid_idx=grid_idx,
+                    start_params_full=start_params_full,
+                    seed_history=None,  # No history seeding for post-activation
+                    start_fitness=start_fitness
+                )
+
+                jobs.append(job)
+                next_job_id += 1
+
+        self.logger.info(f"Created {len(jobs)} post-activation L-BFGS-B jobs")
+
         return jobs, next_job_id
 
 

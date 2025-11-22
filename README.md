@@ -162,7 +162,8 @@ Each projection can specify:
 
 - `dims`: List of parameter indices to project
 - `grid_points`: Grid resolution per dimension
-- `lbfgsb`: Enable/disable L-BFGS-B refinement (default: True)
+- `optimization_method`: Optimization algorithm ('de', 'lbfgsb') (default: 'de')
+- `lbfgsb_refinement`: Enable L-BFGS-B refinement after DE (default: True)
 - `patching_coarse`: Enable patching on coarse grid (default: True)
 - `enable_refinement`: Enable grid refinement (default: False)
 - `refinement_factor`: Refinement multiplier (default: 2)
