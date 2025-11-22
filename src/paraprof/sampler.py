@@ -1058,6 +1058,68 @@ class GridAnchoredDESampler:
 
         return jobs, next_job_id
 
+    def create_lbfgsb_loop_jobs(self, next_job_id):
+        """
+        Create L-BFGS-B jobs for active (non-converged) grid points in the LBFGSB_LOOP stage.
+
+        This method is used in the iterative LBFGSB_LOOP workflow, similar to how
+        DE_LOOP creates jobs. It only processes grid points with status='active',
+        skipping those already marked as 'converged' or 'LBFGSB_queued'.
+
+        Parameters
+        ----------
+        next_job_id : int
+            The next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of LBFGSBJob instances
+        next_job_id : int
+            Updated job ID counter
+        """
+        from .jobs.lbfgsb_job import LBFGSBJob
+
+        jobs = []
+
+        # Find all grid points that need optimization
+        # (status 'active' means activated but not yet converged)
+        for grid_idx, state in self.population.items():
+            if state['status'] == 'active':
+                # Direct evaluation mode: no continuous dimensions to optimize
+                if self.direct_eval_mode or self.n_cont_dims == 0:
+                    state['status'] = 'converged'
+                    continue
+
+                # Mark as claimed
+                state['status'] = 'LBFGSB_queued'
+
+                # Find the best individual to start from
+                best_ind_idx = np.argmax(state['fitnesses'])
+                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_fitness = state['fitnesses'][best_ind_idx]
+
+                # Construct the full parameter vector for the initial task
+                start_params_full = self._construct_params(grid_idx, start_params_partial)
+
+                # Create L-BFGS-B job
+                job = LBFGSBJob(
+                    job_id=next_job_id,
+                    job_type='LBFGSB_LOOP',
+                    sampler=self,
+                    opt_dims=tuple(self.continuous_dims),
+                    start_params=start_params_partial,
+                    grid_idx=grid_idx,
+                    start_params_full=start_params_full,
+                    seed_history=None,  # Could potentially seed from neighbors in future
+                    start_fitness=start_fitness
+                )
+
+                jobs.append(job)
+                next_job_id += 1
+
+        return jobs, next_job_id
+
 
     def create_refinement_activation_jobs(self, next_job_id):
         """

@@ -30,24 +30,23 @@ myrank = comm.Get_rank()
 np.random.seed(750123)
 
 TEST_FUNCTION = "himmelblau_4d"
+# TEST_FUNCTION = "rosenbrock_4d"
 
 PROJECTIONS_TO_RUN = [
 
     # 1D projections
-    # {'dims': [0], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [3], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [2], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections
-    # {'dims': [0, 1], 'grid_points': [20, 20], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
-    # {'dims': [0, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 2], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
 ]
 
@@ -75,7 +74,7 @@ if myrank == 0:
         convergence_window=3, #3,      # Longer window -> Shorter (match serial)
         neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
-        LBFGSB_max_iter=10, #20
+        LBFGSB_max_iter=20,
         LBFGSB_gradient_method="forward", # "central",
         max_patching_waves=50,  # Maximum number of patching waves
         patching_n_neighbors=1,  # Test only the best neighbor
