@@ -49,8 +49,8 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True},
 
     # 2D projection over first two POI parameters
-    {'dims': [0, 2], 'grid_points': [50, 50], 'patching_coarse': True, 'lbfgsb': True,
-     'enable_refinement': True, 'patching_refined': True, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 
+     'lbfgsb_refinement': True, 'enable_refinement': True, 'patching_refined': True, 'refinement_factor': 2},
 ]
 
 if myrank == 0:
