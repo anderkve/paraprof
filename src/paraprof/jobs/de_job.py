@@ -278,15 +278,15 @@ class DEGridPointJob(Job):
 
             avg_improvement = np.mean(grid_state['improvement_history'])
             if avg_improvement < self.sampler.convergence_threshold:
-                if self.sampler.enable_lbfgsb:
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Spawning LBFGSB job. ---")
+                if self.sampler.lbfgsb_refinement:
+                    logger.info(f"--- DE Converged for {self.grid_idx}. Spawning L-BFGS-B refinement job. ---")
                     # This job factory will set status to 'LBFGSB_queued'
                     # and return (new_job, next_job_id + 1)
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
                 else:
                     # Mark as optimized without L-BFGS-B refinement
                     grid_state['status'] = 'optimized'
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized (L-BFGS-B disabled). ---")
+                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized (L-BFGS-B refinement disabled). ---")
                     return None
 
         return None
