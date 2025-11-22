@@ -425,12 +425,18 @@ class LBFGSBJob(Job):
             # Update global solution pool with discovered maximum
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
-        elif self.type in ['LBFGSB', 'PATCHING_LBFGSB']:
+        elif self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB']:
             grid_idx = self.grid_idx
             if grid_idx in self.sampler.population:
                 state = self.sampler.population[grid_idx]
                 state['optimizer_state'] = {'s': list(self.s_hist), 'y': list(self.y_hist)}
-                state['status'] = 'optimized' # Mark as fully complete
+
+                # For LBFGSB_LOOP, mark as 'converged' to enable dynamic activation
+                # For others, mark as 'optimized' (final state)
+                if self.type == 'LBFGSB_LOOP':
+                    state['status'] = 'converged'
+                else:
+                    state['status'] = 'optimized'
 
                 # Update the best individual with the optimized result
                 if self.current_fitness > state['best_fitness']:

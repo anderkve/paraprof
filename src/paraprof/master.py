@@ -374,7 +374,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         if sampler.optimization_method == 'de':
             stages.append('DE_LOOP')
         elif sampler.optimization_method == 'lbfgsb':
-            stages.append('POST_ACTIVATION_LBFGSB')
+            stages.append('LBFGSB_LOOP')
 
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patching_coarse and not sampler.direct_eval_mode:
@@ -397,7 +397,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     # Helper function to queue tasks
     def _queue_tasks(tasks, job_type):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
+        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
             low_prio_tasks.extend(tasks)
@@ -503,6 +503,35 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
+            elif current_stage == 'LBFGSB_LOOP':
+                # Iterative L-BFGS-B optimization with dynamic activation
+                # Similar to DE_LOOP but using gradient-based optimization
+
+                # Create L-BFGS-B jobs for all active (non-converged) grid points
+                new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
+
+                # Create dynamic activation jobs for neighbors of high-likelihood points
+                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+                new_jobs = new_lbfgsb_jobs + new_act_jobs
+
+                # --- Print iteration summary ---
+                total_grid_points = len(sampler.population)
+                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
+                converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
+                newly_activated_count = len(new_act_jobs)
+
+                logger.info(f"LBFGSB Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                      f"New Activations: {newly_activated_count:3d} | "
+                      f"L-BFGS-B Jobs: {len(new_lbfgsb_jobs):3d}")
+
+                # Check convergence: no active jobs and no new activations
+                if not new_jobs:
+                    logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
                 patching_enabled = sampler.patching_refined if sampler.is_refinement_run else sampler.patching_coarse
@@ -578,7 +607,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 _queue_tasks(initial_tasks, job.type)
 
             # If we just finished a non-looping stage, advance to the next
-            if current_stage not in ['DE_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
+            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---
