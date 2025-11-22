@@ -296,10 +296,6 @@ class GridAnchoredDESampler:
         self.global_eval_cache = []
         self.global_cache_max_size = 5000
 
-        # Legacy global cache (deprecated, kept for backward compatibility)
-        self.eval_cache = []
-        self.eval_cache_max_size = 5000  # Only used if use_local_caches=False
-
         # --- DE pre-screening statistics ---
         self.de_trials_generated = 0
         self.de_trials_screened_out = 0
@@ -364,28 +360,15 @@ class GridAnchoredDESampler:
                 value=self.optimization_method
             )
 
-        # Read L-BFGS-B refinement flag (with backward compatibility)
+        # Read L-BFGS-B refinement flag
         if 'lbfgsb_refinement' in projection_config:
             self.lbfgsb_refinement = projection_config.get('lbfgsb_refinement', True)
-        elif 'lbfgsb' in projection_config:
-            # Backward compatibility: support old 'lbfgsb' name
-            self.lbfgsb_refinement = projection_config.get('lbfgsb', True)
-            self.logger.warning(
-                "Projection config key 'lbfgsb' is deprecated. "
-                "Please use 'lbfgsb_refinement' instead."
-            )
         else:
             self.lbfgsb_refinement = True  # Default
 
-        # Read patching configuration with backward compatibility
-        if 'patching_coarse' in projection_config or 'patching_refined' in projection_config:
-            self.patching_coarse = projection_config.get('patching_coarse', True)
-            self.patching_refined = projection_config.get('patching_refined', False)
-        else:
-            # Backward compatibility: old 'patching' flag applies to coarse grid only
-            legacy_patching = projection_config.get('patching', True)
-            self.patching_coarse = legacy_patching
-            self.patching_refined = False
+        # Read patching configuration
+        self.patching_coarse = projection_config.get('patching_coarse', True)
+        self.patching_refined = projection_config.get('patching_refined', False)
 
         # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
@@ -672,18 +655,6 @@ class GridAnchoredDESampler:
                 if len(self.global_eval_cache) > self.global_cache_max_size:
                     self.global_eval_cache = self._prune_global_cache()
 
-            # Also maintain legacy eval_cache for backward compatibility
-            if hasattr(self, 'eval_cache'):
-                self.eval_cache.append({
-                    'params': params.copy(),
-                    'fitness': target_val,
-                    'call_number': self.target_calls
-                })
-
-                # Prune legacy cache if too large
-                if len(self.eval_cache) > self.eval_cache_max_size:
-                    self.eval_cache = self._prune_eval_cache()
-
         # Updating global max is now handled by the jobs
         # to ensure it happens at the right time (e.g., after refinement).
 
@@ -756,43 +727,6 @@ class GridAnchoredDESampler:
 
         return pruned
 
-    def _prune_eval_cache(self):
-        """
-        Prunes eval cache to max size, keeping best and most recent evaluations.
-        (Legacy method for backward compatibility)
-
-        Strategy: Keep top 50% by fitness + most recent 50% by call number.
-
-        Returns
-        -------
-        list
-            Pruned evaluation cache
-        """
-        # Sort by fitness (keep best)
-        sorted_by_fitness = sorted(
-            self.eval_cache,
-            key=lambda x: x['fitness'],
-            reverse=True
-        )
-        keep_best = sorted_by_fitness[:self.eval_cache_max_size // 2]
-
-        # Sort by recency (keep recent)
-        sorted_by_time = sorted(
-            self.eval_cache,
-            key=lambda x: x['call_number'],
-            reverse=True
-        )
-        keep_recent = sorted_by_time[:self.eval_cache_max_size // 2]
-
-        # Merge and deduplicate by call_number
-        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
-        pruned = list(combined.values())
-
-        self.logger.debug(
-            f"Pruned eval cache from {len(self.eval_cache)} to {len(pruned)} entries"
-        )
-
-        return pruned
 
     def _get_grid_indices_from_point(self, point, grid_axes=None):
         """Converts a point's projection coordinates to the closest grid indices."""

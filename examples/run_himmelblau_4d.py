@@ -34,20 +34,20 @@ TEST_FUNCTION = "himmelblau_4d"
 PROJECTIONS_TO_RUN = [
 
     # 1D projections
-    # {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [3], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [1], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [2], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [3], 'grid_points': [100], 'optimization_method': 'de', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections
-    # {'dims': [0, 1], 'grid_points': [20, 20], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [100, 100], 'patching_coarse': True, 'patching_refined': False, 'lbfgsb': True, 'enable_refinement': False, 'refinement_factor': 2},
-    # {'dims': [0, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 2], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2, 3], 'grid_points': [75, 75], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [20, 20], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': True, 'enable_refinement': False, 'refinement_factor': 2},
+    # {'dims': [0, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [1, 2], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [1, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [2, 3], 'grid_points': [75, 75], 'optimization_method': 'de', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
 ]
 
