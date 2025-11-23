@@ -44,8 +44,8 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [3], 'grid_points': [100], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections with BOBYQA
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': False, 'patching_refined': True, 'enable_refinement': False, 'refinement_factor': 2},
     # {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'bobyqa', 'patching_coarse': True, 'patching_refined': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -81,7 +81,7 @@ if myrank == 0:
         LBFGSB_gradient_method="forward",
         # BOBYQA-specific parameters
         bobyqa_initial_trust_radius=0.1,
-        bobyqa_max_iterations=200,
+        bobyqa_max_iterations=50,
         bobyqa_min_trust_radius=1e-6,
         # Other settings
         max_patching_waves=50,
