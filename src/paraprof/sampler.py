@@ -48,7 +48,10 @@ class GridAnchoredDESampler:
                  emulator_noise_level=0.01,
                  use_cd_refinement=True,
                  cd_max_cycles=3,
-                 cd_step_fraction=0.01):
+                 cd_step_fraction=0.01,
+                 bobyqa_initial_trust_radius=0.1,
+                 bobyqa_max_iterations=50,
+                 bobyqa_min_trust_radius=1e-6):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -117,6 +120,12 @@ class GridAnchoredDESampler:
             Maximum coordinate descent cycles for refinement (default: 3)
         cd_step_fraction : float, optional
             CD step size as fraction of parameter range (default: 0.01)
+        bobyqa_initial_trust_radius : float, optional
+            Initial trust region radius for BOBYQA (default: 0.1)
+        bobyqa_max_iterations : int, optional
+            Maximum BOBYQA iterations per grid point (default: 50)
+        bobyqa_min_trust_radius : float, optional
+            Minimum trust radius before convergence (default: 1e-6)
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -276,6 +285,11 @@ class GridAnchoredDESampler:
         self.cd_max_cycles = cd_max_cycles
         self.cd_step_fraction = cd_step_fraction
 
+        # --- BOBYQA configuration ---
+        self.bobyqa_initial_trust_radius = bobyqa_initial_trust_radius
+        self.bobyqa_max_iterations = bobyqa_max_iterations
+        self.bobyqa_min_trust_radius = bobyqa_min_trust_radius
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         if self.samples_output_file:
@@ -351,7 +365,7 @@ class GridAnchoredDESampler:
         self.optimization_method = projection_config.get('optimization_method', 'de')
 
         # Validate optimization method
-        valid_methods = ['de', 'lbfgsb']
+        valid_methods = ['de', 'lbfgsb', 'bobyqa']
         if self.optimization_method not in valid_methods:
             raise ConfigurationError(
                 f"Invalid optimization_method: '{self.optimization_method}'. "
@@ -1113,6 +1127,122 @@ class GridAnchoredDESampler:
                     start_params_full=start_params_full,
                     seed_history=None,  # Could potentially seed from neighbors in future
                     start_fitness=start_fitness
+                )
+
+                jobs.append(job)
+                next_job_id += 1
+
+        return jobs, next_job_id
+
+    def create_post_activation_bobyqa_jobs(self, next_job_id):
+        """
+        Create BOBYQA jobs for all activated grid points.
+
+        Similar to create_post_activation_lbfgsb_jobs() but uses BOBYQA
+        optimization instead of L-BFGS-B.
+
+        Parameters
+        ----------
+        next_job_id : int
+            The next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of BOBYQAJob instances
+        next_job_id : int
+            Updated job ID counter
+        """
+        from .jobs.bobyqa_job import BOBYQAJob
+
+        jobs = []
+
+        for grid_idx, state in self.population.items():
+            if state['status'] == 'active':
+                # Direct evaluation mode: no continuous dimensions
+                if self.direct_eval_mode or self.n_cont_dims == 0:
+                    state['status'] = 'optimized'
+                    continue
+
+                # Mark as claimed
+                state['status'] = 'BOBYQA_queued'
+
+                # Find best individual to start from
+                best_ind_idx = np.argmax(state['fitnesses'])
+                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_fitness = state['fitnesses'][best_ind_idx]
+                start_params_full = self._construct_params(grid_idx, start_params_partial)
+
+                # Create BOBYQA job
+                job = BOBYQAJob(
+                    job_id=next_job_id,
+                    job_type='POST_ACTIVATION_BOBYQA',
+                    sampler=self,
+                    opt_dims=tuple(self.continuous_dims),
+                    start_params=start_params_partial,
+                    grid_idx=grid_idx,
+                    start_params_full=start_params_full,
+                    start_fitness=start_fitness,
+                    initial_trust_radius=self.bobyqa_initial_trust_radius,
+                    max_iterations=self.bobyqa_max_iterations
+                )
+
+                jobs.append(job)
+                next_job_id += 1
+
+        self.logger.info(f"Created {len(jobs)} post-activation BOBYQA jobs")
+        return jobs, next_job_id
+
+    def create_bobyqa_loop_jobs(self, next_job_id):
+        """
+        Create BOBYQA jobs for active grid points in BOBYQA_LOOP stage.
+
+        Similar to create_lbfgsb_loop_jobs() but for iterative BOBYQA workflow.
+
+        Parameters
+        ----------
+        next_job_id : int
+            The next available job ID
+
+        Returns
+        -------
+        jobs : list
+            List of BOBYQAJob instances
+        next_job_id : int
+            Updated job ID counter
+        """
+        from .jobs.bobyqa_job import BOBYQAJob
+
+        jobs = []
+
+        for grid_idx, state in self.population.items():
+            if state['status'] == 'active':
+                # Direct evaluation mode
+                if self.direct_eval_mode or self.n_cont_dims == 0:
+                    state['status'] = 'converged'
+                    continue
+
+                # Mark as claimed
+                state['status'] = 'BOBYQA_queued'
+
+                # Find best individual to start from
+                best_ind_idx = np.argmax(state['fitnesses'])
+                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_fitness = state['fitnesses'][best_ind_idx]
+                start_params_full = self._construct_params(grid_idx, start_params_partial)
+
+                # Create BOBYQA job
+                job = BOBYQAJob(
+                    job_id=next_job_id,
+                    job_type='BOBYQA_LOOP',
+                    sampler=self,
+                    opt_dims=tuple(self.continuous_dims),
+                    start_params=start_params_partial,
+                    grid_idx=grid_idx,
+                    start_params_full=start_params_full,
+                    start_fitness=start_fitness,
+                    initial_trust_radius=self.bobyqa_initial_trust_radius,
+                    max_iterations=self.bobyqa_max_iterations
                 )
 
                 jobs.append(job)

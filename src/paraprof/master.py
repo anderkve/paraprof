@@ -375,6 +375,8 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             stages.append('DE_LOOP')
         elif sampler.optimization_method == 'lbfgsb':
             stages.append('LBFGSB_LOOP')
+        elif sampler.optimization_method == 'bobyqa':
+            stages.append('BOBYQA_LOOP')
 
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patching_coarse and not sampler.direct_eval_mode:
@@ -532,6 +534,35 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
+            elif current_stage == 'BOBYQA_LOOP':
+                # Iterative BOBYQA optimization with dynamic activation
+                # Similar to LBFGSB_LOOP but using derivative-free trust region optimization
+
+                # Create BOBYQA jobs for all active (non-converged) grid points
+                new_bobyqa_jobs, next_job_id = sampler.create_bobyqa_loop_jobs(next_job_id)
+
+                # Create dynamic activation jobs for neighbors of high-likelihood points
+                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+                new_jobs = new_bobyqa_jobs + new_act_jobs
+
+                # --- Print iteration summary ---
+                total_grid_points = len(sampler.population)
+                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
+                converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
+                newly_activated_count = len(new_act_jobs)
+
+                logger.info(f"BOBYQA Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                      f"New Activations: {newly_activated_count:3d} | "
+                      f"BOBYQA Jobs: {len(new_bobyqa_jobs):3d}")
+
+                # Check convergence: no active jobs and no new activations
+                if not new_jobs:
+                    logger.info("--- Master: BOBYQA_LOOP converged (no active points, no new activations). ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
                 patching_enabled = sampler.patching_refined if sampler.is_refinement_run else sampler.patching_coarse
@@ -607,7 +638,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 _queue_tasks(initial_tasks, job.type)
 
             # If we just finished a non-looping stage, advance to the next
-            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
+            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'BOBYQA_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---

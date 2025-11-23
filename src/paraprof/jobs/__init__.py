@@ -7,5 +7,6 @@ from .activation_job import ActivationJob
 from .de_job import DEGridPointJob
 from .patching_test_job import PatchingTestJob
 from .cd_job import CoordinateDescentJob
+from .bobyqa_job import BOBYQAJob
 
-__all__ = ['Job', 'LBFGSBJob', 'ActivationJob', 'DEGridPointJob', 'PatchingTestJob', 'CoordinateDescentJob']
+__all__ = ['Job', 'LBFGSBJob', 'ActivationJob', 'DEGridPointJob', 'PatchingTestJob', 'CoordinateDescentJob', 'BOBYQAJob']
