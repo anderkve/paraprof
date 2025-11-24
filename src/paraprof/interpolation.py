@@ -447,7 +447,7 @@ class MultiGPInterpolator:
                         f"y_range=[{y_train.min():.3e}, {y_train.max():.3e}]")
 
 
-    def interpolate(self, projection_coords, return_std=True):
+    def interpolate(self, projection_coords, return_std=False):
         """
         Predict optimal continuous parameters at given projection coordinates.
 
@@ -456,15 +456,16 @@ class MultiGPInterpolator:
         projection_coords : array-like
             Coordinates in projection space, shape (n_proj_dims,)
         return_std : bool, optional
-            If True, also return prediction uncertainties. Default: True
+            If True, also return prediction uncertainties. Default: False
 
         Returns
         -------
-        continuous_params : np.ndarray
+        continuous_params : np.ndarray or None
             Predicted optimal continuous parameters, shape (n_cont_dims,)
+            Returns None if no continuous dimensions exist
         uncertainties : np.ndarray or None
             GP prediction standard deviations for each dimension, shape (n_cont_dims,)
-            Only returned if return_std=True, otherwise None
+            Only returned if return_std=True
         """
         if self.n_cont_dims == 0:
             return None if not return_std else (None, None)
