@@ -89,6 +89,14 @@ def test_multigp_interpolator():
     ])
     expected = coarse_solution['solutions'][(2, 3)]['continuous_params']
 
+    # Test default behavior (no uncertainties)
+    predicted_default = interpolator.interpolate(grid_coords)
+    if not isinstance(predicted_default, np.ndarray):
+        print("✗ interpolate() should return ndarray by default")
+        return False
+    print("✓ Default interpolate() returns ndarray (no uncertainties)")
+
+    # Test with uncertainties
     predicted, uncertainties = interpolator.interpolate(grid_coords, return_std=True)
     error = np.abs(predicted - expected)
 
