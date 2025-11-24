@@ -41,8 +41,10 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': False, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes', 'patching_coarse': False, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 2},
+    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
     # {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
@@ -70,7 +72,7 @@ if myrank == 0:
         pbest_fraction=0.1,
         n_initial_optimizations=100, # Increased
         roi_threshold=4.0,
-        convergence_threshold=1e-7, # Tighter -> Looser (match serial)
+        convergence_threshold=1e-3, # Tighter -> Looser (match serial)
         convergence_window=3, #3,      # Longer window -> Shorter (match serial)
         neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
@@ -81,7 +83,7 @@ if myrank == 0:
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
         # Pre-screening settings
-        use_de_prescreening=True,
+        use_de_prescreening=False,
         emulator_min_neighbors=10,
         emulator_max_neighbors=100,
         emulator_confidence_threshold=-1.0,
@@ -91,6 +93,10 @@ if myrank == 0:
         use_cd_refinement=True,
         cd_max_cycles=50,
         cd_step_fraction=0.01,
+        # CMA-ES settings
+        cmaes_lambda=None,
+        cmaes_mu=None,
+        cmaes_max_generations=100,
     )
 
     # Broadcast the target function to all workers (once, before all projections)

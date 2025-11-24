@@ -36,11 +36,11 @@ np.random.seed(750123)
 # Base test function (parameters of interest)
 BASE_FUNCTION = "himmelblau_4d"
 N_POI = 4  # Number of parameters of interest
-N_NUISANCE = 8  # Number of nuisance parameters
+N_NUISANCE = 20  # Number of nuisance parameters
 
 # Nuisance parameter settings
 COUPLING_MODE = 'shift'  # How nuisance params affect POI ('shift', 'scale', 'rotation', 'additive')
-CONSTRAINT_SIGMA = 0.5   # Tighter = more constrained (0.2 = tight, 1.0 = loose)
+CONSTRAINT_SIGMA = 0.2   # Tighter = more constrained (0.2 = tight, 1.0 = loose)
 
 # Projections to run (specified in terms of POI indices only)
 # Note: We only project over POI dimensions, not nuisance parameters
@@ -49,8 +49,8 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True},
 
     # 2D projection over first two POI parameters
-    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'de', 'patching_coarse': True, 
-     'lbfgsb_refinement': True, 'enable_refinement': True, 'patching_refined': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes',  'patching_coarse': False, 'lbfgsb_refinement': False, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
 ]
 
 if myrank == 0:
@@ -134,7 +134,7 @@ if myrank == 0:
         pbest_fraction=0.1,
         n_initial_optimizations=100,
         roi_threshold=4.0,
-        convergence_threshold=1e-7,
+        convergence_threshold=1e-3,
         convergence_window=3,
         neighbor_pull_probability=0.5,
         LBFGSB_ftol=1e-9,
@@ -154,6 +154,10 @@ if myrank == 0:
         use_cd_refinement=False,
         cd_max_cycles=20,
         cd_step_fraction=0.01,
+        # CMA-ES settings
+        cmaes_lambda=None,
+        cmaes_mu=None,
+        cmaes_max_generations=100,
     )
 
     # Broadcast target function to all workers
