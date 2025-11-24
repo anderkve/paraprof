@@ -532,7 +532,7 @@ class GridAnchoredDESampler:
         }
 
 
-    def setup_refinement_run(self, coarse_solution, refinement_factor):
+    def setup_refinement_run(self, coarse_solution, refinement_factor, refinement_method='linear'):
         """
         Prepares the sampler for a refined grid run.
 
@@ -546,15 +546,27 @@ class GridAnchoredDESampler:
             coarse grid's converged solutions
         refinement_factor : int
             Grid refinement factor (e.g., 2 for 2x finer grid in each dimension)
+        refinement_method : str, optional
+            Interpolation method to use. Options:
+            - 'linear': Linear interpolation (fast, simple)
+            - 'multi_gp': Multiple low-dimensional GPs (higher quality, requires sklearn)
+            Default: 'linear'
         """
-        from .interpolation import GridInterpolator
+        from .interpolation import GridInterpolator, MultiGPInterpolator
 
         self.is_refinement_run = True
         self.refinement_factor = refinement_factor
         self.coarse_grid_solution = coarse_solution
+        self.refinement_method = refinement_method
 
-        # Create interpolator from coarse solution
-        self.refinement_interpolator = GridInterpolator(coarse_solution)
+        # Create interpolator from coarse solution based on method
+        if refinement_method == 'linear':
+            self.refinement_interpolator = GridInterpolator(coarse_solution)
+        elif refinement_method == 'multi_gp':
+            self.refinement_interpolator = MultiGPInterpolator(coarse_solution)
+        else:
+            raise ValueError(f"Unknown refinement_method: '{refinement_method}'. "
+                           f"Must be 'linear' or 'multi_gp'")
 
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
@@ -564,6 +576,7 @@ class GridAnchoredDESampler:
         self.logger.info("=" * 80)
         self.logger.info("--- Refinement Run Configuration ---")
         self.logger.info(f"Refinement factor: {refinement_factor}x")
+        self.logger.info(f"Refinement method: {refinement_method}")
         self.logger.info(f"Coarse grid shape: {coarse_solution['grid_shape']}")
         self.logger.info(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
         self.logger.info(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
