@@ -48,7 +48,10 @@ class GridAnchoredDESampler:
                  emulator_noise_level=0.01,
                  use_cd_refinement=True,
                  cd_max_cycles=3,
-                 cd_step_fraction=0.01):
+                 cd_step_fraction=0.01,
+                 cmaes_lambda=None,
+                 cmaes_mu=None,
+                 cmaes_max_generations=100):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -117,6 +120,14 @@ class GridAnchoredDESampler:
             Maximum coordinate descent cycles for refinement (default: 3)
         cd_step_fraction : float, optional
             CD step size as fraction of parameter range (default: 0.01)
+        cmaes_lambda : int, optional
+            CMA-ES population size (offspring per generation).
+            If None, defaults to 4 + floor(3*log(n_dims)) (default: None)
+        cmaes_mu : int, optional
+            CMA-ES number of parents for recombination.
+            If None, defaults to lambda/2 (default: None)
+        cmaes_max_generations : int, optional
+            Maximum number of CMA-ES generations per grid point (default: 100)
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -276,6 +287,26 @@ class GridAnchoredDESampler:
         self.cd_max_cycles = cd_max_cycles
         self.cd_step_fraction = cd_step_fraction
 
+        # --- CMA-ES configuration ---
+        # Set defaults based on dimensionality (will be updated in _reset_for_new_projection)
+        if cmaes_lambda is None:
+            # Standard recommendation: 4 + floor(3*log(n))
+            self.cmaes_lambda_base = lambda n: int(4 + 3 * np.log(max(n, 1)))
+            self.cmaes_lambda = None  # Will be set per projection
+        else:
+            self.cmaes_lambda_base = None
+            self.cmaes_lambda = cmaes_lambda
+
+        if cmaes_mu is None:
+            # Standard recommendation: lambda/2
+            self.cmaes_mu_base = lambda lam: int(lam / 2)
+            self.cmaes_mu = None  # Will be set per projection
+        else:
+            self.cmaes_mu_base = None
+            self.cmaes_mu = cmaes_mu
+
+        self.cmaes_max_generations = cmaes_max_generations
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         if self.samples_output_file:
@@ -351,7 +382,7 @@ class GridAnchoredDESampler:
         self.optimization_method = projection_config.get('optimization_method', 'de')
 
         # Validate optimization method
-        valid_methods = ['de', 'lbfgsb']
+        valid_methods = ['de', 'lbfgsb', 'cmaes']
         if self.optimization_method not in valid_methods:
             raise ConfigurationError(
                 f"Invalid optimization_method: '{self.optimization_method}'. "
@@ -374,6 +405,10 @@ class GridAnchoredDESampler:
         self.logger.info(f"  Optimization method: {self.optimization_method}")
         if self.optimization_method == 'de':
             self.logger.info(f"  L-BFGS-B refinement after DE: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
+        elif self.optimization_method == 'cmaes':
+            # Note: lambda/mu will be set after computing n_cont_dims below
+            self.logger.info(f"  CMA-ES max generations: {self.cmaes_max_generations}")
+            self.logger.info(f"  L-BFGS-B refinement after CMA-ES: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
         self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
         if self.is_refinement_run:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
@@ -381,6 +416,18 @@ class GridAnchoredDESampler:
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
         self.n_cont_dims = len(self.continuous_dims)
+
+        # Initialize CMA-ES population sizes based on continuous dimensions
+        if self.optimization_method == 'cmaes':
+            # Set lambda and mu based on continuous dimensions if not explicitly set
+            if self.cmaes_lambda_base is not None:
+                self.cmaes_lambda = max(4, self.cmaes_lambda_base(self.n_cont_dims))
+            if self.cmaes_mu_base is not None and self.cmaes_lambda is not None:
+                self.cmaes_mu = max(2, self.cmaes_mu_base(self.cmaes_lambda))
+
+            # Log CMA-ES configuration
+            self.logger.info(f"  CMA-ES lambda (population size): {self.cmaes_lambda}")
+            self.logger.info(f"  CMA-ES mu (parents): {self.cmaes_mu}")
 
         # Detect direct evaluation mode (no continuous dimensions to optimize)
         self.direct_eval_mode = (self.n_cont_dims == 0)
@@ -1462,6 +1509,83 @@ class GridAnchoredDESampler:
             self.memory_F[self.memory_idx] = muF
             self.memory_CR[self.memory_idx] = muCR
             self.memory_idx = (self.memory_idx + 1) % self.memory_size
+
+    def create_cmaes_generation_jobs(self, next_job_id, max_num_to_evolve):
+        """
+        Generates all CMAESGridPointJobs for one generation.
+
+        Similar to DE generation, but for CMA-ES optimization.
+
+        Parameters
+        ----------
+        next_job_id : int
+            Next available job ID
+        max_num_to_evolve : int or None
+            Maximum number of grid points to evolve (None = all)
+
+        Returns
+        -------
+        jobs : list
+            List of CMAESGridPointJob instances
+        next_job_id : int
+            Updated job ID counter
+        """
+        from .jobs.cmaes_job import CMAESGridPointJob
+
+        # Find unconverged points (status 'active' means not yet converged)
+        unconverged_indices = [idx for idx, state in self.population.items() if state['status'] == 'active']
+
+        if not unconverged_indices:
+            self.logger.info("All active points have converged. Ending CMA-ES phase.")
+            return [], next_job_id
+
+        # --- Prioritize which grid points to evolve ---
+        # Use same prioritization as DE: fitness + improvement rate
+        priority_scores = []
+        for idx in unconverged_indices:
+            state = self.population[idx]
+            fitness_score = max(0, state['best_fitness'] - (self.global_max_target_val - 2 * self.roi_threshold))
+            improvement_rate = np.mean(state['improvement_history']) if state['improvement_history'] else 0
+            improvement_score = improvement_rate * 10
+            pri_score = fitness_score + improvement_score + (1./len(unconverged_indices))
+            priority_scores.append(pri_score)
+
+        priority_scores = np.array(priority_scores)
+        probabilities = priority_scores / np.sum(priority_scores)
+
+        if max_num_to_evolve is not None:
+            num_to_evolve = min(len(unconverged_indices), max_num_to_evolve)
+        else:
+            num_to_evolve = len(unconverged_indices)
+
+        if num_to_evolve == 0:
+             return [], next_job_id
+
+        indices_to_process_map = np.random.choice(
+            np.arange(len(unconverged_indices)),
+            size=num_to_evolve,
+            replace=False,
+            p=probabilities
+        )
+        indices_to_process = [unconverged_indices[i] for i in indices_to_process_map]
+
+        # --- Create CMA-ES jobs for selected grid points ---
+        jobs = []
+        for grid_idx in indices_to_process:
+            job = CMAESGridPointJob(
+                job_id=next_job_id,
+                sampler=self,
+                grid_idx=grid_idx,
+                # For first generation, jobs will initialize from neighbors
+                # For subsequent generations, they continue with their own state
+                initial_mean=None,
+                initial_sigma=None,
+                initial_C=None
+            )
+            jobs.append(job)
+            next_job_id += 1
+
+        return jobs, next_job_id
 
     def create_LBFGSB_job_for_point(self, grid_idx, next_job_id):
         """
