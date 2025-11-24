@@ -68,11 +68,22 @@ class CMAESGridPointJob(Job):
         else:
             self.sigma = self._estimate_initial_sigma()
 
-        # === COVARIANCE INITIALIZATION ===
+        # === COVARIANCE INITIALIZATION WITH NEIGHBOR INHERITANCE ===
         if initial_C is not None:
+            # Explicit initialization provided
             self.C = initial_C.copy()
         else:
-            self.C = np.eye(self.n_dims)
+            # Try to inherit from best neighbor
+            neighbor_C = self._get_neighbor_covariance()
+            if neighbor_C is not None:
+                # Mix neighbor covariance with identity for regularization
+                # This prevents premature convergence to neighbor's narrow distribution
+                mixing_factor = 1.0  # 70% neighbor, 30% identity
+                self.C = mixing_factor * neighbor_C + (1 - mixing_factor) * np.eye(self.n_dims)
+                logger.debug(f"CMA-ES at {self.grid_idx}: Initialized C with {mixing_factor:.0%} neighbor + {1-mixing_factor:.0%} identity")
+            else:
+                # No suitable neighbor found, use identity matrix
+                self.C = np.eye(self.n_dims)
 
         # CMA-ES algorithm parameters (standard settings)
         self.pc = np.zeros(self.n_dims)  # Evolution path for C
@@ -134,6 +145,57 @@ class CMAESGridPointJob(Job):
         logger.debug(f"CMA-ES at {self.grid_idx}: Initializing mean from bounds center")
         bounds = self.sampler.bounds[self.sampler.continuous_dims]
         return 0.5 * (bounds[:, 0] + bounds[:, 1])
+
+    def _get_neighbor_covariance(self):
+        """
+        Inherit covariance matrix from best neighbor with CMA-ES state.
+
+        Returns
+        -------
+        np.ndarray or None
+            Covariance matrix from best neighbor, or None if no suitable neighbor found
+        """
+        best_C = None
+        best_fitness = -np.inf
+        best_neighbor_idx = None
+
+        # Search for best neighbor with stored CMA-ES state
+        for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
+            if neighbor_idx in self.sampler.population:
+                neighbor_state = self.sampler.population[neighbor_idx]
+
+                # Check if this neighbor has CMA-ES covariance stored
+                if 'cmaes_C' not in neighbor_state:
+                    continue
+
+                # Check if this neighbor is better than previous candidates
+                if neighbor_state['best_fitness'] > best_fitness:
+                    C_candidate = neighbor_state['cmaes_C']
+
+                    # Check condition number to ensure well-conditioned matrix
+                    try:
+                        eigvals = np.linalg.eigvalsh(C_candidate)
+                        if np.min(eigvals) <= 0:
+                            logger.debug(f"CMA-ES at {self.grid_idx}: Neighbor {neighbor_idx} has non-positive eigenvalues, skipping")
+                            continue
+
+                        cond = eigvals.max() / eigvals.min()
+                        if cond < 1e10:  # Not too ill-conditioned
+                            best_C = C_candidate
+                            best_fitness = neighbor_state['best_fitness']
+                            best_neighbor_idx = neighbor_idx
+                        else:
+                            logger.debug(f"CMA-ES at {self.grid_idx}: Neighbor {neighbor_idx} has poor condition number {cond:.2e}, skipping")
+                    except np.linalg.LinAlgError:
+                        logger.debug(f"CMA-ES at {self.grid_idx}: Failed to compute eigenvalues for neighbor {neighbor_idx}, skipping")
+                        continue
+
+        if best_C is not None:
+            logger.info(f"CMA-ES at {self.grid_idx}: Inheriting covariance from neighbor {best_neighbor_idx} (fitness {best_fitness:.4e})")
+        else:
+            logger.debug(f"CMA-ES at {self.grid_idx}: No suitable neighbor covariance found, using identity")
+
+        return best_C
 
     def _estimate_initial_sigma(self):
         """
@@ -471,6 +533,7 @@ class CMAESGridPointJob(Job):
     def on_finish(self, next_job_id):
         """
         Update grid state after CMA-ES completes.
+        Store CMA-ES state for neighbor inheritance.
         Optionally spawn L-BFGS-B refinement job.
         """
         if not self.success:
@@ -479,6 +542,13 @@ class CMAESGridPointJob(Job):
         # Direct evaluation mode: already marked as converged
         if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
             return None
+
+        # Store CMA-ES state in grid state for future neighbor inheritance
+        self.grid_state['cmaes_C'] = self.C.copy()
+        self.grid_state['cmaes_sigma'] = self.sigma
+        self.grid_state['cmaes_B'] = self.B.copy()
+        self.grid_state['cmaes_D'] = self.D.copy()
+        logger.debug(f"CMA-ES at {self.grid_idx}: Stored converged covariance matrix for neighbor inheritance")
 
         # Check if we should spawn L-BFGS-B refinement
         if self._check_convergence():
