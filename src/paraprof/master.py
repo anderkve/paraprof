@@ -431,7 +431,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             if not current_stage:
                 break # All stages and jobs are complete
 
-            logger.info(f"--- Master: Entering stage: {current_stage} ---")
+            logger.info(f"--- Master: Entering stage: {current_stage} (all jobs complete, creating new jobs) ---")
             new_jobs = []
 
             if current_stage == 'INITIAL_OPTIMIZATION':
@@ -537,7 +537,13 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
             elif current_stage == 'CMAES_LOOP':
                 # Iterative CMA-ES optimization with dynamic activation
-                # Similar to DE_LOOP but using CMA-ES
+                # Similar to LBFGSB_LOOP but using CMA-ES
+                # This stage loops: after CMA-ES jobs complete, check for new activations
+                # and create new CMA-ES jobs for them
+
+                # Count status distribution before creating jobs
+                total_grid_points = len(sampler.population)
+                active_count_before = len([s for s in sampler.population.values() if s['status'] == 'active'])
 
                 # Create CMA-ES jobs for all active (non-converged) grid points
                 new_cmaes_jobs, next_job_id = sampler.create_cmaes_generation_jobs(next_job_id, max_num_to_evolve)
@@ -547,22 +553,27 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 new_jobs = new_cmaes_jobs + new_act_jobs
 
                 # --- Print iteration summary ---
-                total_grid_points = len(sampler.population)
                 active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
                 converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
                 newly_activated_count = len(new_act_jobs)
 
-                logger.info(f"CMA-ES Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
-                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
-                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                      f"New Activations: {newly_activated_count:3d} | "
-                      f"CMA-ES Jobs: {len(new_cmaes_jobs):3d}")
+                if new_jobs:  # Only log if we created jobs
+                    logger.info(f"CMA-ES Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                          f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                          f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                          f"New Activations: {newly_activated_count:3d} | "
+                          f"CMA-ES Jobs: {len(new_cmaes_jobs):3d}")
+                else:
+                    logger.info(f"CMA-ES Loop: No jobs to create. Active points at start: {active_count_before}, after activation: {active_count}")
 
                 # Check convergence: no active jobs and no new activations
                 if not new_jobs:
                     logger.info("--- Master: CMAES_LOOP converged (no active points, no new activations). ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
+
+                # Important: Do NOT move to next stage - stay in CMAES_LOOP
+                # The stage will re-run after these jobs complete to check for new activations
 
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
@@ -639,7 +650,8 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 _queue_tasks(initial_tasks, job.type)
 
             # If we just finished a non-looping stage, advance to the next
-            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
+            # Looping stages: DE_LOOP, LBFGSB_LOOP, CMAES_LOOP (they re-run after jobs complete)
+            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'CMAES_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---
