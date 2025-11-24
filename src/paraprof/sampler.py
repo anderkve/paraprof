@@ -1537,6 +1537,12 @@ class GridAnchoredDESampler:
 
         if not unconverged_indices:
             self.logger.info("All active points have converged. Ending CMA-ES phase.")
+            # Debug: log status distribution
+            status_counts = {}
+            for state in self.population.values():
+                status = state['status']
+                status_counts[status] = status_counts.get(status, 0) + 1
+            self.logger.debug(f"Status distribution: {status_counts}")
             return [], next_job_id
 
         # --- Prioritize which grid points to evolve ---
