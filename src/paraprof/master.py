@@ -375,6 +375,8 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             stages.append('DE_LOOP')
         elif sampler.optimization_method == 'lbfgsb':
             stages.append('LBFGSB_LOOP')
+        elif sampler.optimization_method == 'cmaes':
+            stages.append('CMAES_LOOP')
 
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patching_coarse and not sampler.direct_eval_mode:
@@ -400,6 +402,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
         if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
+            # DE_GRID_POINT, CMAES_GRID_POINT, ACTIVATION go to low priority
             low_prio_tasks.extend(tasks)
 
     next_job_id = 0
@@ -529,6 +532,35 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 # Check convergence: no active jobs and no new activations
                 if not new_jobs:
                     logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+            elif current_stage == 'CMAES_LOOP':
+                # Iterative CMA-ES optimization with dynamic activation
+                # Similar to DE_LOOP but using CMA-ES
+
+                # Create CMA-ES jobs for all active (non-converged) grid points
+                new_cmaes_jobs, next_job_id = sampler.create_cmaes_generation_jobs(next_job_id, max_num_to_evolve)
+
+                # Create dynamic activation jobs for neighbors of high-likelihood points
+                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+                new_jobs = new_cmaes_jobs + new_act_jobs
+
+                # --- Print iteration summary ---
+                total_grid_points = len(sampler.population)
+                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
+                converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
+                newly_activated_count = len(new_act_jobs)
+
+                logger.info(f"CMA-ES Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                      f"New Activations: {newly_activated_count:3d} | "
+                      f"CMA-ES Jobs: {len(new_cmaes_jobs):3d}")
+
+                # Check convergence: no active jobs and no new activations
+                if not new_jobs:
+                    logger.info("--- Master: CMAES_LOOP converged (no active points, no new activations). ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
