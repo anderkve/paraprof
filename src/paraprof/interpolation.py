@@ -638,7 +638,8 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
                                   eps=None, min_samples=None,
                                   eps_multiplier=3.0,
                                   distance_threshold=1.0, n_clusters=2,
-                                  include_likelihood=False, likelihood_weight=0.1):
+                                  include_likelihood=False, likelihood_weight=0.1,
+                                  include_projection_coords=True, projection_weight=1.0):
     """
     Cluster coarse grid points by their optimal continuous parameters (and optionally likelihood).
     Each cluster represents a distinct mode/optimum being tracked in the continuous parameter space.
@@ -679,6 +680,14 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
     likelihood_weight : float, optional
         Relative weight for likelihood feature compared to continuous parameters.
         Only used if include_likelihood=True (default: 0.1)
+    include_projection_coords : bool, optional
+        If True, include projection (gridded) parameter coordinates as features.
+        This provides spatial context, helping DBSCAN recognize that nearby grid points
+        with similar continuous parameters form connected clusters. Highly recommended.
+        (default: True)
+    projection_weight : float, optional
+        Relative weight for projection coordinates compared to continuous parameters.
+        Higher values emphasize spatial connectivity. (default: 1.0)
 
     Returns
     -------
@@ -710,24 +719,34 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
             "Install with: pip install scikit-learn"
         )
 
-    # Extract continuous parameters (and optionally likelihood) from coarse solutions
+    # Extract features from coarse solutions
     grid_indices = []
     feature_list = []
+    grid_axes = coarse_solution['grid_axes']
+    n_proj_dims = len(grid_axes)
 
     for grid_idx in sorted(coarse_solution['solutions'].keys()):
         solution = coarse_solution['solutions'][grid_idx]
         cont_params = solution['continuous_params']
 
-        # Build feature vector
+        # Start with continuous parameters
+        features = list(cont_params)
+
+        # Add projection coordinates if requested
+        if include_projection_coords:
+            # Get the actual parameter values at this grid point
+            proj_coords = [grid_axes[i][grid_idx[i]] for i in range(n_proj_dims)]
+            # Weight projection coordinates
+            proj_coords_weighted = [c * projection_weight for c in proj_coords]
+            features.extend(proj_coords_weighted)
+
+        # Add likelihood if requested
         if include_likelihood:
             likelihood = solution['likelihood']
-            # Combine continuous params with likelihood (weighted)
-            features = np.concatenate([cont_params, [likelihood * likelihood_weight]])
-        else:
-            features = cont_params
+            features.append(likelihood * likelihood_weight)
 
         grid_indices.append(grid_idx)
-        feature_list.append(features)
+        feature_list.append(np.array(features))
 
     if len(feature_list) == 0:
         logger.warning("No coarse solutions to cluster")
@@ -738,10 +757,14 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
     n_cont_dims = len(coarse_solution['continuous_dims'])
 
     logger.info(f"Clustering {n_points} coarse grid points by modes...")
+
+    # Build feature description
+    feature_desc = f"{n_cont_dims} continuous params"
+    if include_projection_coords:
+        feature_desc += f" + {n_proj_dims} projection coords (weight={projection_weight})"
     if include_likelihood:
-        logger.info(f"  Features: {n_cont_dims} continuous params + likelihood (weight={likelihood_weight})")
-    else:
-        logger.info(f"  Features: {n_cont_dims} continuous params only")
+        feature_desc += f" + likelihood (weight={likelihood_weight})"
+    logger.info(f"  Features: {feature_desc}")
 
     # Normalize features for clustering (critical for stability)
     scaler = StandardScaler()

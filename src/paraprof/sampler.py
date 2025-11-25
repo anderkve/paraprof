@@ -57,7 +57,8 @@ class GridAnchoredDESampler:
                  clustering_method='dbscan',
                  clustering_eps=None,
                  clustering_min_samples=None,
-                 clustering_eps_multiplier=3.0):
+                 clustering_eps_multiplier=3.0,
+                 clustering_projection_weight=1.0):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -154,6 +155,10 @@ class GridAnchoredDESampler:
             Multiplier for auto-estimated DBSCAN eps (default: 3.0)
             Higher values create fewer, larger clusters (less sensitive to smooth variations)
             Lower values create more, smaller clusters (more sensitive to parameter changes)
+        clustering_projection_weight : float, optional
+            Weight for projection coordinates in clustering features (default: 1.0)
+            Including projection coordinates provides spatial context, helping recognize
+            that nearby grid points with similar continuous params form connected clusters
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -348,6 +353,7 @@ class GridAnchoredDESampler:
         self.clustering_eps = clustering_eps
         self.clustering_min_samples = clustering_min_samples
         self.clustering_eps_multiplier = clustering_eps_multiplier
+        self.clustering_projection_weight = clustering_projection_weight
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -644,7 +650,9 @@ class GridAnchoredDESampler:
                     eps=self.clustering_eps,
                     min_samples=self.clustering_min_samples,
                     eps_multiplier=self.clustering_eps_multiplier,
-                    include_likelihood=False  # Don't use likelihood for clustering, only for cluster selection
+                    include_likelihood=False,  # Don't use likelihood for clustering, only for cluster selection
+                    include_projection_coords=True,  # Include spatial context
+                    projection_weight=self.clustering_projection_weight
                 )
             except ImportError as e:
                 self.logger.warning(f"Clustering failed: {e}")
