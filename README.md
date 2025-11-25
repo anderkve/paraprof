@@ -173,17 +173,34 @@ Each projection can specify:
 
 ParaProf automatically generates publication-ready plots:
 
-### 1D Profiles
+### Profile Likelihood Plots
+
+**1D Profiles**
 - Line plot with confidence levels (68%, 95%)
 - Active grid point markers
 
-### 2D Profiles
+**2D Profiles**
 - Heatmap with contour lines
 - Customizable colorbars
 
-### 3D+ Profiles
+**3D+ Profiles**
 - Pairwise 2D slice plots
 - Maximum slice or marginalized views
+
+### Continuous Parameter Plots
+
+When `save_plots=True`, ParaProf also generates plots showing the optimal continuous parameter values across the projection space:
+
+**1D Projections**
+- Multi-panel line plots showing how each continuous parameter varies along the projection dimension
+
+**2D Projections**
+- Heatmaps (one per continuous parameter) showing the optimal parameter value at each grid point
+
+**3D+ Projections**
+- 2D slice plots for each continuous parameter through the maximum likelihood point
+
+These plots visualize which parameter values were selected by the profiling procedure at different points in the projection grid, helping you understand the parameter correlations and structure of the likelihood surface.
 
 ### Plot Settings
 
@@ -191,9 +208,10 @@ ParaProf automatically generates publication-ready plots:
 plot_settings = {
     'dpi': 300,
     'filetype': 'png',
-    'slice_mode': 'max',  # or 'all' for marginalization
+    'slice_mode': 'max',  # or 'all' for marginalization (3D+)
     'vmin': -4.0,
     'vmax': 0.0,
+    'plot_continuous_params': True,  # Enable/disable continuous param plots
 }
 ```
 

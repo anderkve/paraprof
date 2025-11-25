@@ -12,10 +12,11 @@ class ActivationJob(Job):
     A job to evaluate the initial population for a single grid point.
     Can be warm-started with parameters from a neighbor.
     """
-    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None):
+    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None, mark_converged=False):
         super().__init__(job_id, 'ACTIVATE_GRID_POINT', sampler)
         self.grid_idx = grid_idx
         self.warm_start_params = warm_start_params
+        self.mark_converged = mark_converged  # If True, mark as converged instead of active
 
         # Check if we're in direct evaluation mode
         if self.sampler.direct_eval_mode:
@@ -125,14 +126,22 @@ class ActivationJob(Job):
         best_fitness = np.max(self.fitnesses)
         self.sampler.profile_likelihood_grid[self.grid_idx] = best_fitness
 
-        if self.sampler.direct_eval_mode:
-            # Direct evaluation mode: use standard state structure but mark as converged
+        # Determine status based on mode
+        if self.sampler.direct_eval_mode or self.mark_converged:
+            # Direct evaluation mode or explicit converged flag: mark as converged
             # (no continuous params to optimize, so it's immediately "converged")
+            status = 'converged'
+        else:
+            # Normal mode: mark as active for further optimization
+            status = 'active'
+
+        if self.sampler.direct_eval_mode:
+            # Direct evaluation mode: use standard state structure
             self.sampler.population[self.grid_idx] = {
                 'continuous_params': self.all_continuous_params,  # Empty array (shape: 1x0)
                 'fitnesses': self.fitnesses,
                 'best_fitness': best_fitness,
-                'status': 'converged',  # Mark as converged to enable dynamic activation
+                'status': status,
                 'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
                 'last_update_gen': 0,
                 'optimizer_state': None,
@@ -144,7 +153,7 @@ class ActivationJob(Job):
                 'continuous_params': self.all_continuous_params,
                 'fitnesses': self.fitnesses,
                 'best_fitness': best_fitness,
-                'status': 'active',
+                'status': status,
                 'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
                 'last_update_gen': 0,
                 'optimizer_state': None
