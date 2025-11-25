@@ -70,7 +70,7 @@ def run_projection(comm, sampler, projection_config,
         - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
         - 'enable_refinement': bool - enable grid refinement (default: False)
         - 'refinement_factor': int - refinement factor (default: 2)
-        - 'refinement_method': str - interpolation method ('linear', 'multi_gp') (default: 'linear')
+        - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
         - 'patching_coarse': bool - enable patching on coarse grid (default: True)
         - 'patching_refined': bool - enable patching on refined grid (default: False)
     num_generations : int
@@ -240,7 +240,7 @@ def run_all_projections(comm, sampler, projections,
         - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
         - 'enable_refinement': bool - enable grid refinement (default: False)
         - 'refinement_factor': int - refinement factor (default: 2)
-        - 'refinement_method': str - interpolation method ('linear', 'multi_gp') (default: 'linear')
+        - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
         - 'patching_coarse': bool - enable patching on coarse grid (default: True)
         - 'patching_refined': bool - enable patching on refined grid (default: False)
     num_generations : int
