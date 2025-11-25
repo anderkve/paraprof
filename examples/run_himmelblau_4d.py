@@ -41,16 +41,15 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
     # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'multi_gp', 'refinement_factor': 3},
 
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes', 'patching_coarse': False, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
 
 ]
 
@@ -84,7 +83,7 @@ if myrank == 0:
         patching_n_neighbors=1,  # Test only the best neighbor
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,  # Single file for all projections
-        refinement_direct_eval=False,  # Skip optimization, evaluate once
+        refinement_direct_eval=True,  # Skip optimization, evaluate once
         # Pre-screening settings
         use_de_prescreening=False,
         emulator_min_neighbors=10,

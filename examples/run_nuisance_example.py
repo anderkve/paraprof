@@ -36,11 +36,11 @@ np.random.seed(750123)
 # Base test function (parameters of interest)
 BASE_FUNCTION = "himmelblau_4d"
 N_POI = 4  # Number of parameters of interest
-N_NUISANCE = 20  # Number of nuisance parameters
+N_NUISANCE = 8  # Number of nuisance parameters
 
 # Nuisance parameter settings
 COUPLING_MODE = 'shift'  # How nuisance params affect POI ('shift', 'scale', 'rotation', 'additive')
-CONSTRAINT_SIGMA = 0.2   # Tighter = more constrained (0.2 = tight, 1.0 = loose)
+CONSTRAINT_SIGMA = 0.5   # Tighter = more constrained (0.2 = tight, 1.0 = loose)
 
 # Projections to run (specified in terms of POI indices only)
 # Note: We only project over POI dimensions, not nuisance parameters
@@ -50,7 +50,15 @@ PROJECTIONS_TO_RUN = [
 
     # 2D projection over first two POI parameters
     # {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes',  'patching_coarse': False, 'lbfgsb_refinement': False, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes',  'patching_coarse': False, 'lbfgsb_refinement': False, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
+
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+
 ]
 
 if myrank == 0:
@@ -144,6 +152,8 @@ if myrank == 0:
         patching_n_neighbors=1,
         memory_size=max_grid_points * 25,
         samples_output_file=output_file,
+        refinement_direct_eval=True,  # Skip optimization, evaluate once
+        # Pre-screening settings
         use_de_prescreening=False,  # Use emulator to reduce evaluations
         emulator_min_neighbors=10,
         emulator_max_neighbors=100,
