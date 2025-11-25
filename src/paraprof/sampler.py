@@ -610,26 +610,22 @@ class GridAnchoredDESampler:
         refinement_factor : int
             Grid refinement factor (e.g., 2 for 2x finer grid in each dimension)
         refinement_method : str, optional
-            Interpolation method to use. Options:
-            - 'linear': Linear interpolation (fast, simple)
-            - 'multi_gp': Multiple low-dimensional GPs (higher quality, requires sklearn)
+            Interpolation method to use. Only 'linear' is supported.
             Default: 'linear'
         """
-        from .interpolation import GridInterpolator, MultiGPInterpolator
+        from .interpolation import GridInterpolator
 
         self.is_refinement_run = True
         self.refinement_factor = refinement_factor
         self.coarse_grid_solution = coarse_solution
         self.refinement_method = refinement_method
 
-        # Create interpolator from coarse solution based on method
+        # Create interpolator from coarse solution
         if refinement_method == 'linear':
             self.refinement_interpolator = GridInterpolator(coarse_solution)
-        elif refinement_method == 'multi_gp':
-            self.refinement_interpolator = MultiGPInterpolator(coarse_solution)
         else:
             raise ValueError(f"Unknown refinement_method: '{refinement_method}'. "
-                           f"Must be 'linear' or 'multi_gp'")
+                           f"Only 'linear' is supported.")
 
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
