@@ -52,7 +52,12 @@ class GridAnchoredDESampler:
                  refinement_direct_eval=False,
                  cmaes_lambda=None,
                  cmaes_mu=None,
-                 cmaes_max_generations=100):
+                 cmaes_max_generations=100,
+                 use_clustering=True,
+                 clustering_method='dbscan',
+                 clustering_eps=None,
+                 clustering_min_samples=None,
+                 clustering_eps_multiplier=3.0):
         """
         Initializes the Grid-Anchored DE Sampler.
 
@@ -133,6 +138,22 @@ class GridAnchoredDESampler:
             If None, defaults to lambda/2 (default: None)
         cmaes_max_generations : int, optional
             Maximum number of CMA-ES generations per grid point (default: 100)
+        use_clustering : bool, optional
+            Enable clustering-based boundary detection for refinement (default: True)
+            When enabled, coarse grid points are clustered by their continuous parameters
+            to detect mode boundaries and improve fine grid initialization
+        clustering_method : str, optional
+            Clustering algorithm: 'dbscan', 'hierarchical', or 'kmeans' (default: 'dbscan')
+        clustering_eps : float, optional
+            DBSCAN eps parameter (maximum distance for neighbors).
+            If None, auto-estimated from data (default: None)
+        clustering_min_samples : int, optional
+            DBSCAN min_samples parameter (minimum cluster size).
+            If None, defaults to max(2, n_continuous_dims) (default: None)
+        clustering_eps_multiplier : float, optional
+            Multiplier for auto-estimated DBSCAN eps (default: 3.0)
+            Higher values create fewer, larger clusters (less sensitive to smooth variations)
+            Lower values create more, smaller clusters (more sensitive to parameter changes)
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -321,6 +342,13 @@ class GridAnchoredDESampler:
 
         self.cmaes_max_generations = cmaes_max_generations
 
+        # --- Clustering configuration for refinement ---
+        self.use_clustering = use_clustering
+        self.clustering_method = clustering_method
+        self.clustering_eps = clustering_eps
+        self.clustering_min_samples = clustering_min_samples
+        self.clustering_eps_multiplier = clustering_eps_multiplier
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         if self.samples_output_file:
@@ -350,6 +378,9 @@ class GridAnchoredDESampler:
         self.refinement_factor = None
         self.coarse_grid_solution = None
         self.refinement_interpolator = None
+        self.cluster_labels = None
+        self.cluster_info = None
+        self.boundary_points = None
 
         # --- Per-Projection State (will be reset) ---
         self.projection_dims = None
@@ -599,6 +630,37 @@ class GridAnchoredDESampler:
             self.global_solution_pool = [s.copy() for s in coarse_solution['global_solution_pool']]
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
+        # Perform clustering if enabled and we have continuous parameters
+        if self.use_clustering and len(coarse_solution['continuous_dims']) > 0:
+            from .interpolation import cluster_coarse_grid_by_modes
+            self.logger.info("=" * 80)
+            self.logger.info("--- Clustering Coarse Grid by Modes ---")
+            self.logger.info("=" * 80)
+
+            try:
+                self.cluster_labels, self.cluster_info, self.boundary_points = cluster_coarse_grid_by_modes(
+                    coarse_solution,
+                    method=self.clustering_method,
+                    eps=self.clustering_eps,
+                    min_samples=self.clustering_min_samples,
+                    eps_multiplier=self.clustering_eps_multiplier,
+                    include_likelihood=False  # Don't use likelihood for clustering, only for cluster selection
+                )
+            except ImportError as e:
+                self.logger.warning(f"Clustering failed: {e}")
+                self.logger.warning("Proceeding without clustering-based boundary detection")
+                self.cluster_labels = None
+                self.cluster_info = None
+                self.boundary_points = None
+        else:
+            self.cluster_labels = None
+            self.cluster_info = None
+            self.boundary_points = None
+            if not self.use_clustering:
+                self.logger.info("Clustering disabled by configuration")
+            else:
+                self.logger.info("No continuous parameters - clustering not applicable")
+
         self.logger.info("=" * 80)
         self.logger.info("--- Refinement Run Configuration ---")
         self.logger.info(f"Refinement factor: {refinement_factor}x")
@@ -607,7 +669,50 @@ class GridAnchoredDESampler:
         self.logger.info(f"Coarse grid coverage: {self.refinement_interpolator.get_coverage_fraction():.1%}")
         self.logger.info(f"Number of coarse solutions: {len(coarse_solution['solutions'])}")
         self.logger.info(f"Global solution pool size: {len(self.global_solution_pool)}")
+        if self.cluster_labels is not None:
+            n_clusters = len(self.cluster_info['cluster_sizes'])
+            n_boundaries = len(self.boundary_points)
+            self.logger.info(f"Clusters detected: {n_clusters}")
+            self.logger.info(f"Boundary points: {n_boundaries}")
         self.logger.info("=" * 80)
+
+
+    def _get_refined_initialization(self, grid_coords):
+        """
+        Get initialization parameters for a fine grid point, using clustering if available.
+
+        Parameters
+        ----------
+        grid_coords : np.ndarray
+            Projection coordinates of the fine grid point
+
+        Returns
+        -------
+        np.ndarray or None
+            Continuous parameters for initialization
+        """
+        # If clustering is not available or disabled, use standard interpolation
+        if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
+            return self.refinement_interpolator.interpolate(grid_coords)
+
+        # Use cluster-based initialization
+        from .interpolation import get_cluster_based_initialization
+
+        continuous_params, metadata = get_cluster_based_initialization(
+            grid_coords,
+            self.coarse_grid_solution,
+            self.cluster_labels,
+            self.cluster_info,
+            self.boundary_points,
+            self.refinement_interpolator
+        )
+
+        # Log if cluster extrapolation was used
+        if metadata['method'] == 'cluster_weighted_average':
+            self.logger.debug(f"Fine point at {grid_coords}: using cluster {metadata['selected_cluster']} "
+                            f"weighted average ({metadata['n_points_used']} points)")
+
+        return continuous_params
 
 
     def _is_coarse_grid_point(self, fine_idx, refinement_factor):
@@ -681,6 +786,9 @@ class GridAnchoredDESampler:
         self.refinement_factor = None
         self.coarse_grid_solution = None
         self.refinement_interpolator = None
+        self.cluster_labels = None
+        self.cluster_info = None
+        self.boundary_points = None
 
 
     def _flush_samples_buffer(self):
@@ -1250,9 +1358,9 @@ class GridAnchoredDESampler:
                    (neighbor_idx in self.pending_activation_indices):
                     continue
 
-                # Get interpolated starting parameters
+                # Get interpolated starting parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
-                interpolated_continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+                interpolated_continuous_params = self._get_refined_initialization(grid_coords)
 
                 # Handle case where interpolation returns None (no continuous dims)
                 if interpolated_continuous_params is None:
@@ -1409,9 +1517,9 @@ class GridAnchoredDESampler:
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
-                # Get interpolated starting parameters
+                # Get interpolated starting parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
-                interpolated_continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+                interpolated_continuous_params = self._get_refined_initialization(grid_coords)
 
                 # Handle edge cases in interpolation
                 if interpolated_continuous_params is None:
