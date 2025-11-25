@@ -959,9 +959,10 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
     """
     Get initialization parameters for a fine grid point using cluster-aware interpolation.
 
-    For fine grid points near cluster boundaries, this function identifies which cluster
-    has the highest likelihood along the boundary and extrapolates continuous parameters
-    from that cluster, rather than interpolating across the boundary.
+    For fine grid points near cluster boundaries, this function extrapolates continuous
+    parameters from all nearby clusters and returns multiple candidate parameter sets
+    to be evaluated. The caller should evaluate the likelihood at each candidate and
+    select the best one.
 
     Parameters
     ----------
@@ -980,13 +981,11 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
 
     Returns
     -------
-    continuous_params : np.ndarray
-        Predicted optimal continuous parameters, shape (n_cont_dims,)
-    metadata : dict
-        Additional information:
-        - 'near_boundary': bool - whether point is near a boundary
-        - 'selected_cluster': int or None - cluster used for extrapolation
-        - 'method': str - 'interpolated' or 'cluster_extrapolated'
+    candidates : list of dict
+        List of candidate parameter sets. Each dict contains:
+        - 'continuous_params': np.ndarray - continuous parameter values
+        - 'cluster_id': int or None - source cluster ID
+        - 'method': str - how these params were generated
     """
     # Find k nearest coarse grid points
     k = 6
@@ -1000,12 +999,11 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
     if len(nearby_boundaries) == 0:
         # Not near a boundary - use standard interpolation
         continuous_params = interpolator.interpolate(fine_grid_coords)
-        metadata = {
-            'near_boundary': False,
-            'selected_cluster': None,
+        return [{
+            'continuous_params': continuous_params,
+            'cluster_id': None,
             'method': 'interpolated'
-        }
-        return continuous_params, metadata
+        }]
 
     # Near a boundary - determine which clusters are involved
     nearby_clusters = set()
@@ -1018,60 +1016,59 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
     if len(nearby_clusters) <= 1:
         # Only one cluster nearby - use standard interpolation
         continuous_params = interpolator.interpolate(fine_grid_coords)
-        metadata = {
-            'near_boundary': True,
-            'selected_cluster': list(nearby_clusters)[0] if nearby_clusters else None,
+        return [{
+            'continuous_params': continuous_params,
+            'cluster_id': list(nearby_clusters)[0] if nearby_clusters else None,
             'method': 'interpolated'
-        }
-        return continuous_params, metadata
+        }]
 
-    # Multiple clusters nearby - select the one with highest likelihood
-    best_cluster = max(nearby_clusters,
-                      key=lambda c: cluster_info['cluster_max_likelihoods'].get(c, -np.inf))
+    # Multiple clusters nearby - generate candidates from each cluster
+    candidates = []
 
-    # Find all nearby coarse points in the best cluster and compute weighted average
-    # This gives smoother transitions than using just the single nearest point
-    cluster_points = []
-    cluster_distances = []
-    cluster_params = []
+    # Always add interpolated version as first candidate
+    interpolated_params = interpolator.interpolate(fine_grid_coords)
+    candidates.append({
+        'continuous_params': interpolated_params,
+        'cluster_id': None,
+        'method': 'interpolated'
+    })
 
-    for idx, dist in zip(k_nearest_indices, k_nearest_distances):
-        if idx in cluster_labels and cluster_labels[idx] == best_cluster:
-            cluster_points.append(idx)
-            cluster_distances.append(dist)
-            cluster_params.append(coarse_solution['solutions'][idx]['continuous_params'])
+    # For each nearby cluster, extrapolate continuous parameters
+    for cluster_id in nearby_clusters:
+        # Find all nearby coarse points in this cluster
+        cluster_points = []
+        cluster_distances = []
+        cluster_params = []
 
-    if len(cluster_points) > 0:
-        # Use inverse-distance weighted average for smooth interpolation within the cluster
-        cluster_params = np.array(cluster_params)
-        cluster_distances = np.array(cluster_distances)
+        for idx, dist in zip(k_nearest_indices, k_nearest_distances):
+            if idx in cluster_labels and cluster_labels[idx] == cluster_id:
+                cluster_points.append(idx)
+                cluster_distances.append(dist)
+                cluster_params.append(coarse_solution['solutions'][idx]['continuous_params'])
 
-        # Avoid division by zero for exact matches
-        cluster_distances = np.maximum(cluster_distances, 1e-10)
+        if len(cluster_points) > 0:
+            # Use inverse-distance weighted average for smooth interpolation within the cluster
+            cluster_params = np.array(cluster_params)
+            cluster_distances = np.array(cluster_distances)
 
-        # Inverse distance weights
-        weights = 1.0 / cluster_distances
-        weights /= np.sum(weights)
+            # Avoid division by zero for exact matches
+            cluster_distances = np.maximum(cluster_distances, 1e-10)
 
-        # Weighted average
-        continuous_params = np.sum(cluster_params * weights[:, np.newaxis], axis=0)
+            # Inverse distance weights
+            weights = 1.0 / cluster_distances
+            weights /= np.sum(weights)
 
-        metadata = {
-            'near_boundary': True,
-            'selected_cluster': best_cluster,
-            'method': 'cluster_weighted_average',
-            'n_points_used': len(cluster_points)
-        }
-    else:
-        # Fallback to interpolation
-        continuous_params = interpolator.interpolate(fine_grid_coords)
-        metadata = {
-            'near_boundary': True,
-            'selected_cluster': best_cluster,
-            'method': 'interpolated_fallback'
-        }
+            # Weighted average
+            continuous_params = np.sum(cluster_params * weights[:, np.newaxis], axis=0)
 
-    return continuous_params, metadata
+            candidates.append({
+                'continuous_params': continuous_params,
+                'cluster_id': cluster_id,
+                'method': 'cluster_extrapolated',
+                'n_points_used': len(cluster_points)
+            })
+
+    return candidates
 
 
 def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6):
