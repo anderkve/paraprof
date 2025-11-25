@@ -467,7 +467,7 @@ class GridAnchoredDESampler:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
 
-        # --- Handle refinement run: Transfer coarse grid solutions to profile grid ---
+        # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
             self.logger.info("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
             coarse_solutions = self.coarse_grid_solution['solutions']
@@ -483,14 +483,26 @@ class GridAnchoredDESampler:
                     continue
 
                 likelihood = solution['likelihood']
+                continuous_params = solution['continuous_params']
 
                 # Store in profile likelihood grid for visualization
-                # Note: No population state is created - LBFGSB jobs will handle neighbors
                 self.profile_likelihood_grid[fine_idx] = likelihood
+
+                # Create population state for this transferred point
+                # This ensures continuous parameter plots include coarse grid data
+                self.population[fine_idx] = {
+                    'continuous_params': np.array([continuous_params]),  # Shape: (1, n_cont_dims)
+                    'fitnesses': np.array([likelihood]),
+                    'best_fitness': likelihood,
+                    'status': 'optimized',  # Mark as already optimized from coarse run
+                    'improvement_history': [],
+                    'last_update_gen': 0,
+                    'optimizer_state': None
+                }
 
                 n_transferred += 1
 
-            self.logger.info(f"Transferred {n_transferred} coarse grid values to profile likelihood grid")
+            self.logger.info(f"Transferred {n_transferred} coarse grid solutions to fine grid (likelihood + continuous params)")
             self.logger.info("=" * 80)
 
 
