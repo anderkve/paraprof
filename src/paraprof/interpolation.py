@@ -495,6 +495,92 @@ class MultiGPInterpolator:
             return continuous_params
 
 
+    def get_interpolated_likelihood(self, projection_coords):
+        """
+        Interpolates the likelihood value at given projection coordinates using GP.
+
+        Trains a GP model for likelihood values on first call and caches it for
+        subsequent calls. This enables efficient pre-screening of fine grid points
+        during refinement.
+
+        Parameters
+        ----------
+        projection_coords : array-like
+            Coordinates in projection space, shape (n_proj_dims,)
+
+        Returns
+        -------
+        float
+            Interpolated likelihood value at the given coordinates
+        """
+        # Build likelihood GP on first use and cache it
+        if not hasattr(self, '_likelihood_gp') or self._likelihood_gp is None:
+            logger.debug("  Building likelihood GP for interpolation...")
+
+            # Extract training data from coarse grid solutions
+            X_train_list = []
+            y_train_list = []
+
+            for grid_idx, solution in self.solutions.items():
+                # Get grid coordinates in projection space
+                grid_coords = np.array([
+                    self.grid_axes[i][grid_idx[i]]
+                    for i in range(self.n_proj_dims)
+                ])
+                X_train_list.append(grid_coords)
+                y_train_list.append(solution['likelihood'])
+
+            if len(X_train_list) == 0:
+                logger.warning("  No training data available for likelihood GP")
+                self._likelihood_gp = None
+                return np.nan
+
+            X_train = np.array(X_train_list)
+            y_train = np.array(y_train_list)
+
+            # Normalize inputs if needed
+            if self.normalize_inputs:
+                X_train = self._normalize_coords(X_train)
+
+            # Create kernel for likelihood GP
+            kernel = self._create_kernel()
+
+            # Create and train likelihood GP
+            self._likelihood_gp = GaussianProcessRegressor(
+                kernel=kernel,
+                n_restarts_optimizer=5,
+                alpha=self.noise_level,
+                normalize_y=True  # Normalize targets for numerical stability
+            )
+
+            self._likelihood_gp.fit(X_train, y_train)
+
+            log_marginal_likelihood = self._likelihood_gp.log_marginal_likelihood(
+                self._likelihood_gp.kernel_.theta
+            )
+            logger.debug(f"  Likelihood GP: log_marginal_likelihood={log_marginal_likelihood:.2f}, "
+                        f"n_train={len(y_train)}")
+
+        # If GP training failed, return NaN
+        if self._likelihood_gp is None:
+            return np.nan
+
+        # Predict likelihood at query point
+        projection_coords = np.asarray(projection_coords).reshape(1, -1)
+
+        # Normalize if needed
+        if self.normalize_inputs:
+            projection_coords = self._normalize_coords(projection_coords)
+
+        # Get prediction
+        try:
+            predicted_likelihood = self._likelihood_gp.predict(projection_coords, return_std=False)
+            return float(predicted_likelihood[0])
+        except Exception as e:
+            logger.warning(f"  Likelihood GP prediction failed: {e}")
+            return np.nan
+
+
     def get_max_uncertainty(self, projection_coords):
         """
         Get the maximum uncertainty across all continuous dimensions.
