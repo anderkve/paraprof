@@ -1,15 +1,11 @@
 """
-Example script: Running the Grid-Anchored DE Sampler on the Himmelblau 4D test function.
+Example script: Running the Grid-Anchored DE Sampler on the Rosenbrock 4D test function.
 
 Usage:
-    mpiexec -n <number_of_cores> python run_himmelblau_4d.py
+    mpiexec -n <number_of_cores> python run_rosenbrock_4d.py
 """
 import sys
-import os
 import numpy as np
-
-# Add parent directory to path to import paraprof
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from mpi4py import MPI
@@ -18,10 +14,8 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from sampler import GridAnchoredDESampler
-from master import run_all_projections, terminate_workers
-from worker import worker_main
-from test_functions import get_test_function
+from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import get_test_function
 
 # Get MPI info
 comm = MPI.COMM_WORLD

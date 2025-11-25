@@ -218,3 +218,15 @@ notes*.txt
 paper_draft*
 *_SUMMARY.md
 plots_*/
+
+# Temporary/backup files
+*.myedit
+*_v[0-9].py
+*_v[0-9][0-9].py
+*.test[0-9]
+gen_log_*.txt
+*_output.txt
+results_*/
+
+# Test files in root (not in tests/ directory)
+/test_*.py
