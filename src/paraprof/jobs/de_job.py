@@ -124,12 +124,14 @@ class DEGridPointJob(Job):
                 self.evals_remaining -= 1 # This individual won't be evaluated
                 continue
 
-            mutant = self.sampler._ensure_bounds(mutant, self.sampler.continuous_dims)
-
+            # Crossover first, then apply bounds once (avoids intermediate array)
             cross_points = np.random.rand(self.sampler.n_cont_dims) < CR_i
             if not np.any(cross_points):
                 cross_points[np.random.randint(0, self.sampler.n_cont_dims)] = True
             trial_params = np.where(cross_points, mutant, x_i_params)
+
+            # Apply bounds after crossover
+            trial_params = self.sampler._ensure_bounds(trial_params, self.sampler.continuous_dims)
 
             # Track trial generation
             self.trials_generated += 1

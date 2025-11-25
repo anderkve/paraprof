@@ -33,9 +33,13 @@ def terminate_workers(comm, myrank=0):
     n_workers = comm.Get_size() - 1
 
     logger.debug("terminate_workers: Sending TASK_TERMINATE to workers.")
+    # Use non-blocking sends to terminate all workers simultaneously
+    requests = []
     for rank in range(1, n_workers + 1):
-        comm.send(TASK_TERMINATE, dest=rank)
+        requests.append(comm.isend(TASK_TERMINATE, dest=rank))
 
+    # Wait for all sends to complete
+    MPI.Request.Waitall(requests)
     logger.debug("terminate_workers: All workers terminated.")
 
 
@@ -750,12 +754,9 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
             comm.send(task, dest=worker_rank)
             tasks_sent += 1
 
-        # --- 4. Polite Sleep ---
-        # If no tasks are ready to send and no workers are free,
-        # but we are still waiting for results, sleep for a tiny bit
-        # to prevent a 100% CPU busy-wait.
-        if not free_workers and not high_prio_tasks and not low_prio_tasks and (tasks_sent > tasks_completed):
-            time.sleep(0.001) # 1ms sleep
+        # --- 4. No Sleep Needed ---
+        # Iprobe() is non-blocking and very lightweight, so no sleep is needed.
+        # The loop will naturally wait for results or new tasks to become available.
 
 
     # --- End of Main Event Loop ---

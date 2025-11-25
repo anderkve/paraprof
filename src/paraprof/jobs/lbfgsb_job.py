@@ -59,6 +59,9 @@ class LBFGSBJob(Job):
 
         self.iteration = 0
 
+        # Pre-allocate array for epsilon calculations (performance optimization)
+        self._eps_array = np.empty(self.n_opt_dims)
+
         self.search_direction = None
         self.line_search_alpha = 1.0
         self.pending_s_k = None
@@ -217,7 +220,9 @@ class LBFGSBJob(Job):
 
         # Adaptive step size per dimension: scale with parameter magnitude
         # This ensures numerical stability across parameters with different scales
-        eps = np.maximum(np.abs(x) * base_eps, 1e-10)
+        # Use pre-allocated array for performance
+        np.maximum(np.abs(x) * base_eps, 1e-10, out=self._eps_array)
+        eps = self._eps_array
 
         # Store eps array for later use in gradient reconstruction
         self.current_eps = eps

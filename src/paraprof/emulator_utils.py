@@ -141,6 +141,10 @@ class LocalEmulator:
             else:
                 return np.zeros(n_test)
 
+        # Reshape if needed (only if 1D)
+        if X_test.ndim == 1:
+            X_test = X_test.reshape(1, -1)
+
         # Standardize test points using training scaler
         if self.X_scaler is not None:
             try:
@@ -305,14 +309,14 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
 
     # We have too many points - select closest to center
     if max_points is not None and len(all_params) > max_points:
-        # Use argpartition for O(n) selection instead of O(n log n) sort
-        distances = np.linalg.norm(all_params - center_params, axis=1)
-        closest_indices = np.argpartition(distances, max_points)[:max_points]
+        # Use squared distances to avoid expensive sqrt (argpartition only needs ordering)
+        distances_squared = np.sum((all_params - center_params)**2, axis=1)
+        closest_indices = np.argpartition(distances_squared, max_points)[:max_points]
         all_params = all_params[closest_indices]
         all_fitness = all_fitness[closest_indices]
 
         logger.debug(
-            f"Selected {max_points} closest points from {len(distances)} total"
+            f"Selected {max_points} closest points from {len(distances_squared)} total"
         )
 
     return {
