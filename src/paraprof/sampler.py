@@ -360,6 +360,10 @@ class GridAnchoredDESampler:
         if self.samples_output_file:
             self.samples_buffer = []
             self.sample_buffer_size = 1000
+            # Keep file handle open for performance (avoid repeated open/close)
+            self._samples_file_handle = open(self.samples_output_file, 'a', buffering=8192)
+        else:
+            self._samples_file_handle = None
 
         # --- Persistent State (across projections) ---
         self.target_calls = 0
@@ -504,6 +508,13 @@ class GridAnchoredDESampler:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
 
+        # Performance optimizations: caches
+        self._neighbor_cache = {}
+
+        # Cache bounds arrays for continuous and projection dimensions
+        self._continuous_bounds = self.bounds[self.continuous_dims] if len(self.continuous_dims) > 0 else None
+        self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
+
         # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
             self.logger.info("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
@@ -591,7 +602,8 @@ class GridAnchoredDESampler:
             'continuous_dims': self.continuous_dims.copy(),
             'solutions': solutions,
             'grid_shape': self.grid_shape,
-            'global_solution_pool': [s.copy() for s in self.global_solution_pool]
+            # Convert heap to list of entries for export
+            'global_solution_pool': [entry.copy() for fitness, entry in self.global_solution_pool]
         }
 
 
@@ -629,7 +641,11 @@ class GridAnchoredDESampler:
 
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
-            self.global_solution_pool = [s.copy() for s in coarse_solution['global_solution_pool']]
+            import heapq
+            # Convert list to heap structure (fitness, entry)
+            self.global_solution_pool = [(entry['fitness'], entry)
+                                         for entry in coarse_solution['global_solution_pool']]
+            heapq.heapify(self.global_solution_pool)
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
         # Perform clustering if enabled and we have continuous parameters
@@ -807,17 +823,46 @@ class GridAnchoredDESampler:
         self.boundary_points = None
 
 
+    def __del__(self):
+        """Destructor: ensure file handle is closed."""
+        self._close_sample_file()
+
+
+    def _close_sample_file(self):
+        """Close the sample output file handle."""
+        if self._samples_file_handle:
+            try:
+                self._flush_samples_buffer()
+                self._samples_file_handle.close()
+                self._samples_file_handle = None
+            except Exception as e:
+                # Use print instead of logger in case logger is already destroyed
+                print(f"Warning: Error closing sample file: {e}")
+
+
     def _flush_samples_buffer(self):
-        """Writes the content of the samples buffer to the output file."""
-        if not self.samples_output_file or not self.samples_buffer:
+        """
+        Writes the content of the samples buffer to the output file.
+        Uses persistent file handle and vectorized writing for performance.
+        """
+        if not self._samples_file_handle or not self.samples_buffer:
             return
 
         try:
-            with open(self.samples_output_file, 'a') as f:
+            # Vectorized writing for large buffers (more efficient)
+            if len(self.samples_buffer) > 100:
+                # Convert buffer to numpy array
+                data = np.array([(list(params) + [target_val])
+                               for params, target_val in self.samples_buffer])
+                # Use savetxt for efficient vectorized formatting
+                np.savetxt(self._samples_file_handle, data, fmt='%.10e', delimiter=', ')
+            else:
+                # Loop for small buffers (overhead not worth vectorization)
                 for params, target_val in self.samples_buffer:
                     param_str = ", ".join([f"{p:.10e}" for p in params])
-                    f.write(f"{param_str}, {target_val:.10e}\n")
+                    self._samples_file_handle.write(f"{param_str}, {target_val:.10e}\n")
 
+            self._samples_file_handle.flush()  # Explicit flush
             self.samples_buffer = []
         except IOError as e:
             self.logger.warning(f"Warning: Could not write to sample file: {e}")
@@ -848,8 +893,9 @@ class GridAnchoredDESampler:
                     'call_number': self.target_calls
                 })
 
-                # Prune local cache if too large (fast operation on small cache)
-                if len(self.local_eval_caches[grid_idx]) > self.local_cache_max_size:
+                # Prune local cache if too large
+                # Only prune when reaching 2x max size to reduce pruning frequency
+                if len(self.local_eval_caches[grid_idx]) > 2 * self.local_cache_max_size:
                     self._prune_local_cache(grid_idx)
 
             except (AttributeError, KeyError):
@@ -976,8 +1022,17 @@ class GridAnchoredDESampler:
 
 
     def _ensure_bounds(self, vec, dims_to_check):
-        """Ensures a vector's components are within the defined bounds."""
-        # Ensure dims_to_check is a list or array of indices
+        """
+        Ensures a vector's components are within the defined bounds.
+        Uses cached bounds arrays for performance.
+        """
+        # Fast path: use cached bounds for common cases
+        if dims_to_check is self.continuous_dims and self._continuous_bounds is not None:
+            return np.clip(vec, self._continuous_bounds[:, 0], self._continuous_bounds[:, 1])
+        elif dims_to_check is self.projection_dims and self._projection_bounds is not None:
+            return np.clip(vec, self._projection_bounds[:, 0], self._projection_bounds[:, 1])
+
+        # Slow path: handle custom dims_to_check
         dims_to_check = np.array(dims_to_check, dtype=int)
         if vec.shape != self.bounds[dims_to_check, 0].shape:
              # This happens in global optimization, vec is (N_dims,)
@@ -992,7 +1047,20 @@ class GridAnchoredDESampler:
 
 
     def _get_valid_neighbors(self, grid_idx, include_center=False):
-        """Generator to yield valid neighbor indices for a given grid point."""
+        """
+        Generator to yield valid neighbor indices for a given grid point.
+        Uses caching for performance.
+        """
+        cache_key = (grid_idx, include_center)
+
+        # Check cache first
+        if cache_key in self._neighbor_cache:
+            for neighbor in self._neighbor_cache[cache_key]:
+                yield neighbor
+            return
+
+        # Compute and cache neighbors
+        neighbors = []
         for offset in itertools.product([-1, 0, 1], repeat=self.n_proj_dims):
             if not include_center and all(o == 0 for o in offset):
                 continue
@@ -1000,15 +1068,22 @@ class GridAnchoredDESampler:
             neighbor_idx = tuple(np.array(grid_idx) + np.array(offset))
 
             if all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
-                yield neighbor_idx
+                neighbors.append(neighbor_idx)
+
+        # Cache for future use
+        self._neighbor_cache[cache_key] = neighbors
+
+        # Yield results
+        for neighbor in neighbors:
+            yield neighbor
 
 
     def _update_global_pool(self, full_params, fitness, grid_idx):
         """
         Adds or updates a solution in the global solution pool.
 
-        Maintains a pool of the best solutions found across all grid points,
-        sorted by fitness. The pool is capped at global_pool_size.
+        Maintains a pool of the best solutions found across all grid points
+        using a heap for efficient updates. The pool is capped at global_pool_size.
 
         Note: Stores FULL parameter vectors to support reuse across different projections.
 
@@ -1021,16 +1096,21 @@ class GridAnchoredDESampler:
         grid_idx : tuple or None
             The grid point index where this solution was found (None for global optim)
         """
-        # Add the new solution
-        self.global_solution_pool.append({
+        import heapq
+
+        # Create solution entry
+        entry = {
             'full_params': full_params.copy(),
             'fitness': fitness,
             'grid_idx': grid_idx
-        })
+        }
 
-        # Sort by fitness (descending) and keep top N
-        self.global_solution_pool.sort(key=lambda x: x['fitness'], reverse=True)
-        self.global_solution_pool = self.global_solution_pool[:self.global_pool_size]
+        # Use min-heap (we want to efficiently drop the worst solution)
+        # Store as (fitness, entry) tuple so heapq compares by fitness
+        if len(self.global_solution_pool) < self.global_pool_size:
+            heapq.heappush(self.global_solution_pool, (fitness, entry))
+        elif fitness > self.global_solution_pool[0][0]:  # Better than worst
+            heapq.heapreplace(self.global_solution_pool, (fitness, entry))
 
 
     def _sample_from_global_pool(self, n_samples):
@@ -1063,7 +1143,8 @@ class GridAnchoredDESampler:
         sample_indices = np.random.choice(n_available, size=min(n_samples, n_available), replace=False)
 
         # Extract continuous dims from full parameter vectors
-        samples = np.array([self.global_solution_pool[i]['full_params'][self.continuous_dims]
+        # Note: global_solution_pool is now a heap of (fitness, entry) tuples
+        samples = np.array([self.global_solution_pool[i][1]['full_params'][self.continuous_dims]
                            for i in sample_indices])
 
         return samples

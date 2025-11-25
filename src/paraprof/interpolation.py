@@ -58,6 +58,13 @@ class GridInterpolator:
         # Cache for likelihood interpolator (built on first use)
         self._likelihood_interpolator = None
 
+        # Pre-compute coarse grid coordinates for performance
+        self._coarse_coords_cache = {}
+        for grid_idx in self.solutions.keys():
+            proj_coords = np.array([self.grid_axes[i][grid_idx[i]]
+                                   for i in range(len(self.grid_axes))])
+            self._coarse_coords_cache[grid_idx] = proj_coords
+
 
     def _build_interpolators(self):
         """
@@ -596,9 +603,11 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
         - 'method': str - how these params were generated
     """
     # Find k nearest coarse grid points
+    # Use interpolator's cached coordinates if available
     k = 6
+    coords_cache = getattr(interpolator, '_coarse_coords_cache', None)
     k_nearest_indices, k_nearest_distances = _find_k_nearest_coarse_points(
-        fine_grid_coords, coarse_solution, k=k
+        fine_grid_coords, coarse_solution, k=k, coords_cache=coords_cache
     )
 
     # Check if any of the nearest points are at boundaries
@@ -679,7 +688,7 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
     return candidates
 
 
-def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6):
+def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cache=None):
     """
     Find k nearest coarse grid points to fine grid coordinates.
 
@@ -691,6 +700,8 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6):
         Coarse grid solution
     k : int, optional
         Number of nearest neighbors to find (default: 6)
+    coords_cache : dict, optional
+        Pre-computed coordinates cache {grid_idx: proj_coords}
 
     Returns
     -------
@@ -702,13 +713,18 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6):
     coarse_coords_list = []
     coarse_indices = []
 
-    grid_axes = coarse_solution['grid_axes']
-
-    for grid_idx in coarse_solution['solutions'].keys():
-        # Get projection coordinates of this coarse grid point
-        proj_coords = np.array([grid_axes[i][grid_idx[i]] for i in range(len(grid_axes))])
-        coarse_coords_list.append(proj_coords)
-        coarse_indices.append(grid_idx)
+    # Use cache if provided, otherwise compute
+    if coords_cache is not None:
+        for grid_idx, proj_coords in coords_cache.items():
+            coarse_coords_list.append(proj_coords)
+            coarse_indices.append(grid_idx)
+    else:
+        grid_axes = coarse_solution['grid_axes']
+        for grid_idx in coarse_solution['solutions'].keys():
+            # Get projection coordinates of this coarse grid point
+            proj_coords = np.array([grid_axes[i][grid_idx[i]] for i in range(len(grid_axes))])
+            coarse_coords_list.append(proj_coords)
+            coarse_indices.append(grid_idx)
 
     if len(coarse_coords_list) == 0:
         return [], []
