@@ -37,39 +37,9 @@ import numpy as np
 # UNIMODAL FUNCTIONS
 # =============================================================================
 
-def sphere_2d(params):
+def sphere_nd(params):
     """
-    2D Sphere function (negated for maximization).
-
-    Characteristics:
-    - Unimodal, convex, separable
-    - Simplest benchmark function
-    - Tests basic optimization capability
-
-    Global optimum: f(0, 0) = 0.0
-    Domain: [-5, 5]^2
-    """
-    return -np.sum(params**2)
-
-
-def sphere_4d(params):
-    """
-    4D Sphere function (negated for maximization).
-
-    Characteristics:
-    - Unimodal, convex, separable
-    - Simplest benchmark function
-    - Tests basic optimization capability
-
-    Global optimum: f(0, 0, 0, 0) = 0.0
-    Domain: [-5, 5]^4
-    """
-    return -np.sum(params**2)
-
-
-def sphere_6d(params):
-    """
-    6D Sphere function (negated for maximization).
+    N-dimensional Sphere function (negated for maximization).
 
     Characteristics:
     - Unimodal, convex, separable
@@ -77,24 +47,26 @@ def sphere_6d(params):
     - Tests basic optimization capability
 
     Global optimum: f(0, ..., 0) = 0.0
-    Domain: [-5, 5]^6
+    Domain: [-5, 5]^n
+
+    Parameters
+    ----------
+    params : array-like
+        Parameter vector of any dimension
+
+    Returns
+    -------
+    float
+        Negative sum of squared parameters
     """
     return -np.sum(params**2)
 
 
-def sphere_10d(params):
-    """
-    10D Sphere function (negated for maximization).
-
-    Characteristics:
-    - Unimodal, convex, separable
-    - Simplest benchmark function
-    - Tests basic optimization capability
-
-    Global optimum: f(0, ..., 0) = 0.0
-    Domain: [-5, 5]^10
-    """
-    return -np.sum(params**2)
+# Aliases for different dimensions (all use the same implementation)
+sphere_2d = sphere_nd
+sphere_4d = sphere_nd
+sphere_6d = sphere_nd
+sphere_10d = sphere_nd
 
 
 def rosenbrock_2d(params):

@@ -5,7 +5,6 @@ import time
 import collections
 import numpy as np
 import sys
-import logging
 
 from .logger import setup_logger
 
