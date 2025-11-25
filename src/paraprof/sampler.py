@@ -677,9 +677,12 @@ class GridAnchoredDESampler:
         self.logger.info("=" * 80)
 
 
-    def _get_refined_initialization(self, grid_coords):
+    def _get_refined_initialization_candidates(self, grid_coords):
         """
-        Get initialization parameters for a fine grid point, using clustering if available.
+        Get candidate initialization parameters for a fine grid point.
+
+        Near cluster boundaries, returns multiple candidates from different clusters
+        to be evaluated. Away from boundaries, returns a single interpolated candidate.
 
         Parameters
         ----------
@@ -688,17 +691,25 @@ class GridAnchoredDESampler:
 
         Returns
         -------
-        np.ndarray or None
-            Continuous parameters for initialization
+        list of dict
+            List of candidates, each containing:
+            - 'continuous_params': np.ndarray
+            - 'cluster_id': int or None
+            - 'method': str
         """
         # If clustering is not available or disabled, use standard interpolation
         if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
-            return self.refinement_interpolator.interpolate(grid_coords)
+            continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+            return [{
+                'continuous_params': continuous_params,
+                'cluster_id': None,
+                'method': 'interpolated'
+            }]
 
         # Use cluster-based initialization
         from .interpolation import get_cluster_based_initialization
 
-        continuous_params, metadata = get_cluster_based_initialization(
+        candidates = get_cluster_based_initialization(
             grid_coords,
             self.coarse_grid_solution,
             self.cluster_labels,
@@ -707,12 +718,13 @@ class GridAnchoredDESampler:
             self.refinement_interpolator
         )
 
-        # Log if cluster extrapolation was used
-        if metadata['method'] == 'cluster_weighted_average':
-            self.logger.debug(f"Fine point at {grid_coords}: using cluster {metadata['selected_cluster']} "
-                            f"weighted average ({metadata['n_points_used']} points)")
+        # Log if multiple candidates near boundary
+        if len(candidates) > 1:
+            cluster_ids = [c['cluster_id'] for c in candidates if c['cluster_id'] is not None]
+            self.logger.debug(f"Fine point at {grid_coords}: testing {len(candidates)} candidates "
+                            f"from clusters {cluster_ids}")
 
-        return continuous_params
+        return candidates
 
 
     def _is_coarse_grid_point(self, fine_idx, refinement_factor):
@@ -1358,20 +1370,25 @@ class GridAnchoredDESampler:
                    (neighbor_idx in self.pending_activation_indices):
                     continue
 
-                # Get interpolated starting parameters (using clustering if available)
+                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
-                interpolated_continuous_params = self._get_refined_initialization(grid_coords)
+                candidates = self._get_refined_initialization_candidates(grid_coords)
 
-                # Handle case where interpolation returns None (no continuous dims)
-                if interpolated_continuous_params is None:
-                    warm_start_params = None
-                # Check for NaN values from interpolation
-                elif np.any(np.isnan(interpolated_continuous_params)):
-                    # Fallback: use nearest transferred point's parameters
+                # Use first candidate for activation jobs (optimization will explore from there)
+                if len(candidates) > 0:
+                    warm_start_params = candidates[0]['continuous_params']
+                    # Handle case where interpolation returns None (no continuous dims)
+                    if warm_start_params is None:
+                        warm_start_params = None
+                    # Check for NaN values
+                    elif np.any(np.isnan(warm_start_params)):
+                        # Fallback: use nearest transferred point's parameters
+                        nearest_state = self.population[grid_idx]
+                        warm_start_params = nearest_state['continuous_params'][0]
+                else:
+                    # No candidates - use fallback
                     nearest_state = self.population[grid_idx]
                     warm_start_params = nearest_state['continuous_params'][0]
-                else:
-                    warm_start_params = interpolated_continuous_params
 
                 job = ActivationJob(
                     job_id=next_job_id,
@@ -1517,73 +1534,123 @@ class GridAnchoredDESampler:
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
-                # Get interpolated starting parameters (using clustering if available)
+                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
-                interpolated_continuous_params = self._get_refined_initialization(grid_coords)
+                candidates = self._get_refined_initialization_candidates(grid_coords)
 
-                # Handle edge cases in interpolation
-                if interpolated_continuous_params is None:
-                    # No continuous dims - use empty array
-                    start_params_partial = np.array([])
-                elif np.any(np.isnan(interpolated_continuous_params)):
-                    # Interpolation failed - skip this point
+                # Handle edge cases
+                if len(candidates) == 0:
                     continue
-                else:
-                    start_params_partial = interpolated_continuous_params
 
-                # Construct full parameter vector for evaluation
-                start_params_full = self._construct_params(fine_idx, start_params_partial)
+                # For direct evaluation mode with multiple candidates, evaluate all and pick best
+                if self.refinement_direct_eval and len(candidates) > 1:
+                    # Create a special multi-candidate evaluation job
+                    all_cont_params = []
+                    all_full_params = []
 
-                # Create job based on refinement mode
-                if self.refinement_direct_eval:
-                    # Direct evaluation mode: use ActivationJob with single evaluation
-                    # mark_converged=True ensures the grid point is marked as 'converged' not 'active'
+                    for candidate in candidates:
+                        cont_params = candidate['continuous_params']
+                        if cont_params is None:
+                            cont_params = np.array([])
+                        elif np.any(np.isnan(cont_params)):
+                            continue  # Skip NaN candidates
+
+                        full_params = self._construct_params(fine_idx, cont_params)
+                        all_cont_params.append(cont_params)
+                        all_full_params.append(full_params)
+
+                    if len(all_cont_params) == 0:
+                        continue  # All candidates were invalid
+
+                    # Create ActivationJob that evaluates all candidates
                     job = ActivationJob(
                         job_id=next_job_id,
                         sampler=self,
                         grid_idx=fine_idx,
-                        warm_start_params=start_params_partial,
-                        mark_converged=True  # Mark as converged after single evaluation
+                        warm_start_params=all_cont_params[0],  # Initial params (will be overridden)
+                        mark_converged=True
                     )
-                    # Override to force single evaluation at interpolated point
-                    job.pop_size = 1
-                    job.all_continuous_params = np.array([start_params_partial])
-                    job.all_full_params = [start_params_full]
-                    job.fitnesses = np.full(1, -np.inf)
-                    job.evals_remaining = 1
+                    # Override to evaluate all candidates
+                    job.pop_size = len(all_cont_params)
+                    job.all_continuous_params = np.array(all_cont_params)
+                    job.all_full_params = all_full_params
+                    job.fitnesses = np.full(len(all_cont_params), -np.inf)
+                    job.evals_remaining = len(all_cont_params)
+
+                    jobs.append(job)
+                    lbfgsb_job_created_for_grid_points.add(fine_idx)
+                    next_job_id += 1
+
                 else:
-                    # Optimization mode: create optimization job (CD or L-BFGS-B)
-                    if self.use_cd_refinement:
-                        job = CoordinateDescentJob(
+                    # Single candidate or optimization mode: use first candidate
+                    candidate = candidates[0]
+                    start_params_partial = candidate['continuous_params']
+
+                    # Handle edge cases
+                    if start_params_partial is None:
+                        start_params_partial = np.array([])
+                    elif np.any(np.isnan(start_params_partial)):
+                        continue  # Skip if NaN
+
+                    # Construct full parameter vector
+                    start_params_full = self._construct_params(fine_idx, start_params_partial)
+
+                    # Create job based on refinement mode
+                    if self.refinement_direct_eval:
+                        # Direct evaluation mode with single candidate
+                        job = ActivationJob(
                             job_id=next_job_id,
-                            job_type='REFINEMENT_CD',
                             sampler=self,
-                            opt_dims=tuple(self.continuous_dims),
-                            start_params=start_params_partial,
                             grid_idx=fine_idx,
-                            start_params_full=start_params_full,
-                            start_fitness=-np.inf,
-                            max_cycles=self.cd_max_cycles,
-                            step_fraction=self.cd_step_fraction
+                            warm_start_params=start_params_partial,
+                            mark_converged=True
                         )
+                        # Override to force single evaluation
+                        job.pop_size = 1
+                        job.all_continuous_params = np.array([start_params_partial])
+                        job.all_full_params = [start_params_full]
+                        job.fitnesses = np.full(1, -np.inf)
+                        job.evals_remaining = 1
                     else:
-                        job = LBFGSBJob(
-                            job_id=next_job_id,
-                            job_type='REFINEMENT_LBFGSB',
-                            sampler=self,
-                            opt_dims=tuple(self.continuous_dims),
-                            start_params=start_params_partial,
-                            grid_idx=fine_idx,
-                            start_params_full=start_params_full,
-                            seed_history=None,
-                            start_fitness=-np.inf
-                        )
-                jobs.append(job)
-                lbfgsb_job_created_for_grid_points.add(fine_idx)
-                next_job_id += 1
+                        # Optimization mode: create optimization job (CD or L-BFGS-B)
+                        if self.use_cd_refinement:
+                            job = CoordinateDescentJob(
+                                job_id=next_job_id,
+                                job_type='REFINEMENT_CD',
+                                sampler=self,
+                                opt_dims=tuple(self.continuous_dims),
+                                start_params=start_params_partial,
+                                grid_idx=fine_idx,
+                                start_params_full=start_params_full,
+                                start_fitness=-np.inf,
+                                max_cycles=self.cd_max_cycles,
+                                step_fraction=self.cd_step_fraction
+                            )
+                        else:
+                            job = LBFGSBJob(
+                                job_id=next_job_id,
+                                job_type='REFINEMENT_LBFGSB',
+                                sampler=self,
+                                opt_dims=tuple(self.continuous_dims),
+                                start_params=start_params_partial,
+                                grid_idx=fine_idx,
+                                start_params_full=start_params_full,
+                                seed_history=None,
+                                start_fitness=-np.inf
+                            )
+                    jobs.append(job)
+                    lbfgsb_job_created_for_grid_points.add(fine_idx)
+                    next_job_id += 1
+
+        # Count multi-candidate jobs
+        n_multi_candidate = sum(1 for job in jobs if hasattr(job, 'pop_size') and job.pop_size > 1)
+        n_single_candidate = len(jobs) - n_multi_candidate
 
         if self.refinement_direct_eval:
             opt_method = "direct evaluation"
+            if n_multi_candidate > 0:
+                self.logger.info(f"--- Multi-candidate evaluations: {n_multi_candidate} grid points with multiple clusters ---")
+                self.logger.info(f"--- Single-candidate evaluations: {n_single_candidate} grid points ---")
         else:
             opt_method = "CD" if self.use_cd_refinement else "LBFGSB"
         self.logger.info(f"--- Generating {len(jobs)} refinement {opt_method} jobs ---")
