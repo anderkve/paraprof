@@ -4,7 +4,7 @@ ParaProf: Parallel Profile Likelihood Computation using Grid-Anchored Differenti
 from .sampler import GridAnchoredDESampler
 from .master import master_main, run_projection, run_all_projections, terminate_workers
 from .worker import worker_main
-from .visualization import plot_profiles
+from .visualization import plot_profiles, plot_continuous_parameters
 from .test_functions import get_test_function
 from .logger import setup_logger, get_logger, set_log_level
 from .exceptions import (
@@ -31,6 +31,7 @@ __all__ = [
     'terminate_workers',
     'worker_main',
     'plot_profiles',
+    'plot_continuous_parameters',
     'get_test_function',
     'setup_logger',
     'get_logger',

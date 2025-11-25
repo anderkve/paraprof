@@ -353,17 +353,17 @@ class MultiGPInterpolator:
         """Create a GP kernel based on configuration."""
         if self.kernel_type == 'rbf':
             # RBF kernel (infinitely differentiable, very smooth)
-            kernel = C(1.0, (1e-3, 1e3)) * RBF(
+            kernel = C(1.0, (1e-3, 1e6)) * RBF(
                 length_scale=self.length_scale,
-                length_scale_bounds=(1e-3, 1e2)
+                length_scale_bounds=(1e-3, 1e6)
             )
         elif self.kernel_type == 'matern':
-            # Matérn kernel with ν=2.5 (twice differentiable, less smooth than RBF)
+            # Matérn kernel with ν=1.5 (once differentiable, less smooth than RBF)
             # More robust to non-smooth optimal parameter surfaces
-            kernel = C(1.0, (1e-3, 1e3)) * Matern(
+            kernel = C(1.0, (1e-3, 1e6)) * Matern(
                 length_scale=self.length_scale,
-                length_scale_bounds=(1e-3, 1e2),
-                nu=2.5
+                length_scale_bounds=(1e-3, 1e6),
+                nu=1.5
             )
         else:
             raise ValueError(f"Unknown kernel_type: {self.kernel_type}")
@@ -421,7 +421,7 @@ class MultiGPInterpolator:
             # Create and train GP
             gp = GaussianProcessRegressor(
                 kernel=kernel,
-                n_restarts_optimizer=5,  # Multiple restarts for better hyperparameter optimization
+                n_restarts_optimizer=1,  # Multiple restarts for better hyperparameter optimization
                 alpha=self.noise_level,  # Additional noise for numerical stability
                 normalize_y=True  # Normalize targets for numerical stability
             )
@@ -548,7 +548,7 @@ class MultiGPInterpolator:
             # Create and train likelihood GP
             self._likelihood_gp = GaussianProcessRegressor(
                 kernel=kernel,
-                n_restarts_optimizer=5,
+                n_restarts_optimizer=1,
                 alpha=self.noise_level,
                 normalize_y=True  # Normalize targets for numerical stability
             )

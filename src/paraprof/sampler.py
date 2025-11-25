@@ -49,6 +49,7 @@ class GridAnchoredDESampler:
                  use_cd_refinement=True,
                  cd_max_cycles=3,
                  cd_step_fraction=0.01,
+                 refinement_direct_eval=False,
                  cmaes_lambda=None,
                  cmaes_mu=None,
                  cmaes_max_generations=100):
@@ -120,6 +121,10 @@ class GridAnchoredDESampler:
             Maximum coordinate descent cycles for refinement (default: 3)
         cd_step_fraction : float, optional
             CD step size as fraction of parameter range (default: 0.01)
+        refinement_direct_eval : bool, optional
+            If True, skip optimization during refinement and only evaluate the likelihood
+            once at the interpolated parameter point. If False (default), perform full
+            optimization (CD or L-BFGS-B) at each fine grid point. (default: False)
         cmaes_lambda : int, optional
             CMA-ES population size (offspring per generation).
             If None, defaults to 4 + floor(3*log(n_dims)) (default: None)
@@ -286,6 +291,15 @@ class GridAnchoredDESampler:
         self.use_cd_refinement = use_cd_refinement
         self.cd_max_cycles = cd_max_cycles
         self.cd_step_fraction = cd_step_fraction
+
+        # --- Refinement configuration ---
+        if not isinstance(refinement_direct_eval, bool):
+            raise ConfigurationError(
+                "refinement_direct_eval must be a boolean",
+                parameter="refinement_direct_eval",
+                value=refinement_direct_eval
+            )
+        self.refinement_direct_eval = refinement_direct_eval
 
         # --- CMA-ES configuration ---
         # Set defaults based on dimensionality (will be updated in _reset_for_new_projection)
@@ -1256,11 +1270,12 @@ class GridAnchoredDESampler:
 
     def create_refinement_lbfgsb_jobs(self, next_job_id):
         """
-        Creates optimization jobs directly for fine grid neighbors during refinement.
+        Creates jobs for fine grid neighbors during refinement.
 
         This method bypasses DE entirely and uses interpolated starting points
-        from the coarse grid solution for fast convergence. Uses either coordinate
-        descent (if use_cd_refinement=True) or L-BFGS-B optimization.
+        from the coarse grid solution. Depending on configuration:
+        - If refinement_direct_eval=True: Creates single-evaluation jobs at interpolated points
+        - If refinement_direct_eval=False: Creates optimization jobs (CD or L-BFGS-B)
 
         Uses interpolation-based pre-screening to determine which coarse cells
         should be processed: if any fine grid point within a coarse cell is
@@ -1274,7 +1289,8 @@ class GridAnchoredDESampler:
         Returns
         -------
         jobs : list
-            List of CoordinateDescentJob or LBFGSBJob objects
+            List of ActivationJob (if refinement_direct_eval=True),
+            CoordinateDescentJob, or LBFGSBJob objects
         next_job_id : int
             Updated job ID counter
         """
@@ -1395,40 +1411,61 @@ class GridAnchoredDESampler:
                 else:
                     start_params_partial = interpolated_continuous_params
 
-                # Construct full parameter vector for initial evaluation
+                # Construct full parameter vector for evaluation
                 start_params_full = self._construct_params(fine_idx, start_params_partial)
 
-                # Create optimization job (CD or L-BFGS-B based on configuration)
-                if self.use_cd_refinement:
-                    job = CoordinateDescentJob(
+                # Create job based on refinement mode
+                if self.refinement_direct_eval:
+                    # Direct evaluation mode: use ActivationJob with single evaluation
+                    # mark_converged=True ensures the grid point is marked as 'converged' not 'active'
+                    job = ActivationJob(
                         job_id=next_job_id,
-                        job_type='REFINEMENT_CD',
                         sampler=self,
-                        opt_dims=tuple(self.continuous_dims),
-                        start_params=start_params_partial,
                         grid_idx=fine_idx,
-                        start_params_full=start_params_full,
-                        start_fitness=-np.inf,
-                        max_cycles=self.cd_max_cycles,
-                        step_fraction=self.cd_step_fraction
+                        warm_start_params=start_params_partial,
+                        mark_converged=True  # Mark as converged after single evaluation
                     )
+                    # Override to force single evaluation at interpolated point
+                    job.pop_size = 1
+                    job.all_continuous_params = np.array([start_params_partial])
+                    job.all_full_params = [start_params_full]
+                    job.fitnesses = np.full(1, -np.inf)
+                    job.evals_remaining = 1
                 else:
-                    job = LBFGSBJob(
-                        job_id=next_job_id,
-                        job_type='REFINEMENT_LBFGSB',
-                        sampler=self,
-                        opt_dims=tuple(self.continuous_dims),
-                        start_params=start_params_partial,
-                        grid_idx=fine_idx,
-                        start_params_full=start_params_full,
-                        seed_history=None,
-                        start_fitness=-np.inf
-                    )
+                    # Optimization mode: create optimization job (CD or L-BFGS-B)
+                    if self.use_cd_refinement:
+                        job = CoordinateDescentJob(
+                            job_id=next_job_id,
+                            job_type='REFINEMENT_CD',
+                            sampler=self,
+                            opt_dims=tuple(self.continuous_dims),
+                            start_params=start_params_partial,
+                            grid_idx=fine_idx,
+                            start_params_full=start_params_full,
+                            start_fitness=-np.inf,
+                            max_cycles=self.cd_max_cycles,
+                            step_fraction=self.cd_step_fraction
+                        )
+                    else:
+                        job = LBFGSBJob(
+                            job_id=next_job_id,
+                            job_type='REFINEMENT_LBFGSB',
+                            sampler=self,
+                            opt_dims=tuple(self.continuous_dims),
+                            start_params=start_params_partial,
+                            grid_idx=fine_idx,
+                            start_params_full=start_params_full,
+                            seed_history=None,
+                            start_fitness=-np.inf
+                        )
                 jobs.append(job)
                 lbfgsb_job_created_for_grid_points.add(fine_idx)
                 next_job_id += 1
 
-        opt_method = "CD" if self.use_cd_refinement else "LBFGSB"
+        if self.refinement_direct_eval:
+            opt_method = "direct evaluation"
+        else:
+            opt_method = "CD" if self.use_cd_refinement else "LBFGSB"
         self.logger.info(f"--- Generating {len(jobs)} refinement {opt_method} jobs ---")
         return jobs, next_job_id
 
