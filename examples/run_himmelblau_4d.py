@@ -41,7 +41,7 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
 
     # 2D projections
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'linear', 'refinement_factor': 3},
     # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_method': 'multi_gp', 'refinement_factor': 3},
 
     # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes', 'patching_coarse': False, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 2},

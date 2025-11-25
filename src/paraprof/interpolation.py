@@ -354,22 +354,22 @@ class MultiGPInterpolator:
         if self.kernel_type == 'rbf':
             # RBF kernel (infinitely differentiable, very smooth)
             kernel = C(1.0, (1e-3, 1e6)) * RBF(
-                length_scale=self.length_scale,
-                length_scale_bounds=(1e-3, 1e6)
+                length_scale=[self.length_scale] * self.n_proj_dims,
+                length_scale_bounds=[(1e-3, 1e6)] * self.n_proj_dims
             )
         elif self.kernel_type == 'matern':
             # Matérn kernel with ν=1.5 (once differentiable, less smooth than RBF)
             # More robust to non-smooth optimal parameter surfaces
             kernel = C(1.0, (1e-3, 1e6)) * Matern(
-                length_scale=self.length_scale,
-                length_scale_bounds=(1e-3, 1e6),
-                nu=1.5
+                length_scale=[self.length_scale] * self.n_proj_dims,
+                length_scale_bounds=[(1e-4, 1e2)] * self.n_proj_dims,
+                nu=0.5
             )
         else:
             raise ValueError(f"Unknown kernel_type: {self.kernel_type}")
 
         # Add white noise for numerical stability
-        kernel = kernel + WhiteKernel(noise_level=self.noise_level, noise_level_bounds=(1e-10, 1e-1))
+        # kernel = kernel + WhiteKernel(noise_level=self.noise_level, noise_level_bounds=(1e-10, 1e-1))
 
         return kernel
 
