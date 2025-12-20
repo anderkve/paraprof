@@ -23,44 +23,22 @@ class GridAnchoredDESampler:
                  target_func,
                  bounds,
                  projections,
-                 pop_per_grid_point=1,
-                 mutation_strategy='current-to-rand/1',
-                 pbest_fraction=0.1,
-                 n_initial_optimizations=20,
+                 # Core tuning parameters (commonly adjusted)
                  roi_threshold=3.0,
-                 convergence_threshold=1e-5,
-                 convergence_window=25,
-                 neighbor_pull_probability=0.3,
-                 LBFGSB_ftol=1e-7,
-                 LBFGSB_max_iter=50,
-                 LBFGSB_gradient_method="central",
+                 pop_per_grid_point=1,
                  max_patching_waves=10,
-                 patching_n_neighbors=1,
-                 memory_size=100,
-                 global_pool_size=10000,
-                 activation_mix_ratios=None,
-                 samples_output_file=None,
-                 use_de_prescreening=False,
-                 emulator_confidence_threshold=2.0,
-                 emulator_min_neighbors=10,
-                 emulator_max_neighbors=100,
-                 emulator_length_scale=1.0,
-                 emulator_noise_level=0.01,
-                 use_cd_refinement=True,
-                 cd_max_cycles=3,
-                 cd_step_fraction=0.01,
-                 refinement_direct_eval=False,
-                 cmaes_lambda=None,
-                 cmaes_mu=None,
-                 cmaes_max_generations=100,
+                 LBFGSB_max_iter=50,
+                 # Feature toggles
+                 use_emulator=False,
                  use_clustering=True,
-                 clustering_method='dbscan',
-                 clustering_eps=None,
-                 clustering_min_samples=None,
-                 clustering_eps_multiplier=3.0,
-                 clustering_projection_weight=1.0):
+                 use_cd_refinement=True,
+                 refinement_direct_eval=False,
+                 # I/O
+                 samples_output_file=None,
+                 # Advanced configuration (optional)
+                 advanced_config=None):
         """
-        Initializes the Grid-Anchored DE Sampler.
+        Initializes the Grid-Anchored DE Sampler with simplified interface.
 
         Parameters
         ----------
@@ -70,95 +48,99 @@ class GridAnchoredDESampler:
             Parameter bounds for each dimension
         projections : list of dict
             List of projection configurations, each with 'dims' and 'grid_points'
-        pop_per_grid_point : int
-            Population size per grid point
-        mutation_strategy : str
-            DE mutation strategy ('current-to-rand/1', 'rand/1', 'current-to-pbest/1')
-        pbest_fraction : float
-            Fraction of population to use for p-best archive
-        n_initial_optimizations : int
-            Number of initial global optimizations
-        roi_threshold : float
-            Region of interest threshold (chi-squared units)
-        convergence_threshold : float
-            Convergence threshold for DE
-        convergence_window : int
-            Number of generations to check for convergence
-        neighbor_pull_probability : float
-            Probability of using neighbor-pull mutation
-        LBFGSB_ftol : float
-            Function tolerance for L-BFGS-B optimization
-        LBFGSB_max_iter : int
-            Maximum iterations for L-BFGS-B
-        LBFGSB_gradient_method : str
-            Gradient method ('central' or 'forward')
-        max_patching_waves : int
-            Maximum number of patching waves (default: 10)
-        patching_n_neighbors : int
-            Number of best neighbors to test per grid point (default: 1)
-        memory_size : int
-            Size of F/CR memory for adaptive DE
-        global_pool_size : int
-            Maximum size of global solution pool
-        activation_mix_ratios : dict, optional
-            Ratios for mixed initialization strategy.
-            Keys: 'neighbors', 'global', 'random'
-            Defaults to {'neighbors': 0.5, 'global': 0.3, 'random': 0.2}
-        samples_output_file : str, optional
-            File to save sampled points
-        use_de_prescreening : bool, optional
-            Enable emulator-based pre-screening of DE trial points (default: False)
-        emulator_confidence_threshold : float, optional
-            Confidence multiplier for UCB acquisition function (default: 2.0)
-            Higher values are more conservative (fewer trials skipped)
-        emulator_min_neighbors : int, optional
-            Minimum evaluated points required to build emulator (default: 10)
-        emulator_max_neighbors : int, optional
-            Maximum evaluated points to use for emulator training (default: 100)
-            Limits GP training time by capping the dataset size
-        emulator_length_scale : float, optional
-            Initial RBF kernel length scale (default: 1.0, auto-tuned)
-        emulator_noise_level : float, optional
-            White noise level for GP (default: 0.01)
-        use_cd_refinement : bool, optional
-            Use coordinate descent for grid refinement optimization (default: True)
-            When enabled, refinement uses fast coordinate descent instead of L-BFGS-B
-        cd_max_cycles : int, optional
-            Maximum coordinate descent cycles for refinement (default: 3)
-        cd_step_fraction : float, optional
-            CD step size as fraction of parameter range (default: 0.01)
-        refinement_direct_eval : bool, optional
-            If True, skip optimization during refinement and only evaluate the likelihood
-            once at the interpolated parameter point. If False (default), perform full
-            optimization (CD or L-BFGS-B) at each fine grid point. (default: False)
-        cmaes_lambda : int, optional
-            CMA-ES population size (offspring per generation).
-            If None, defaults to 4 + floor(3*log(n_dims)) (default: None)
-        cmaes_mu : int, optional
-            CMA-ES number of parents for recombination.
-            If None, defaults to lambda/2 (default: None)
-        cmaes_max_generations : int, optional
-            Maximum number of CMA-ES generations per grid point (default: 100)
+
+        Core Tuning Parameters
+        ----------------------
+        roi_threshold : float, optional
+            Region of interest threshold in chi-squared units (default: 3.0)
+            Points with likelihood > global_max - roi_threshold are in the ROI
+        pop_per_grid_point : int, optional
+            Population size per grid point for DE (default: 1)
+            Typical values: 1-5. Higher = more thorough but slower
+        max_patching_waves : int, optional
+            Maximum number of patching refinement waves (default: 10)
+            Typical values: 10-50. Higher = more refinement but more evaluations
+        LBFGSB_max_iter : int, optional
+            Maximum L-BFGS-B iterations per optimization (default: 50)
+            Typical values: 10-50. Higher = more thorough local optimization
+
+        Feature Toggles
+        ---------------
+        use_emulator : bool, optional
+            Enable GP-based trial pre-screening (default: False)
+            Can reduce evaluations by 30-50% but requires scikit-learn
         use_clustering : bool, optional
-            Enable clustering-based boundary detection for refinement (default: True)
-            When enabled, coarse grid points are clustered by their continuous parameters
-            to detect mode boundaries and improve fine grid initialization
-        clustering_method : str, optional
-            Clustering algorithm: 'dbscan', 'hierarchical', or 'kmeans' (default: 'dbscan')
-        clustering_eps : float, optional
-            DBSCAN eps parameter (maximum distance for neighbors).
-            If None, auto-estimated from data (default: None)
-        clustering_min_samples : int, optional
-            DBSCAN min_samples parameter (minimum cluster size).
-            If None, defaults to max(2, n_continuous_dims) (default: None)
-        clustering_eps_multiplier : float, optional
-            Multiplier for auto-estimated DBSCAN eps (default: 3.0)
-            Higher values create fewer, larger clusters (less sensitive to smooth variations)
-            Lower values create more, smaller clusters (more sensitive to parameter changes)
-        clustering_projection_weight : float, optional
-            Weight for projection coordinates in clustering features (default: 1.0)
-            Including projection coordinates provides spatial context, helping recognize
-            that nearby grid points with similar continuous params form connected clusters
+            Enable mode detection for multi-modal refinement (default: True)
+            Helps handle multiple basins during grid refinement
+        use_cd_refinement : bool, optional
+            Use coordinate descent for refinement (default: True)
+            If False, uses L-BFGS-B (slower but potentially more accurate)
+        refinement_direct_eval : bool, optional
+            Skip optimization during refinement, just evaluate interpolated points (default: False)
+            True = fast, False = thorough
+
+        I/O
+        ---
+        samples_output_file : str, optional
+            Path to save all evaluated points as CSV (default: None)
+
+        Advanced Configuration
+        ----------------------
+        advanced_config : dict, optional
+            Dictionary for expert-level parameter tuning. Structure:
+            {
+                'n_initial_optimizations': int,    # Default: min(100, 20 * n_dims)
+                'global_pool_size': int,           # Default: 10000
+                'memory_size': int,                # Default: max(grid_sizes) * 25
+                'convergence_threshold': float,    # Default: roi_threshold / 1000
+
+                'de': {
+                    'mutation_strategy': str,      # Default: 'current-to-pbest/1'
+                    'pbest_fraction': float,       # Default: 0.1
+                    'neighbor_pull_probability': float,  # Default: 0.5
+                    'convergence_window': int,     # Default: 3
+                },
+
+                'lbfgsb': {
+                    'ftol': float,                 # Default: 1e-9
+                    'gradient_method': str,        # Default: 'forward'
+                },
+
+                'patching': {
+                    'n_neighbors': int,            # Default: 1
+                },
+
+                'activation': {
+                    'mix_ratios': dict,            # Default: {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
+                },
+
+                'emulator': {
+                    'confidence_threshold': float,  # Default: 2.0
+                    'min_neighbors': int,          # Default: 10
+                    'max_neighbors': int,          # Default: 100
+                    'length_scale': float,         # Default: 1.0
+                    'noise_level': float,          # Default: 0.01
+                },
+
+                'cd': {
+                    'max_cycles': int,             # Default: 3
+                    'step_fraction': float,        # Default: 0.01
+                },
+
+                'cmaes': {
+                    'lambda': int,                 # Default: 4 + floor(3*log(n_cont_dims))
+                    'mu': int,                     # Default: lambda/2
+                    'max_generations': int,        # Default: 100
+                },
+
+                'clustering': {
+                    'method': str,                 # Default: 'dbscan'
+                    'eps': float,                  # Default: None (auto-estimated)
+                    'min_samples': int,            # Default: None (auto: max(2, n_cont_dims))
+                    'eps_multiplier': float,       # Default: 3.0
+                    'projection_weight': float,    # Default: 1.0
+                },
+            }
         """
         from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
 
@@ -228,19 +210,12 @@ class GridAnchoredDESampler:
 
         self.projections = projections
 
-        # Validate numerical parameters
+        # Validate core parameters
         if not isinstance(pop_per_grid_point, int) or pop_per_grid_point < 1:
             raise ConfigurationError(
                 "pop_per_grid_point must be a positive integer",
                 parameter="pop_per_grid_point",
                 value=pop_per_grid_point
-            )
-
-        if not isinstance(n_initial_optimizations, int) or n_initial_optimizations < 0:
-            raise ConfigurationError(
-                "n_initial_optimizations must be a non-negative integer",
-                parameter="n_initial_optimizations",
-                value=n_initial_optimizations
             )
 
         if not isinstance(roi_threshold, (int, float)) or roi_threshold <= 0:
@@ -250,110 +225,143 @@ class GridAnchoredDESampler:
                 value=roi_threshold
             )
 
-        if not isinstance(convergence_threshold, (int, float)) or convergence_threshold <= 0:
-            raise ConfigurationError(
-                "convergence_threshold must be a positive number",
-                parameter="convergence_threshold",
-                value=convergence_threshold
-            )
+        # --- Build configuration with smart defaults ---
+        max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
-        if not isinstance(convergence_window, int) or convergence_window < 1:
-            raise ConfigurationError(
-                "convergence_window must be a positive integer",
-                parameter="convergence_window",
-                value=convergence_window
-            )
+        config = {
+            # Auto-configured parameters
+            'n_initial_optimizations': min(100, 20 * self.dims),
+            'global_pool_size': 10000,
+            'memory_size': max_grid_size * 25,
+            'convergence_threshold': roi_threshold / 1000,
 
-        if not isinstance(neighbor_pull_probability, (int, float)) or not (0 <= neighbor_pull_probability <= 1):
-            raise ConfigurationError(
-                "neighbor_pull_probability must be between 0 and 1",
-                parameter="neighbor_pull_probability",
-                value=neighbor_pull_probability
-            )
+            # DE parameters
+            'de': {
+                'mutation_strategy': 'current-to-pbest/1',
+                'pbest_fraction': 0.1,
+                'neighbor_pull_probability': 0.5,
+                'convergence_window': 3,
+            },
 
-        if not isinstance(pbest_fraction, (int, float)) or not (0 < pbest_fraction <= 1):
-            raise ConfigurationError(
-                "pbest_fraction must be between 0 and 1 (exclusive of 0)",
-                parameter="pbest_fraction",
-                value=pbest_fraction
-            )
+            # L-BFGS-B parameters
+            'lbfgsb': {
+                'ftol': 1e-9,
+                'gradient_method': 'forward',
+            },
 
-        # --- Algorithm parameters ---
+            # Patching parameters
+            'patching': {
+                'n_neighbors': 1,
+            },
+
+            # Activation parameters
+            'activation': {
+                'mix_ratios': {'neighbors': 0.5, 'global': 0.25, 'random': 0.25},
+            },
+
+            # Emulator parameters
+            'emulator': {
+                'confidence_threshold': 2.0,
+                'min_neighbors': 10,
+                'max_neighbors': 100,
+                'length_scale': 1.0,
+                'noise_level': 0.01,
+            },
+
+            # Coordinate Descent parameters
+            'cd': {
+                'max_cycles': 3,
+                'step_fraction': 0.01,
+            },
+
+            # CMA-ES parameters
+            'cmaes': {
+                'lambda': None,  # Will be auto-configured per projection
+                'mu': None,      # Will be auto-configured per projection
+                'max_generations': 100,
+            },
+
+            # Clustering parameters
+            'clustering': {
+                'method': 'dbscan',
+                'eps': None,  # Auto-estimated
+                'min_samples': None,  # Auto-configured
+                'eps_multiplier': 3.0,
+                'projection_weight': 1.0,
+            },
+        }
+
+        # Merge with advanced_config if provided
+        if advanced_config:
+            self._deep_update(config, advanced_config)
+
+        # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
-        allowed_strategies = ['current-to-rand/1', 'rand/1', 'current-to-pbest/1']
-        if mutation_strategy not in allowed_strategies:
-            raise ValueError(f"mutation_strategy must be one of {allowed_strategies}")
-        self.mutation_strategy = mutation_strategy
-        self.pbest_fraction = pbest_fraction
-
-        self.n_initial_optimizations = n_initial_optimizations
         self.roi_threshold = roi_threshold
-        self.convergence_threshold = convergence_threshold
-        self.convergence_window = convergence_window
-        self.neighbor_pull_probability = neighbor_pull_probability
-        self.LBFGSB_ftol = LBFGSB_ftol
-        self.LBFGSB_max_iter = LBFGSB_max_iter
-        self.LBFGSB_gradient_method = LBFGSB_gradient_method
         self.max_patching_waves = max_patching_waves
-        self.patching_n_neighbors = patching_n_neighbors
-        self.memory_size = memory_size
-
-        # --- Global solution pool parameters ---
-        self.global_pool_size = global_pool_size
-        if activation_mix_ratios is None:
-            self.activation_mix_ratios = {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
-        else:
-            self.activation_mix_ratios = activation_mix_ratios
-
-        # --- Emulator configuration ---
-        self.use_de_prescreening = use_de_prescreening
-        self.emulator_confidence_threshold = emulator_confidence_threshold
-        self.emulator_min_neighbors = emulator_min_neighbors
-        self.emulator_max_neighbors = emulator_max_neighbors
-        self.emulator_length_scale = emulator_length_scale
-        self.emulator_noise_level = emulator_noise_level
-
-        # --- Coordinate Descent configuration ---
-        self.use_cd_refinement = use_cd_refinement
-        self.cd_max_cycles = cd_max_cycles
-        self.cd_step_fraction = cd_step_fraction
-
-        # --- Refinement configuration ---
-        if not isinstance(refinement_direct_eval, bool):
-            raise ConfigurationError(
-                "refinement_direct_eval must be a boolean",
-                parameter="refinement_direct_eval",
-                value=refinement_direct_eval
-            )
+        self.LBFGSB_max_iter = LBFGSB_max_iter
         self.refinement_direct_eval = refinement_direct_eval
+        self.use_cd_refinement = use_cd_refinement
+        self.use_clustering = use_clustering
 
-        # --- CMA-ES configuration ---
-        # Set defaults based on dimensionality (will be updated in _reset_for_new_projection)
+        # Store advanced config values
+        self.n_initial_optimizations = config['n_initial_optimizations']
+        self.global_pool_size = config['global_pool_size']
+        self.memory_size = config['memory_size']
+        self.convergence_threshold = config['convergence_threshold']
+
+        # DE configuration
+        self.mutation_strategy = config['de']['mutation_strategy']
+        self.pbest_fraction = config['de']['pbest_fraction']
+        self.neighbor_pull_probability = config['de']['neighbor_pull_probability']
+        self.convergence_window = config['de']['convergence_window']
+
+        # L-BFGS-B configuration
+        self.LBFGSB_ftol = config['lbfgsb']['ftol']
+        self.LBFGSB_gradient_method = config['lbfgsb']['gradient_method']
+
+        # Patching configuration
+        self.patching_n_neighbors = config['patching']['n_neighbors']
+
+        # Activation configuration
+        self.activation_mix_ratios = config['activation']['mix_ratios']
+
+        # Emulator configuration
+        self.use_de_prescreening = use_emulator
+        self.emulator_confidence_threshold = config['emulator']['confidence_threshold']
+        self.emulator_min_neighbors = config['emulator']['min_neighbors']
+        self.emulator_max_neighbors = config['emulator']['max_neighbors']
+        self.emulator_length_scale = config['emulator']['length_scale']
+        self.emulator_noise_level = config['emulator']['noise_level']
+
+        # Coordinate Descent configuration
+        self.cd_max_cycles = config['cd']['max_cycles']
+        self.cd_step_fraction = config['cd']['step_fraction']
+
+        # CMA-ES configuration
+        cmaes_lambda = config['cmaes']['lambda']
+        cmaes_mu = config['cmaes']['mu']
         if cmaes_lambda is None:
-            # Standard recommendation: 4 + floor(3*log(n))
             self.cmaes_lambda_base = lambda n: int(4 + 3 * np.log(max(n, 1)))
-            self.cmaes_lambda = None  # Will be set per projection
+            self.cmaes_lambda = None
         else:
             self.cmaes_lambda_base = None
             self.cmaes_lambda = cmaes_lambda
 
         if cmaes_mu is None:
-            # Standard recommendation: lambda/2
             self.cmaes_mu_base = lambda lam: int(lam / 2)
-            self.cmaes_mu = None  # Will be set per projection
+            self.cmaes_mu = None
         else:
             self.cmaes_mu_base = None
             self.cmaes_mu = cmaes_mu
+        self.cmaes_max_generations = config['cmaes']['max_generations']
 
-        self.cmaes_max_generations = cmaes_max_generations
-
-        # --- Clustering configuration for refinement ---
-        self.use_clustering = use_clustering
-        self.clustering_method = clustering_method
-        self.clustering_eps = clustering_eps
-        self.clustering_min_samples = clustering_min_samples
-        self.clustering_eps_multiplier = clustering_eps_multiplier
-        self.clustering_projection_weight = clustering_projection_weight
+        # Clustering configuration
+        self.clustering_method = config['clustering']['method']
+        self.clustering_eps = config['clustering']['eps']
+        self.clustering_min_samples = config['clustering']['min_samples']
+        self.clustering_eps_multiplier = config['clustering']['eps_multiplier']
+        self.clustering_projection_weight = config['clustering']['projection_weight']
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -415,6 +423,24 @@ class GridAnchoredDESampler:
 
         self._reset_for_new_projection(self.projections[0])
 
+    def _deep_update(self, base_dict, update_dict):
+        """
+        Recursively update base_dict with values from update_dict.
+
+        Parameters
+        ----------
+        base_dict : dict
+            Dictionary to update in-place
+        update_dict : dict
+            Dictionary with updates to apply
+        """
+        for key, value in update_dict.items():
+            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+                # Recursively update nested dictionaries
+                self._deep_update(base_dict[key], value)
+            else:
+                # Overwrite value
+                base_dict[key] = value
 
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""

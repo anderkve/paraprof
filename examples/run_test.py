@@ -95,27 +95,25 @@ if myrank == 0:
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,
+        # Core tuning
+        roi_threshold=20,            # Large ROI for test
         pop_per_grid_point=3,
-        mutation_strategy='current-to-pbest/1',
-        pbest_fraction=0.1,
-        n_initial_optimizations=100,
-        roi_threshold=20, #1.5,
-        convergence_threshold=1e-7,
-        convergence_window=3,
-        neighbor_pull_probability=0.5,
-        LBFGSB_ftol=1e-9,
-        LBFGSB_max_iter=10,
-        LBFGSB_gradient_method="forward",
         max_patching_waves=20,
-        patching_n_neighbors=1,
-        memory_size=max_grid_points * 25,
-        samples_output_file=output_file,  # Single file for all projections
-        use_de_prescreening=True,
-        emulator_min_neighbors=10,
-        emulator_max_neighbors=200,
-        emulator_confidence_threshold=-1.0,
-        emulator_length_scale=1.0,  # In standardized units (inputs auto-scaled)
-        emulator_noise_level=0.0001,
+        LBFGSB_max_iter=10,
+        # Enable emulator for speedup
+        use_emulator=True,
+        # I/O
+        samples_output_file=output_file,
+        # Advanced config
+        advanced_config={
+            'n_initial_optimizations': 100,
+            'convergence_threshold': 1e-7,
+            'emulator': {
+                'max_neighbors': 200,
+                'confidence_threshold': -1.0,
+                'noise_level': 0.0001,
+            }
+        }
     )
 
     # Broadcast the target function to all workers (once, before all projections)

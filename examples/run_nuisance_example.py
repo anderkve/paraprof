@@ -137,37 +137,21 @@ if myrank == 0:
         target_func=wrapped_func,
         bounds=wrapped_bounds,
         projections=PROJECTIONS_TO_RUN,
-        pop_per_grid_point=3,
-        mutation_strategy='current-to-pbest/1',
-        pbest_fraction=0.1,
-        n_initial_optimizations=100,
+        # Core tuning
         roi_threshold=4.0,
-        convergence_threshold=1e-3,
-        convergence_window=3,
-        neighbor_pull_probability=0.5,
-        LBFGSB_ftol=1e-9,
-        LBFGSB_max_iter=10,
-        LBFGSB_gradient_method="forward",
+        pop_per_grid_point=3,
         max_patching_waves=50,
-        patching_n_neighbors=1,
-        memory_size=max_grid_points * 25,
+        LBFGSB_max_iter=10,
+        # Feature toggles
+        refinement_direct_eval=True,  # Fast interpolation for nuisance parameters
+        use_cd_refinement=False,       # Use L-BFGS-B for refinement
+        # I/O
         samples_output_file=output_file,
-        refinement_direct_eval=True,  # Skip optimization, evaluate once
-        # Pre-screening settings
-        use_de_prescreening=False,  # Use emulator to reduce evaluations
-        emulator_min_neighbors=10,
-        emulator_max_neighbors=100,
-        emulator_confidence_threshold=-1.0,
-        emulator_length_scale=1.0,
-        emulator_noise_level=0.0001,
-        # CD settings
-        use_cd_refinement=False,
-        cd_max_cycles=20,
-        cd_step_fraction=0.01,
-        # CMA-ES settings
-        cmaes_lambda=None,
-        cmaes_mu=None,
-        cmaes_max_generations=100,
+        # Advanced config
+        advanced_config={
+            'n_initial_optimizations': 100,
+            'convergence_threshold': 1e-3,
+        }
     )
 
     # Broadcast target function to all workers
