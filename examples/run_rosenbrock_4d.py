@@ -48,25 +48,24 @@ if myrank == 0:
     # Use a single output file for all projections to enable warm start
     output_file = f"samples_rank_{myrank}.csv"
 
+    # ===== SIMPLIFIED INTERFACE =====
+    # Only specify the core tuning parameters - most defaults work well!
     sampler = GridAnchoredDESampler(
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,
-        pop_per_grid_point=3, # Increased for better DE
-        mutation_strategy='current-to-pbest/1',
-        pbest_fraction=0.1,
-        n_initial_optimizations=100, # Increased
-        roi_threshold=8.0,
-        convergence_threshold=1e-7, # Tighter -> Looser (match serial)
-        convergence_window=3,      # Longer window -> Shorter (match serial)
-        neighbor_pull_probability=0.5,
-        LBFGSB_ftol=1e-9,
+        # Core tuning
+        roi_threshold=8.0,                   # Rosenbrock has deep valley -> larger ROI
+        pop_per_grid_point=3,
+        max_patching_waves=20,
         LBFGSB_max_iter=20,
-        LBFGSB_gradient_method="forward", # "central",
-        max_patching_waves=20,  # Maximum number of patching waves
-        patching_n_neighbors=1,  # Test only the best neighbor
-        memory_size=max_grid_points * 25,
-        samples_output_file=output_file,  # Single file for all projections
+        # I/O
+        samples_output_file=output_file,
+        # Optional: override auto-configured n_initial_optimizations
+        advanced_config={
+            'n_initial_optimizations': 100,  # Default would be min(100, 20*4) = 80
+            'convergence_threshold': 1e-7,   # Default would be 8.0 / 1000 = 0.008
+        }
     )
 
     # Broadcast the target function to all workers (once, before all projections)
