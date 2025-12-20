@@ -110,13 +110,18 @@ class DEGridPointJob(Job):
                 x_pbest_p = np.random.choice(archive)
                 x_pbest = x_pbest_p['continuous_params']
 
-                potential_diff = [p for p in self.parent_pool if not np.array_equal(p['continuous_params'], x_pbest)]
+                potential_diff = self.parent_pool
                 if len(potential_diff) < 2:
-                    potential_diff = self.parent_pool # Fallback
-                    if len(potential_diff) < 2:
-                        continue
+                    continue
 
-                r2_p, r3_p = np.random.choice(potential_diff, 2, replace=False)
+                max_attempts = 10
+                for _ in range(max_attempts):
+                    r2_p, r3_p = np.random.choice(potential_diff, 2, replace=False)
+                    if not (np.array_equal(r2_p['continuous_params'], x_pbest) or
+                            np.array_equal(r3_p['continuous_params'], x_pbest)):
+                        break
+                # Use r2_p, r3_p even if they match (negligible probability with large pools)
+
                 r2, r3 = r2_p['continuous_params'], r3_p['continuous_params']
                 mutant = x_i_params + F_i * (x_pbest - x_i_params) + F_i * (r2 - r3)
 
