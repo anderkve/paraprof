@@ -142,6 +142,7 @@ if myrank == 0:
         pop_per_grid_point=3,
         max_patching_waves=50,
         lbfgsb_max_iter=10,
+        n_initial_optimizations=100,
         # Feature toggles
         refinement_direct_eval=True,  # Fast interpolation for nuisance parameters
         use_cd_refinement=False,       # Use L-BFGS-B for refinement
@@ -149,7 +150,6 @@ if myrank == 0:
         samples_output_file=output_file,
         # Advanced config
         advanced_config={
-            'n_initial_optimizations': 100,
             'convergence_threshold': 1e-3,
             'de': {
                 'num_generations': 100000,

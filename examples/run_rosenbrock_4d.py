@@ -59,11 +59,11 @@ if myrank == 0:
         pop_per_grid_point=3,
         max_patching_waves=20,
         lbfgsb_max_iter=20,
+        n_initial_optimizations=100,         # Default would be min(100, 20*4) = 80
         # I/O
         samples_output_file=output_file,
-        # Optional: override auto-configured n_initial_optimizations
+        # Advanced config
         advanced_config={
-            'n_initial_optimizations': 100,  # Default would be min(100, 20*4) = 80
             'convergence_threshold': 1e-7,   # Default would be 8.0 / 1000 = 0.008
             'de': {
                 'num_generations': 100000,

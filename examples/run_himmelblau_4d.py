@@ -70,7 +70,6 @@ if myrank == 0:
 
     advanced_config = {
         # Override auto-configured parameters
-        'n_initial_optimizations': 100,           # Default: min(100, 20 * n_dims) = 80
         'global_pool_size': 10000,                # Default: 10000 (already good)
         'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25 = 3750
         'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000 = 0.004
@@ -150,6 +149,7 @@ if myrank == 0:
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
+        n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
 
         # === Feature toggles ===
         use_emulator=False,                           # GP-based pre-screening (30-50% speedup)
