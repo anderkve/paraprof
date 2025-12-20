@@ -426,7 +426,66 @@ def master_main(comm, sampler,
 
             if current_stage == 'INITIAL_OPTIMIZATION':
 
-                # Try to initialize from warm start file first
+                # First, evaluate user-provided initial_points if available
+                if sampler.initial_points is not None and not hasattr(sampler, '_initial_points_evaluated'):
+                    logger.info(f"--- Evaluating {len(sampler.initial_points)} user-provided initial points ---")
+
+                    # Send all tasks to available workers
+                    sent_to_workers = []
+                    points_to_send = list(enumerate(sampler.initial_points))
+
+                    # Send initial batch to all free workers
+                    while free_workers and points_to_send:
+                        i, point = points_to_send.pop(0)
+                        worker = free_workers.pop(0)
+                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
+                        comm.send(task, dest=worker)
+                        sent_to_workers.append((worker, i))
+
+                    # Keep sending remaining points as workers become free
+                    while points_to_send:
+                        result = comm.recv(source=MPI.ANY_SOURCE)
+                        worker = result['context']['worker_rank']
+
+                        # Process result
+                        idx = result['context']['point_index']
+                        target_val = result['target_val']
+                        sampler.initial_maxima.append({
+                            'point': sampler.initial_points[idx],
+                            'target_val': target_val
+                        })
+                        sampler.target_calls += 1
+                        if target_val > sampler.global_max_target_val:
+                            sampler.global_max_target_val = target_val
+                            sampler.global_best_params = sampler.initial_points[idx].copy()
+
+                        # Send next task to this worker
+                        i, point = points_to_send.pop(0)
+                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
+                        comm.send(task, dest=worker)
+                        sent_to_workers.append((worker, i))
+
+                    # Collect remaining results
+                    for worker, idx in sent_to_workers:
+                        result = comm.recv(source=worker)
+                        free_workers.append(worker)
+
+                        target_val = result['target_val']
+                        sampler.initial_maxima.append({
+                            'point': sampler.initial_points[idx],
+                            'target_val': target_val
+                        })
+                        sampler.target_calls += 1
+
+                        if target_val > sampler.global_max_target_val:
+                            sampler.global_max_target_val = target_val
+                            sampler.global_best_params = sampler.initial_points[idx].copy()
+
+                    # Mark as evaluated to avoid re-evaluation
+                    sampler._initial_points_evaluated = True
+                    logger.info(f"--- Evaluated {len(sampler.initial_points)} initial points. Best: {sampler.global_max_target_val:.4e} ---")
+
+                # Try to initialize from warm start file
                 if skip_init_opt_on_warm_start and sampler.samples_output_file:
                     sampler._initialize_from_warm_start_file(sampler.samples_output_file)
 
@@ -434,7 +493,7 @@ def master_main(comm, sampler,
                 if not sampler.initial_maxima:
                     new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
                 else:
-                    logger.info("Skipping initial optimization - using warm start from file.")
+                    logger.info("Skipping initial optimization - using provided initial points or warm start.")
                     new_jobs = []
 
                 if not new_jobs:

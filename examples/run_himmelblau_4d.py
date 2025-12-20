@@ -138,6 +138,20 @@ if myrank == 0:
         },
     }
 
+    # === Optional: Provide initial points for targeted exploration ===
+    # If you already know good regions of parameter space, you can provide initial
+    # points to activate corresponding grid locations. This is useful when:
+    # - You have prior knowledge from previous runs
+    # - You want to focus on specific parameter combinations
+    # - You want to skip expensive global optimization
+    #
+    # Example: For Himmelblau 4D, the known optima are at (3,0,-3,0), etc.
+    # Uncomment and use with n_initial_optimizations=0 to ONLY use these points:
+    # initial_points_example = [
+    #     [3.0, 0.0, -3.0, 0.0],    # First known optimum
+    #     [-3.0, 0.0, 3.0, 0.0],    # Second known optimum
+    # ]
+
     sampler = ProfileProjector(
         # === Required parameters ===
         target_func=log_likelihood,
@@ -149,7 +163,9 @@ if myrank == 0:
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
-        n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
+        n_initial_optimizations=0,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
+        initial_points=[[3.0, 0.0, -3.0, 0.0]],     # Optional: User-provided initial points to activate grid
+        #                                             # Use with n_initial_optimizations=0 to only use these points
 
         # === Feature toggles ===
         use_emulator=False,                           # GP-based pre-screening (30-50% speedup)
