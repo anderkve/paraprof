@@ -368,7 +368,8 @@ class GridAnchoredDESampler:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.global_max_target_val = -np.inf
-        self.global_solution_pool = []  # List of {'continuous_params', 'fitness', 'grid_idx'}
+        self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
+        self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
 
         # --- Evaluation cache for emulator training ---
         # Per-grid-point local caches for efficient emulator training
@@ -602,8 +603,8 @@ class GridAnchoredDESampler:
             'continuous_dims': self.continuous_dims.copy(),
             'solutions': solutions,
             'grid_shape': self.grid_shape,
-            # Convert heap to list of entries for export
-            'global_solution_pool': [entry.copy() for fitness, entry in self.global_solution_pool]
+            # Convert heap to list of entries for export (extract entry from 3-element tuple)
+            'global_solution_pool': [entry.copy() for fitness, count, entry in self.global_solution_pool]
         }
 
 
@@ -642,10 +643,13 @@ class GridAnchoredDESampler:
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
             import heapq
-            # Convert list to heap structure (fitness, entry)
-            self.global_solution_pool = [(entry['fitness'], entry)
-                                         for entry in coarse_solution['global_solution_pool']]
+            # Convert list to heap structure (fitness, count, entry)
+            # Use enumeration as the count to maintain uniqueness and ordering
+            self.global_solution_pool = [(entry['fitness'], i, entry)
+                                         for i, entry in enumerate(coarse_solution['global_solution_pool'])]
             heapq.heapify(self.global_solution_pool)
+            # Update counter to continue from where we left off
+            self.global_pool_counter = len(self.global_solution_pool)
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
         # Perform clustering if enabled and we have continuous parameters
@@ -1106,11 +1110,14 @@ class GridAnchoredDESampler:
         }
 
         # Use min-heap (we want to efficiently drop the worst solution)
-        # Store as (fitness, entry) tuple so heapq compares by fitness
+        # Store as (fitness, count, entry) tuple with count as tiebreaker
+        # This prevents heapq from comparing dict/array values when fitness values are equal
         if len(self.global_solution_pool) < self.global_pool_size:
-            heapq.heappush(self.global_solution_pool, (fitness, entry))
+            heapq.heappush(self.global_solution_pool, (fitness, self.global_pool_counter, entry))
+            self.global_pool_counter += 1
         elif fitness > self.global_solution_pool[0][0]:  # Better than worst
-            heapq.heapreplace(self.global_solution_pool, (fitness, entry))
+            heapq.heapreplace(self.global_solution_pool, (fitness, self.global_pool_counter, entry))
+            self.global_pool_counter += 1
 
 
     def _sample_from_global_pool(self, n_samples):
@@ -1143,8 +1150,8 @@ class GridAnchoredDESampler:
         sample_indices = np.random.choice(n_available, size=min(n_samples, n_available), replace=False)
 
         # Extract continuous dims from full parameter vectors
-        # Note: global_solution_pool is now a heap of (fitness, entry) tuples
-        samples = np.array([self.global_solution_pool[i][1]['full_params'][self.continuous_dims]
+        # Note: global_solution_pool is a heap of (fitness, count, entry) tuples
+        samples = np.array([self.global_solution_pool[i][2]['full_params'][self.continuous_dims]
                            for i in sample_indices])
 
         return samples
