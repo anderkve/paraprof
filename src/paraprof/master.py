@@ -348,6 +348,7 @@ def master_main(comm, sampler,
 
     # --- Master state ---
     free_workers = list(range(1, n_workers + 1))
+    pending_sends = []  # Track non-blocking send requests
 
     # Define the workflow stages (different for refinement runs only)
     if sampler.is_refinement_run:
@@ -430,22 +431,40 @@ def master_main(comm, sampler,
                 if sampler.initial_points is not None and not hasattr(sampler, '_initial_points_evaluated'):
                     logger.info(f"--- Evaluating {len(sampler.initial_points)} user-provided initial points ---")
 
-                    # Send all tasks to available workers
-                    sent_to_workers = []
+                    # Prepare all tasks
+                    n_points = len(sampler.initial_points)
                     points_to_send = list(enumerate(sampler.initial_points))
 
-                    # Send initial batch to all free workers
-                    while free_workers and points_to_send:
-                        i, point = points_to_send.pop(0)
-                        worker = free_workers.pop(0)
-                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
-                        comm.send(task, dest=worker)
-                        sent_to_workers.append((worker, i))
+                    # Send all tasks using non-blocking sends for maximum parallelism
+                    send_requests = []
+                    workers_used = []
 
-                    # Keep sending remaining points as workers become free
-                    while points_to_send:
+                    # Dispatch tasks to workers (round-robin if more tasks than workers)
+                    for i, point in points_to_send:
+                        worker = free_workers[i % len(free_workers)]
+                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
+                        req = comm.isend(task, dest=worker)
+                        send_requests.append(req)
+                        if worker not in workers_used:
+                            workers_used.append(worker)
+
+                    # Wait for all sends to complete
+                    MPI.Request.Waitall(send_requests)
+
+                    # Remove workers that are now busy from free list
+                    for worker in workers_used:
+                        if worker in free_workers:
+                            free_workers.remove(worker)
+
+                    # Collect all results as they arrive
+                    results_collected = 0
+                    while results_collected < n_points:
                         result = comm.recv(source=MPI.ANY_SOURCE)
                         worker = result['context']['worker_rank']
+
+                        # Return worker to free pool
+                        if worker not in free_workers:
+                            free_workers.append(worker)
 
                         # Process result
                         idx = result['context']['point_index']
@@ -455,31 +474,12 @@ def master_main(comm, sampler,
                             'target_val': target_val
                         })
                         sampler.target_calls += 1
-                        if target_val > sampler.global_max_target_val:
-                            sampler.global_max_target_val = target_val
-                            sampler.global_best_params = sampler.initial_points[idx].copy()
-
-                        # Send next task to this worker
-                        i, point = points_to_send.pop(0)
-                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
-                        comm.send(task, dest=worker)
-                        sent_to_workers.append((worker, i))
-
-                    # Collect remaining results
-                    for worker, idx in sent_to_workers:
-                        result = comm.recv(source=worker)
-                        free_workers.append(worker)
-
-                        target_val = result['target_val']
-                        sampler.initial_maxima.append({
-                            'point': sampler.initial_points[idx],
-                            'target_val': target_val
-                        })
-                        sampler.target_calls += 1
 
                         if target_val > sampler.global_max_target_val:
                             sampler.global_max_target_val = target_val
                             sampler.global_best_params = sampler.initial_points[idx].copy()
+
+                        results_collected += 1
 
                     # Mark as evaluated to avoid re-evaluation
                     sampler._initial_points_evaluated = True
@@ -792,7 +792,9 @@ def master_main(comm, sampler,
             else:
                 task = low_prio_tasks.popleft()
 
-            comm.send(task, dest=worker_rank)
+            # Use non-blocking send to overlap communication
+            req = comm.isend(task, dest=worker_rank)
+            pending_sends.append(req)
             tasks_sent += 1
 
         # --- 4. No Sleep Needed ---
@@ -801,6 +803,11 @@ def master_main(comm, sampler,
 
 
     # --- End of Main Event Loop ---
+
+    # Wait for all pending non-blocking sends to complete
+    if pending_sends:
+        logger.debug(f"Waiting for {len(pending_sends)} pending sends to complete...")
+        MPI.Request.Waitall(pending_sends)
 
     logger.debug("master_main: Workflow finished.")
 
