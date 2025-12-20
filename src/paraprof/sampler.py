@@ -37,7 +37,7 @@ class GridAnchoredDESampler:
                  max_patching_waves=10,
                  patching_n_neighbors=1,
                  memory_size=100,
-                 global_pool_size=200,
+                 global_pool_size=10000,
                  activation_mix_ratios=None,
                  samples_output_file=None,
                  use_de_prescreening=False,
