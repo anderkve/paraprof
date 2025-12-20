@@ -380,8 +380,8 @@ def test_tier2_job_settings():
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
-        LBFGSB_max_iter=15,
-        LBFGSB_ftol=1e-7,
+        lbfgsb_max_iter=15,
+        lbfgsb_ftol=1e-7,
         refinement_tier2_max_iter=5,
         refinement_tier2_ftol_multiplier=10.0
     )
@@ -391,7 +391,7 @@ def test_tier2_job_settings():
     assert sampler.refinement_tier2_ftol_multiplier == 10.0, "Should use specified multiplier"
 
     # Expected tier-2 ftol
-    expected_tier2_ftol = sampler.LBFGSB_ftol * 10.0
+    expected_tier2_ftol = sampler.lbfgsb_ftol * 10.0
     assert expected_tier2_ftol == 1e-6, "Tier-2 ftol should be 10x looser"
 
 
@@ -431,7 +431,7 @@ def test_configuration_parameter_defaults():
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
-        LBFGSB_max_iter=30
+        lbfgsb_max_iter=30
     )
 
     # Check defaults

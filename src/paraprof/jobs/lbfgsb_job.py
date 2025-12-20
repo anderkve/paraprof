@@ -21,9 +21,9 @@ class LBFGSBJob(Job):
         super().__init__(job_id, job_type, sampler)
 
         # L-BFGS-B parameters from sampler
-        self.LBFGSB_ftol = sampler.LBFGSB_ftol
-        self.LBFGSB_max_iter = sampler.LBFGSB_max_iter
-        self.LBFGSB_gradient_method = sampler.LBFGSB_gradient_method
+        self.lbfgsb_ftol = sampler.lbfgsb_ftol
+        self.lbfgsb_max_iter = sampler.lbfgsb_max_iter
+        self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
 
         # Job-specific state
         self.grid_idx = grid_idx
@@ -227,7 +227,7 @@ class LBFGSBJob(Job):
         # Store eps array for later use in gradient reconstruction
         self.current_eps = eps
 
-        if self.LBFGSB_gradient_method == "central":
+        if self.lbfgsb_gradient_method == "central":
             self.pending_grad_evals = 2 * self.n_opt_dims
             for i in range(self.n_opt_dims):
                 # Positive step
@@ -244,7 +244,7 @@ class LBFGSBJob(Job):
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': -1}
                 tasks.append({'params': full_params_minus, 'context': context})
 
-        elif self.LBFGSB_gradient_method == "forward":
+        elif self.lbfgsb_gradient_method == "forward":
             self.pending_grad_evals = self.n_opt_dims
             for i in range(self.n_opt_dims):
                 x_plus = x.copy()
@@ -253,7 +253,7 @@ class LBFGSBJob(Job):
                 context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
                 tasks.append({'params': full_params_plus, 'context': context})
         else:
-            raise Exception(f"Gradient method {self.LBFGSB_gradient_method} not implemented.")
+            raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
 
         return tasks
 
@@ -270,12 +270,12 @@ class LBFGSBJob(Job):
             grad = np.zeros(self.n_opt_dims)
             f = self.current_objective
 
-            if self.LBFGSB_gradient_method == "central":
+            if self.lbfgsb_gradient_method == "central":
                 for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
                     f_minus = self.gradient_components[(i, -1)]
                     grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
-            elif self.LBFGSB_gradient_method == "forward":
+            elif self.lbfgsb_gradient_method == "forward":
                  for i in range(self.n_opt_dims):
                     f_plus = self.gradient_components[(i, 1)]
                     grad[i] = (f_plus - f) / self.current_eps[i]
@@ -371,7 +371,7 @@ class LBFGSBJob(Job):
             self.iteration += 1
 
             # Check for convergence
-            if self.iteration >= self.LBFGSB_max_iter or np.abs(f_old - f_new) < self.LBFGSB_ftol:
+            if self.iteration >= self.lbfgsb_max_iter or np.abs(f_old - f_new) < self.lbfgsb_ftol:
                 self.status = 'FINISHED'
                 self._is_finished = True
                 self.success = True

@@ -27,7 +27,7 @@ class GridAnchoredDESampler:
                  roi_threshold=3.0,
                  pop_per_grid_point=1,
                  max_patching_waves=10,
-                 LBFGSB_max_iter=50,
+                 lbfgsb_max_iter=50,
                  # Feature toggles
                  use_emulator=False,
                  use_clustering=True,
@@ -60,7 +60,7 @@ class GridAnchoredDESampler:
         max_patching_waves : int, optional
             Maximum number of patching refinement waves (default: 10)
             Typical values: 10-50. Higher = more refinement but more evaluations
-        LBFGSB_max_iter : int, optional
+        lbfgsb_max_iter : int, optional
             Maximum L-BFGS-B iterations per optimization (default: 50)
             Typical values: 10-50. Higher = more thorough local optimization
 
@@ -299,7 +299,7 @@ class GridAnchoredDESampler:
         self.pop_per_grid_point = pop_per_grid_point
         self.roi_threshold = roi_threshold
         self.max_patching_waves = max_patching_waves
-        self.LBFGSB_max_iter = LBFGSB_max_iter
+        self.lbfgsb_max_iter = lbfgsb_max_iter
         self.refinement_direct_eval = refinement_direct_eval
         self.use_cd_refinement = use_cd_refinement
         self.use_clustering = use_clustering
@@ -317,8 +317,8 @@ class GridAnchoredDESampler:
         self.convergence_window = config['de']['convergence_window']
 
         # L-BFGS-B configuration
-        self.LBFGSB_ftol = config['lbfgsb']['ftol']
-        self.LBFGSB_gradient_method = config['lbfgsb']['gradient_method']
+        self.lbfgsb_ftol = config['lbfgsb']['ftol']
+        self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
 
         # Patching configuration
         self.patching_n_neighbors = config['patching']['n_neighbors']

@@ -91,7 +91,7 @@ if myrank == 0:
 
         # Patching parameters
         'patching': {
-            'n_neighbors': 4,                          # Default: 1 (test more neighbors for this problem)
+            'n_neighbors': 1,                          # Default: 1 (test more neighbors for this problem)
         },
 
         # Activation mixing ratios
@@ -145,7 +145,7 @@ if myrank == 0:
         roi_threshold=4.0,                            # Chi-squared units
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
-        LBFGSB_max_iter=20,                           # L-BFGS-B iterations per point
+        lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
 
         # === Feature toggles ===
         use_emulator=False,                           # GP-based pre-screening (30-50% speedup)
