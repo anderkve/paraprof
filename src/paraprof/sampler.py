@@ -31,6 +31,7 @@ class ProfileProjector:
                  max_patching_waves=10,
                  lbfgsb_max_iter=50,
                  n_initial_optimizations=None,
+                 initial_points=None,
                  # Feature toggles
                  use_emulator=False,
                  use_clustering=True,
@@ -70,6 +71,11 @@ class ProfileProjector:
             Number of global L-BFGS-B optimizations to find initial maxima (default: None)
             If None, auto-configured as min(100, 20 * n_dims)
             Typical values: 20-100. Higher = better initial coverage but slower startup
+        initial_points : array-like, shape (n_points, n_dims), optional
+            Initial points in full parameter space to activate corresponding grid points (default: None)
+            Each point will activate its nearest grid point, independent of optimization
+            Useful when you already know good regions of parameter space
+            Example: [[3.0, 0.0, -3.0, 0.0]] for a 4D problem
 
         Feature Toggles
         ---------------
@@ -235,6 +241,28 @@ class ProfileProjector:
                 value=roi_threshold
             )
 
+        # Validate and process initial_points
+        if initial_points is not None:
+            initial_points = np.array(initial_points)
+            if initial_points.ndim == 1:
+                # Single point provided - reshape to (1, n_dims)
+                initial_points = initial_points.reshape(1, -1)
+            if initial_points.ndim != 2 or initial_points.shape[1] != self.dims:
+                raise ConfigurationError(
+                    f"initial_points must have shape (n_points, {self.dims}), got {initial_points.shape}",
+                    parameter="initial_points",
+                    value=initial_points
+                )
+            # Check that points are within bounds
+            for i, point in enumerate(initial_points):
+                for j, (val, (lb, ub)) in enumerate(zip(point, self.bounds)):
+                    if not (lb <= val <= ub):
+                        raise ConfigurationError(
+                            f"initial_points[{i}][{j}] = {val} is outside bounds [{lb}, {ub}]",
+                            parameter="initial_points",
+                            value=initial_points
+                        )
+
         # --- Build configuration with smart defaults ---
         max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
@@ -318,6 +346,7 @@ class ProfileProjector:
         self.max_patching_waves = max_patching_waves
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations
+        self.initial_points = initial_points
         self.refinement_direct_eval = refinement_direct_eval
         self.use_cd_refinement = use_cd_refinement
         self.use_clustering = use_clustering
