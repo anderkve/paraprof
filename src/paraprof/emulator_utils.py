@@ -202,7 +202,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     center_params : np.ndarray
         Center point to gather neighbors around
@@ -332,7 +332,7 @@ def build_local_emulator(sampler, center_params, min_points=10, max_points=None,
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     center_params : np.ndarray
         Center point for local emulator
@@ -388,7 +388,7 @@ def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance with eval_cache
     center_params : np.ndarray
         Center point for local emulator (typically the trial point)

@@ -35,7 +35,7 @@ class GridInterpolator:
         Parameters
         ----------
         coarse_grid_solution : dict
-            Dictionary returned by GridAnchoredDESampler.export_grid_solution()
+            Dictionary returned by ProfileProjector.export_grid_solution()
             containing:
             - 'grid_axes': List of arrays defining grid coordinates
             - 'projection_dims': List of projection dimension indices

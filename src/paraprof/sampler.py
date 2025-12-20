@@ -1,5 +1,5 @@
 """
-Main Grid-Anchored Differential Evolution Sampler.
+Profile Likelihood Projector with Grid-Based Optimization.
 """
 import os
 import numpy as np
@@ -12,11 +12,13 @@ from .jobs.de_job import DEGridPointJob
 from .jobs.cd_job import CoordinateDescentJob
 
 
-class GridAnchoredDESampler:
+class ProfileProjector:
     """
-    Grid-Anchored Differential Evolution Sampler for profile likelihood computation.
+    Profile Likelihood Projector for computing profile likelihood projections.
 
-    This class primarily holds state and configuration. The execution logic
+    This class primarily holds state and configuration for grid-based profile
+    likelihood computation. It supports multiple optimization algorithms including
+    differential evolution (DE), L-BFGS-B, and CMA-ES. The execution logic
     is in the Job classes and master_main.
     """
     def __init__(self,
@@ -38,7 +40,7 @@ class GridAnchoredDESampler:
                  # Advanced configuration (optional)
                  advanced_config=None):
         """
-        Initializes the Grid-Anchored DE Sampler with simplified interface.
+        Initializes the ProfileProjector with simplified interface.
 
         Parameters
         ----------

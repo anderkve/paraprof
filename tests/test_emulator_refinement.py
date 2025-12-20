@@ -20,7 +20,7 @@ except ImportError:
 def test_direct_evaluation_job():
     """Test DirectEvaluationJob execution."""
     from paraprof.jobs.direct_eval_job import DirectEvaluationJob
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     # Create a simple test function (4D function, 2D projection)
     def simple_func(params):
@@ -29,7 +29,7 @@ def test_direct_evaluation_job():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]  # 2D projection of 4D space
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -158,7 +158,7 @@ def test_refinement_emulator_predictions():
 @pytest.mark.skipif(not SKLEARN_AVAILABLE, reason="scikit-learn not installed")
 def test_point_classification():
     """Test tier assignment logic in _classify_refinement_points."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
     from paraprof.emulator_utils import RefinementEmulator
 
     # Create sampler
@@ -168,7 +168,7 @@ def test_point_classification():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [10, 10]}]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -216,7 +216,7 @@ def test_point_classification():
 
 def test_point_classification_fallback():
     """Test tier classification fallback when emulator is None."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     # Create sampler
     def simple_func(params):
@@ -225,7 +225,7 @@ def test_point_classification_fallback():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections
@@ -249,7 +249,7 @@ def test_point_classification_fallback():
 @pytest.mark.skipif(not SKLEARN_AVAILABLE, reason="scikit-learn not installed")
 def test_get_all_roi_fine_points():
     """Test _get_all_roi_fine_points identifies fine points in ROI cells."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     # Create sampler with coarse grid
     def simple_func(params):
@@ -258,7 +258,7 @@ def test_get_all_roi_fine_points():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -301,7 +301,7 @@ def test_get_all_roi_fine_points():
 @pytest.mark.skipif(not SKLEARN_AVAILABLE, reason="scikit-learn not installed")
 def test_tiered_job_creation():
     """Integration test for create_emulator_enhanced_refinement_jobs."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     # Create sampler with coarse solution
     def simple_func(params):
@@ -311,7 +311,7 @@ def test_tiered_job_creation():
     coarse_proj = {'dims': [0, 1], 'grid_points': [5, 5]}
     projections = [coarse_proj]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -367,7 +367,7 @@ def test_tiered_job_creation():
 @pytest.mark.skipif(not SKLEARN_AVAILABLE, reason="scikit-learn not installed")
 def test_tier2_job_settings():
     """Verify tier-2 sampler settings are configured correctly."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     # Create sampler with specific settings
     def simple_func(params):
@@ -376,7 +376,7 @@ def test_tier2_job_settings():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -397,7 +397,7 @@ def test_tier2_job_settings():
 
 def test_emulator_refinement_disabled():
     """Test that refinement works when use_emulator_refinement=False."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     def simple_func(params):
         return -(params[0]**2 + params[1]**2)
@@ -405,7 +405,7 @@ def test_emulator_refinement_disabled():
     bounds = np.array([[-5.0, 5.0], [-5.0, 5.0]])
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,
@@ -418,7 +418,7 @@ def test_emulator_refinement_disabled():
 
 def test_configuration_parameter_defaults():
     """Test that new refinement parameters have correct defaults."""
-    from paraprof import GridAnchoredDESampler
+    from paraprof import ProfileProjector
 
     def simple_func(params):
         return -(params[0]**2 + params[1]**2)
@@ -427,7 +427,7 @@ def test_configuration_parameter_defaults():
     projections = [{'dims': [0, 1], 'grid_points': [5, 5]}]
 
     # Create with defaults
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=simple_func,
         bounds=bounds,
         projections=projections,

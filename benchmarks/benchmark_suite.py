@@ -40,7 +40,7 @@ except ImportError:
 # Import paraprof components
 try:
     from paraprof import (
-        GridAnchoredDESampler,
+        ProfileProjector,
         run_projection,
         terminate_workers,
         worker_main,
@@ -171,7 +171,7 @@ class BenchmarkSuite:
                 'enable_refinement': False
             }
 
-            sampler = GridAnchoredDESampler(
+            sampler = ProfileProjector(
                 target_func=log_likelihood,
                 bounds=param_bounds,
                 projections=[projection],
@@ -254,7 +254,7 @@ class BenchmarkSuite:
                 'enable_refinement': False
             }
 
-            sampler = GridAnchoredDESampler(
+            sampler = ProfileProjector(
                 target_func=log_likelihood,
                 bounds=param_bounds,
                 projections=[projection],
@@ -331,7 +331,7 @@ class BenchmarkSuite:
             'enable_refinement': False
         }
 
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=log_likelihood,
             bounds=param_bounds,
             projections=[projection],
@@ -413,7 +413,7 @@ class BenchmarkSuite:
             'patching_refined': False
         }
 
-        sampler_refined = GridAnchoredDESampler(
+        sampler_refined = ProfileProjector(
             target_func=log_likelihood,
             bounds=param_bounds,
             projections=[projection_refined],
@@ -437,7 +437,7 @@ class BenchmarkSuite:
             'enable_refinement': False
         }
 
-        sampler_direct = GridAnchoredDESampler(
+        sampler_direct = ProfileProjector(
             target_func=log_likelihood,
             bounds=param_bounds,
             projections=[projection_direct],
@@ -545,7 +545,7 @@ class BenchmarkSuite:
                 'enable_refinement': False
             }
 
-            sampler = GridAnchoredDESampler(
+            sampler = ProfileProjector(
                 target_func=log_likelihood,
                 bounds=param_bounds,
                 projections=[projection],

@@ -33,7 +33,7 @@ class CoordinateDescentJob(Job):
             Unique job identifier
         job_type : str
             Job type identifier
-        sampler : GridAnchoredDESampler
+        sampler : ProfileProjector
             Reference to main sampler
         opt_dims : tuple
             Dimensions to optimize (relative to full params)

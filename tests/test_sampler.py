@@ -1,17 +1,17 @@
 """
-Tests for the GridAnchoredDESampler class.
+Tests for the ProfileProjector class.
 """
 import numpy as np
 import pytest
-from paraprof import GridAnchoredDESampler
+from paraprof import ProfileProjector
 
 
-class TestGridAnchoredDESampler:
-    """Test suite for GridAnchoredDESampler."""
+class TestProfileProjector:
+    """Test suite for ProfileProjector."""
 
     def test_initialization(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         """Test that sampler initializes correctly."""
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=simple_2d_function,
             bounds=simple_bounds_2d,
             projections=[basic_projection_2d],
@@ -26,7 +26,7 @@ class TestGridAnchoredDESampler:
 
     def test_grid_index_conversion(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         """Test grid index to coordinate conversion."""
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=simple_2d_function,
             bounds=simple_bounds_2d,
             projections=[basic_projection_2d],
@@ -43,7 +43,7 @@ class TestGridAnchoredDESampler:
 
     def test_valid_neighbors(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         """Test neighbor generation."""
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=simple_2d_function,
             bounds=simple_bounds_2d,
             projections=[basic_projection_2d],
@@ -60,7 +60,7 @@ class TestGridAnchoredDESampler:
 
     def test_ensure_bounds(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         """Test parameter bounding."""
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=simple_2d_function,
             bounds=simple_bounds_2d,
             projections=[basic_projection_2d],
@@ -76,7 +76,7 @@ class TestGridAnchoredDESampler:
         projection_1d = {'dims': [0], 'grid_points': [10]}
         projection_2d = {'dims': [0, 1], 'grid_points': [5, 5]}
 
-        sampler = GridAnchoredDESampler(
+        sampler = ProfileProjector(
             target_func=simple_2d_function,
             bounds=simple_bounds_4d,
             projections=[projection_1d, projection_2d],
@@ -96,7 +96,7 @@ class TestGridAnchoredDESampler:
         invalid_projection = {'dims': [5], 'grid_points': [10]}
 
         with pytest.raises(InvalidProjectionError, match="invalid dimension index"):
-            sampler = GridAnchoredDESampler(
+            sampler = ProfileProjector(
                 target_func=simple_2d_function,
                 bounds=simple_bounds_2d,
                 projections=[invalid_projection],
@@ -105,7 +105,7 @@ class TestGridAnchoredDESampler:
     def test_mutation_strategy_validation(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         """Test that invalid mutation strategies are rejected."""
         with pytest.raises(ValueError, match="mutation_strategy"):
-            sampler = GridAnchoredDESampler(
+            sampler = ProfileProjector(
                 target_func=simple_2d_function,
                 bounds=simple_bounds_2d,
                 projections=[basic_projection_2d],

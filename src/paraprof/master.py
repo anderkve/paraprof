@@ -60,7 +60,7 @@ def run_projection(comm, sampler, projection_config,
     ----------
     comm : MPI.Comm
         MPI communicator
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance (already configured with num_generations and max_num_to_evolve
         in advanced_config['de'] or advanced_config['cmaes'])
     projection_config : dict
@@ -221,7 +221,7 @@ def run_all_projections(comm, sampler, projections,
     ----------
     comm : MPI.Comm
         MPI communicator
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance (already configured with bounds, algorithm parameters,
         including num_generations and max_num_to_evolve in advanced_config)
     projections : list of dict
@@ -324,7 +324,7 @@ def master_main(comm, sampler,
     ----------
     comm : MPI.Comm
         MPI communicator
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance (contains num_generations and max_num_to_evolve
         in de_num_generations, de_max_num_to_evolve, cmaes_num_generations,
         cmaes_max_num_to_evolve)
