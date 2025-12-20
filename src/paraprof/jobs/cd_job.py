@@ -79,7 +79,7 @@ class CoordinateDescentJob(Job):
 
         # Convergence tracking
         self.fitness_at_cycle_start = start_fitness
-        self.improvement_tolerance = sampler.LBFGSB_ftol  # Reuse L-BFGS-B tolerance
+        self.improvement_tolerance = sampler.lbfgsb_ftol  # Reuse L-BFGS-B tolerance
 
     def _get_full_params(self, partial_params):
         """Constructs full parameters from partial optimization parameters."""

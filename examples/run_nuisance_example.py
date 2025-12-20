@@ -141,7 +141,7 @@ if myrank == 0:
         roi_threshold=4.0,
         pop_per_grid_point=3,
         max_patching_waves=50,
-        LBFGSB_max_iter=10,
+        lbfgsb_max_iter=10,
         # Feature toggles
         refinement_direct_eval=True,  # Fast interpolation for nuisance parameters
         use_cd_refinement=False,       # Use L-BFGS-B for refinement

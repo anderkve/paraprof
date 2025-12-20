@@ -99,7 +99,7 @@ if myrank == 0:
         roi_threshold=20,            # Large ROI for test
         pop_per_grid_point=3,
         max_patching_waves=20,
-        LBFGSB_max_iter=10,
+        lbfgsb_max_iter=10,
         # Enable emulator for speedup
         use_emulator=True,
         # I/O

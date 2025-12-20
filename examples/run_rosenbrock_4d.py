@@ -58,7 +58,7 @@ if myrank == 0:
         roi_threshold=8.0,                   # Rosenbrock has deep valley -> larger ROI
         pop_per_grid_point=3,
         max_patching_waves=20,
-        LBFGSB_max_iter=20,
+        lbfgsb_max_iter=20,
         # I/O
         samples_output_file=output_file,
         # Optional: override auto-configured n_initial_optimizations
