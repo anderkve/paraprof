@@ -44,8 +44,6 @@ def terminate_workers(comm, myrank=0):
 
 
 def run_projection(comm, sampler, projection_config,
-                   num_generations=100000,
-                   max_num_to_evolve=None,
                    save_plots=False,
                    plot_settings=None,
                    skip_init_opt_on_warm_start=True,
@@ -63,7 +61,8 @@ def run_projection(comm, sampler, projection_config,
     comm : MPI.Comm
         MPI communicator
     sampler : GridAnchoredDESampler
-        The sampler instance (already configured)
+        The sampler instance (already configured with num_generations and max_num_to_evolve
+        in advanced_config['de'] or advanced_config['cmaes'])
     projection_config : dict
         Projection configuration. Required keys:
         - 'dims': list of int - projection dimension indices
@@ -76,10 +75,6 @@ def run_projection(comm, sampler, projection_config,
         - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
         - 'patching_coarse': bool - enable patching on coarse grid (default: True)
         - 'patching_refined': bool - enable patching on refined grid (default: False)
-    num_generations : int
-        Maximum number of DE generations to run
-    max_num_to_evolve : int or None
-        Maximum number of grid points to evolve per generation (None = all)
     save_plots : bool
         Whether to save plots to disk after each stage
     plot_settings : dict, optional
@@ -140,8 +135,6 @@ def run_projection(comm, sampler, projection_config,
     master_main(
         comm=comm,
         sampler=sampler,
-        num_generations=num_generations,
-        max_num_to_evolve=max_num_to_evolve,
         plot_settings=plot_settings,
         skip_init_opt_on_warm_start=skip_init_opt_on_warm_start,
         myrank=myrank
@@ -184,8 +177,6 @@ def run_projection(comm, sampler, projection_config,
         master_main(
             comm=comm,
             sampler=sampler,
-            num_generations=num_generations,
-            max_num_to_evolve=max_num_to_evolve,
             plot_settings=plot_settings,
             skip_init_opt_on_warm_start=True,  # Always skip for refinement
             myrank=myrank
@@ -216,8 +207,6 @@ def run_projection(comm, sampler, projection_config,
 
 
 def run_all_projections(comm, sampler, projections,
-                        num_generations=100000,
-                        max_num_to_evolve=None,
                         save_plots=False,
                         plot_settings=None,
                         myrank=0):
@@ -233,7 +222,8 @@ def run_all_projections(comm, sampler, projections,
     comm : MPI.Comm
         MPI communicator
     sampler : GridAnchoredDESampler
-        The sampler instance (already configured with bounds, algorithm parameters)
+        The sampler instance (already configured with bounds, algorithm parameters,
+        including num_generations and max_num_to_evolve in advanced_config)
     projections : list of dict
         List of projection configurations. Each dict must contain:
         - 'dims': list of int - projection dimension indices
@@ -246,10 +236,6 @@ def run_all_projections(comm, sampler, projections,
         - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
         - 'patching_coarse': bool - enable patching on coarse grid (default: True)
         - 'patching_refined': bool - enable patching on refined grid (default: False)
-    num_generations : int
-        Maximum number of DE generations to run per projection
-    max_num_to_evolve : int or None
-        Maximum number of grid points to evolve per generation (None = all)
     save_plots : bool
         Whether to save plots to disk after each stage
     plot_settings : dict, optional
@@ -310,8 +296,6 @@ def run_all_projections(comm, sampler, projections,
             comm=comm,
             sampler=sampler,
             projection_config=projection_config,
-            num_generations=num_generations,
-            max_num_to_evolve=max_num_to_evolve,
             save_plots=save_plots,
             plot_settings=plot_settings,
             skip_init_opt_on_warm_start=skip_init_opt,
@@ -329,7 +313,7 @@ def run_all_projections(comm, sampler, projections,
     return all_results
 
 
-def master_main(comm, sampler, num_generations, max_num_to_evolve,
+def master_main(comm, sampler,
                 plot_settings=None, skip_init_opt_on_warm_start=True,
                 myrank=0):
     """
@@ -341,11 +325,9 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
     comm : MPI.Comm
         MPI communicator
     sampler : GridAnchoredDESampler
-        The sampler instance
-    num_generations : int
-        Number of DE generations to run
-    max_num_to_evolve : int or None
-        Maximum number of grid points to evolve per generation (None = all)
+        The sampler instance (contains num_generations and max_num_to_evolve
+        in de_num_generations, de_max_num_to_evolve, cmaes_num_generations,
+        cmaes_max_num_to_evolve)
     plot_settings : dict, optional
         Plot settings dictionary with keys:
         - 'dpi': int (default: 300)
@@ -476,7 +458,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
 
             elif current_stage == 'DE_LOOP':
                 # This stage loops
-                if de_generation >= num_generations:
+                if de_generation >= sampler.de_num_generations:
                     logger.info("--- Master: DE generations complete. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
@@ -490,7 +472,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 logger.info(f"--- Master: Starting DE Generation {de_generation} ---")
 
                 new_de_jobs, next_job_id, de_successful_F, de_successful_CR = sampler.create_de_generation_jobs(
-                    next_job_id, max_num_to_evolve
+                    next_job_id, sampler.de_max_num_to_evolve
                 )
 
                 # --- Add dynamic activation jobs ---
@@ -554,7 +536,7 @@ def master_main(comm, sampler, num_generations, max_num_to_evolve,
                 active_count_before = len([s for s in sampler.population.values() if s['status'] == 'active'])
 
                 # Create CMA-ES jobs for all active (non-converged) grid points
-                new_cmaes_jobs, next_job_id = sampler.create_cmaes_generation_jobs(next_job_id, max_num_to_evolve)
+                new_cmaes_jobs, next_job_id = sampler.create_cmaes_generation_jobs(next_job_id, sampler.cmaes_max_num_to_evolve)
 
                 # Create dynamic activation jobs for neighbors of high-likelihood points
                 new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)

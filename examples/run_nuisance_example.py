@@ -151,6 +151,10 @@ if myrank == 0:
         advanced_config={
             'n_initial_optimizations': 100,
             'convergence_threshold': 1e-3,
+            'de': {
+                'num_generations': 100000,
+                'max_num_to_evolve': None,
+            },
         }
     )
 
@@ -163,8 +167,6 @@ if myrank == 0:
         comm=comm,
         sampler=sampler,
         projections=PROJECTIONS_TO_RUN,
-        num_generations=100000,
-        max_num_to_evolve=None,
         save_plots=True,
         plot_settings={'dpi': 300, 'filetype': 'png'},
         myrank=myrank
