@@ -99,6 +99,8 @@ class GridAnchoredDESampler:
                     'pbest_fraction': float,       # Default: 0.1
                     'neighbor_pull_probability': float,  # Default: 0.5
                     'convergence_window': int,     # Default: 3
+                    'num_generations': int,        # Default: 100000
+                    'max_num_to_evolve': int,      # Default: None (all grid points)
                 },
 
                 'lbfgsb': {
@@ -131,6 +133,8 @@ class GridAnchoredDESampler:
                     'lambda': int,                 # Default: 4 + floor(3*log(n_cont_dims))
                     'mu': int,                     # Default: lambda/2
                     'max_generations': int,        # Default: 100
+                    'num_generations': int,        # Default: 100000
+                    'max_num_to_evolve': int,      # Default: None (all grid points)
                 },
 
                 'clustering': {
@@ -241,6 +245,8 @@ class GridAnchoredDESampler:
                 'pbest_fraction': 0.1,
                 'neighbor_pull_probability': 0.5,
                 'convergence_window': 3,
+                'num_generations': 100000,
+                'max_num_to_evolve': None,
             },
 
             # L-BFGS-B parameters
@@ -279,6 +285,8 @@ class GridAnchoredDESampler:
                 'lambda': None,  # Will be auto-configured per projection
                 'mu': None,      # Will be auto-configured per projection
                 'max_generations': 100,
+                'num_generations': 100000,
+                'max_num_to_evolve': None,
             },
 
             # Clustering parameters
@@ -315,6 +323,8 @@ class GridAnchoredDESampler:
         self.pbest_fraction = config['de']['pbest_fraction']
         self.neighbor_pull_probability = config['de']['neighbor_pull_probability']
         self.convergence_window = config['de']['convergence_window']
+        self.de_num_generations = config['de']['num_generations']
+        self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -355,6 +365,8 @@ class GridAnchoredDESampler:
             self.cmaes_mu_base = None
             self.cmaes_mu = cmaes_mu
         self.cmaes_max_generations = config['cmaes']['max_generations']
+        self.cmaes_num_generations = config['cmaes']['num_generations']
+        self.cmaes_max_num_to_evolve = config['cmaes']['max_num_to_evolve']
 
         # Clustering configuration
         self.clustering_method = config['clustering']['method']

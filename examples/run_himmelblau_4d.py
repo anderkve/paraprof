@@ -44,12 +44,12 @@ PROJECTIONS_TO_RUN = [
     # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
     # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
 
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
-    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
-    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
-    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
-    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 5},
+    {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    {'dims': [0, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    {'dims': [1, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    {'dims': [1, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    {'dims': [2, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
 
 ]
 
@@ -81,6 +81,8 @@ if myrank == 0:
             'pbest_fraction': 0.1,                      # Default: 0.1
             'neighbor_pull_probability': 0.5,           # Default: 0.5
             'convergence_window': 3,                    # Default: 3
+            'num_generations': 100000,                  # Default: 100000
+            'max_num_to_evolve': None,                  # Default: None (all grid points)
         },
 
         # Fine-tune L-BFGS-B
@@ -123,6 +125,8 @@ if myrank == 0:
             'lambda': None,                            # Default: auto = 4 + floor(3*log(n_cont))
             'mu': None,                                # Default: auto = lambda/2
             'max_generations': 100,                    # Default: 100
+            'num_generations': 100000,                 # Default: 100000
+            'max_num_to_evolve': None,                 # Default: None (all grid points)
         },
 
         # Clustering parameters (only used if use_clustering=True during refinement)
@@ -169,8 +173,6 @@ if myrank == 0:
         comm=comm,
         sampler=sampler,
         projections=PROJECTIONS_TO_RUN,
-        num_generations=100000,
-        max_num_to_evolve=None,
         save_plots=True,
         plot_settings={'dpi': 300, 'filetype': 'png'},
         myrank=myrank
