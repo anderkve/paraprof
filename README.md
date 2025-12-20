@@ -149,7 +149,7 @@ mpiexec -n 4 python examples/run_himmelblau_3d.py
 
 - `pop_per_grid_point`: Population size per grid point (default: 1)
 - `mutation_strategy`: DE mutation strategy ('current-to-rand/1', 'rand/1', 'current-to-pbest/1')
-- `n_initial_optimizations`: Number of global optimizations (default: 20)
+- `n_initial_optimizations`: Number of global L-BFGS-B optimizations (default: min(100, 20*n_dims))
 - `roi_threshold`: Region of interest threshold in χ² units (default: 3.0)
 - `convergence_threshold`: DE convergence threshold (default: 1e-5)
 - `max_patching_waves`: Maximum patching iterations (default: 10)

@@ -30,6 +30,7 @@ class ProfileProjector:
                  pop_per_grid_point=1,
                  max_patching_waves=10,
                  lbfgsb_max_iter=50,
+                 n_initial_optimizations=None,
                  # Feature toggles
                  use_emulator=False,
                  use_clustering=True,
@@ -65,6 +66,10 @@ class ProfileProjector:
         lbfgsb_max_iter : int, optional
             Maximum L-BFGS-B iterations per optimization (default: 50)
             Typical values: 10-50. Higher = more thorough local optimization
+        n_initial_optimizations : int, optional
+            Number of global L-BFGS-B optimizations to find initial maxima (default: None)
+            If None, auto-configured as min(100, 20 * n_dims)
+            Typical values: 20-100. Higher = better initial coverage but slower startup
 
         Feature Toggles
         ---------------
@@ -91,7 +96,6 @@ class ProfileProjector:
         advanced_config : dict, optional
             Dictionary for expert-level parameter tuning. Structure:
             {
-                'n_initial_optimizations': int,    # Default: min(100, 20 * n_dims)
                 'global_pool_size': int,           # Default: 10000
                 'memory_size': int,                # Default: max(grid_sizes) * 25
                 'convergence_threshold': float,    # Default: roi_threshold / 1000
@@ -234,9 +238,12 @@ class ProfileProjector:
         # --- Build configuration with smart defaults ---
         max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
+        # Set n_initial_optimizations with smart default if not provided
+        if n_initial_optimizations is None:
+            n_initial_optimizations = min(100, 20 * self.dims)
+
         config = {
             # Auto-configured parameters
-            'n_initial_optimizations': min(100, 20 * self.dims),
             'global_pool_size': 10000,
             'memory_size': max_grid_size * 25,
             'convergence_threshold': roi_threshold / 1000,
@@ -310,12 +317,12 @@ class ProfileProjector:
         self.roi_threshold = roi_threshold
         self.max_patching_waves = max_patching_waves
         self.lbfgsb_max_iter = lbfgsb_max_iter
+        self.n_initial_optimizations = n_initial_optimizations
         self.refinement_direct_eval = refinement_direct_eval
         self.use_cd_refinement = use_cd_refinement
         self.use_clustering = use_clustering
 
         # Store advanced config values
-        self.n_initial_optimizations = config['n_initial_optimizations']
         self.global_pool_size = config['global_pool_size']
         self.memory_size = config['memory_size']
         self.convergence_threshold = config['convergence_threshold']

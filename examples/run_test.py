@@ -100,13 +100,13 @@ if myrank == 0:
         pop_per_grid_point=3,
         max_patching_waves=20,
         lbfgsb_max_iter=10,
+        n_initial_optimizations=100,
         # Enable emulator for speedup
         use_emulator=True,
         # I/O
         samples_output_file=output_file,
         # Advanced config
         advanced_config={
-            'n_initial_optimizations': 100,
             'convergence_threshold': 1e-7,
             'de': {
                 'num_generations': 100000,
