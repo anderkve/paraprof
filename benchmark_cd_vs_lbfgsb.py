@@ -14,7 +14,7 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function
 from paraprof import set_log_level
 
@@ -52,7 +52,7 @@ def run_benchmark(use_cd, method_name):
     max_grid_points = len(PROJECTION['grid_points'])
     output_file = f"benchmark_{method_name}_rank_{myrank}.csv"
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=[PROJECTION],

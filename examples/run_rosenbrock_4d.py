@@ -1,5 +1,5 @@
 """
-Example script: Running the Grid-Anchored DE Sampler on the Rosenbrock 4D test function.
+Example script: Running the ProfileProjector on the Rosenbrock 4D test function.
 
 Usage:
     mpiexec -n <number_of_cores> python run_rosenbrock_4d.py
@@ -14,7 +14,7 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function
 
 # Get MPI info
@@ -50,7 +50,7 @@ if myrank == 0:
 
     # ===== SIMPLIFIED INTERFACE =====
     # Only specify the core tuning parameters - most defaults work well!
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,

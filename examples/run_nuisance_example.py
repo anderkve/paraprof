@@ -20,7 +20,7 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function, set_log_level
 from paraprof.nuisance_wrapper import create_nuisance_wrapped_function
 
@@ -133,7 +133,7 @@ if myrank == 0:
 
     output_file = f"samples_nuisance_rank_{myrank}.csv"
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=wrapped_func,
         bounds=wrapped_bounds,
         projections=PROJECTIONS_TO_RUN,

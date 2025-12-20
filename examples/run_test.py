@@ -1,5 +1,5 @@
 """
-Example script: Running the Grid-Anchored DE Sampler on a test function.
+Example script: Running the ProfileProjector on a test function.
 
 Usage:
     mpiexec -n <number_of_cores> python run_test.py
@@ -18,7 +18,7 @@ except ImportError:
     print("Please install it with: pip install mpi4py")
     sys.exit(1)
 
-from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function
 
 from paraprof import set_log_level
@@ -91,7 +91,7 @@ if myrank == 0:
     # Use a single output file for all projections to enable warm start
     output_file = f"samples_rank_{myrank}.csv"
 
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,

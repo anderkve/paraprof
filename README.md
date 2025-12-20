@@ -4,7 +4,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**ParaProf** is a high-performance Python package for computing profile likelihood projections using parallelized grid-anchored differential evolution (DE). It efficiently explores parameter spaces by strategically placing populations on grid points and dynamically activating regions of interest.
+**ParaProf** is a high-performance Python package for computing profile likelihood projections using parallelized grid-based optimization. It efficiently explores parameter spaces by strategically placing populations on grid points and dynamically activating regions of interest. It supports multiple optimization algorithms including differential evolution (DE), L-BFGS-B, and CMA-ES.
 
 ## Key Features
 
@@ -57,7 +57,7 @@ pip install -e ".[all]"
 
 ```python
 from mpi4py import MPI
-from paraprof import GridAnchoredDESampler, run_all_projections, terminate_workers, worker_main
+from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
 from paraprof import get_test_function
 
 comm = MPI.COMM_WORLD
@@ -71,7 +71,7 @@ projections = [
 
 if myrank == 0:
     # Master process
-    sampler = GridAnchoredDESampler(
+    sampler = ProfileProjector(
         target_func=log_likelihood,
         bounds=bounds,
         projections=projections,
@@ -106,7 +106,7 @@ mpiexec -n 4 python your_script.py
 
 ### Algorithm Overview
 
-ParaProf uses a **grid-anchored differential evolution** strategy:
+ParaProf uses a **grid-based optimization** strategy with multiple algorithm options:
 
 1. **Grid Setup**: Parameters are projected onto a regular grid (user-specified dimensions)
 2. **Initial Optimization**: Global L-BFGS-B finds starting maxima
@@ -123,7 +123,7 @@ ParaProf uses a **grid-anchored differential evolution** strategy:
 
 ### Key Components
 
-- `GridAnchoredDESampler`: Central state manager and algorithm configuration
+- `ProfileProjector`: Central state manager and algorithm configuration
 - `master_main()`: State machine coordinating the workflow
 - `worker_main()`: Simple event loop for function evaluations
 - Job classes: Asynchronous multi-step operations (L-BFGS-B, DE, activation, patching)

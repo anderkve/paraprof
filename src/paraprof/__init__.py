@@ -1,7 +1,7 @@
 """
-ParaProf: Parallel Profile Likelihood Computation using Grid-Anchored Differential Evolution.
+ParaProf: Parallel Profile Likelihood Computation using Grid-Based Optimization.
 """
-from .sampler import GridAnchoredDESampler
+from .sampler import ProfileProjector
 from .master import master_main, run_projection, run_all_projections, terminate_workers
 from .worker import worker_main
 from .visualization import plot_profiles, plot_continuous_parameters
@@ -24,7 +24,7 @@ from .nuisance_wrapper import (
 )
 
 __all__ = [
-    'GridAnchoredDESampler',
+    'ProfileProjector',
     'master_main',
     'run_projection',
     'run_all_projections',

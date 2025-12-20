@@ -15,7 +15,7 @@ def plot_profiles(sampler, filename, plot_settings=None):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance containing the profile likelihood grid
     filename : str
         Output filename (without extension)
@@ -63,7 +63,7 @@ def _plot_1d_profile(sampler, filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     filename : str
         Output filename (without extension)
@@ -134,7 +134,7 @@ def _plot_2d_profile(sampler, filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     filename : str
         Output filename (without extension)
@@ -215,7 +215,7 @@ def _plot_nd_profile(sampler, filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     filename : str
         Output filename (without extension)
@@ -324,7 +324,7 @@ def _extract_2d_slice(sampler, dim_i, dim_j, anchor_idx):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     dim_i, dim_j : int
         Dimension indices to extract (in range 0 to n_proj_dims-1)
@@ -365,7 +365,7 @@ def _marginalize_to_2d(sampler, dim_i, dim_j):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     dim_i, dim_j : int
         Dimension indices to project onto
@@ -399,7 +399,7 @@ def plot_continuous_parameters(sampler, base_filename, plot_settings=None):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance containing the profile likelihood grid
     base_filename : str
         Base output filename (without extension)
@@ -440,7 +440,7 @@ def _plot_1d_continuous_params(sampler, base_filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     base_filename : str
         Base output filename (without extension)
@@ -513,7 +513,7 @@ def _plot_2d_continuous_params(sampler, base_filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     base_filename : str
         Base output filename (without extension)
@@ -606,7 +606,7 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
 
     Parameters
     ----------
-    sampler : GridAnchoredDESampler
+    sampler : ProfileProjector
         The sampler instance
     base_filename : str
         Base output filename (without extension)

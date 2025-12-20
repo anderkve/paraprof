@@ -26,7 +26,7 @@ class PLSLHSSamplingJob(Job):
         ----------
         job_id : int
             Unique job identifier
-        sampler : GridAnchoredDESampler
+        sampler : ProfileProjector
             Reference to the sampler instance
         grid_idx : tuple
             Grid point index where sampling is performed
