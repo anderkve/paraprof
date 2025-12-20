@@ -39,8 +39,9 @@ def setup_logger(
         set level from set_log_level() (or logging.INFO if none set).
         Default: None (uses global level or logging.INFO)
     rank : int, optional
-        MPI rank for this process. If None, will auto-detect from MPI.COMM_WORLD
-        If MPI is not available, will use rank 0
+        MPI rank for this process. If None, defaults to 0.
+        When using MPI, this should be explicitly provided to avoid
+        accidentally using MPI_COMM_WORLD
     log_file : str, optional
         Path to log file. If None, logs only to stderr
 
@@ -69,17 +70,11 @@ def setup_logger(
         # Convert string to int
         level = logging.getLevelName(level.upper())
 
-    # Get MPI rank if not provided
+    # Default to rank 0 if not provided
+    # Note: We do NOT auto-detect from MPI.COMM_WORLD to ensure ParaProf
+    # can be used with custom MPI communicators (subsets of COMM_WORLD)
     if rank is None:
-        if _MPI_AVAILABLE:
-            try:
-                comm = MPI.COMM_WORLD
-                rank = comm.Get_rank()
-            except Exception:
-                # MPI not initialized yet
-                rank = 0
-        else:
-            rank = 0
+        rank = 0
 
     # Create logger
     logger = logging.getLogger(name)
