@@ -133,7 +133,8 @@ if myrank == 0:
 
     output_file = f"samples_nuisance_rank_{myrank}.csv"
 
-    sampler = ProfileProjector(
+    # Use context manager to ensure proper cleanup of sampler resources
+    with ProfileProjector(
         target_func=wrapped_func,
         bounds=wrapped_bounds,
         projections=PROJECTIONS_TO_RUN,
@@ -156,70 +157,71 @@ if myrank == 0:
                 'max_num_to_evolve': None,
             },
         }
-    )
+    ) as sampler:
 
-    # Broadcast target function to all workers
-    print("Master: Broadcasting target function to workers...")
-    comm.bcast(sampler.target_func, root=0)
+        # Broadcast target function to all workers
+        print("Master: Broadcasting target function to workers...")
+        comm.bcast(sampler.target_func, root=0)
 
-    # Run all projections
-    results = run_all_projections(
-        comm=comm,
-        sampler=sampler,
-        projections=PROJECTIONS_TO_RUN,
-        save_plots=True,
-        plot_settings={'dpi': 300, 'filetype': 'png'},
-        myrank=myrank
-    )
+        # Run all projections
+        results = run_all_projections(
+            comm=comm,
+            sampler=sampler,
+            projections=PROJECTIONS_TO_RUN,
+            save_plots=True,
+            plot_settings={'dpi': 300, 'filetype': 'png'},
+            myrank=myrank
+        )
 
-    # Print summary
-    print("\n" + "="*80)
-    print("=== Summary of Nuisance Parameter Test ===")
-    print("="*80)
-    print(f"Base function: {BASE_FUNCTION} ({N_POI}D)")
-    print(f"Nuisance parameters: {N_NUISANCE}")
-    print(f"Coupling mode: {COUPLING_MODE}")
-    print(f"Constraint sigma: {CONSTRAINT_SIGMA}")
-    print("-"*80)
-
-    for i, res in enumerate(results):
-        dims = res['projection_config']['dims']
-        calls = res['metrics']['total_target_calls']
-        max_ll = res['metrics']['global_max']
-        print(f"Projection {i+1} (POI dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
-
-    print("="*80)
-
-    # Analyze nuisance parameter behavior at the global optimum
-    if results and sampler.global_solution_pool:
-        print("\nAnalyzing nuisance parameters at optimum...")
+        # Print summary
+        print("\n" + "="*80)
+        print("=== Summary of Nuisance Parameter Test ===")
+        print("="*80)
+        print(f"Base function: {BASE_FUNCTION} ({N_POI}D)")
+        print(f"Nuisance parameters: {N_NUISANCE}")
+        print(f"Coupling mode: {COUPLING_MODE}")
+        print(f"Constraint sigma: {CONSTRAINT_SIGMA}")
         print("-"*80)
 
-        # Get best point from sampler's global solution pool
-        # Pool is sorted by fitness (best first)
-        best_solution = sampler.global_solution_pool[0]
-        best_params = best_solution['full_params']
-        best_ll = sampler.global_max_target_val
-
-        best_poi = best_params[:N_POI]
-        best_nuis = best_params[N_POI:]
-
-        print(f"Best log-likelihood found: {best_ll:.6f}")
-        print(f"Best POI parameters: {best_poi}")
-        print(f"Best nuisance parameters: {best_nuis}")
-        print(f"Nuisance parameter deviations from mean (in units of σ):")
-        deviations = (best_nuis - wrapper.nuisance_mean) / wrapper.constraint_sigma
-        for i, dev in enumerate(deviations):
-            print(f"  Nuisance {i}: {dev:.3f}σ")
-
-        # Compare to analytical optimum
-        optimal_nuis = wrapper.get_optimal_nuisance(best_poi)
-        print(f"\nAnalytical optimal nuisance: {optimal_nuis}")
-        print(f"Difference: {np.linalg.norm(best_nuis - optimal_nuis):.6f}")
+        for i, res in enumerate(results):
+            dims = res['projection_config']['dims']
+            calls = res['metrics']['total_target_calls']
+            max_ll = res['metrics']['global_max']
+            print(f"Projection {i+1} (POI dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
 
         print("="*80)
 
-    print("\n")
+        # Analyze nuisance parameter behavior at the global optimum
+        if results and sampler.global_solution_pool:
+            print("\nAnalyzing nuisance parameters at optimum...")
+            print("-"*80)
+
+            # Get best point from sampler's global solution pool
+            # Pool is sorted by fitness (best first)
+            best_solution = sampler.global_solution_pool[0]
+            best_params = best_solution['full_params']
+            best_ll = sampler.global_max_target_val
+
+            best_poi = best_params[:N_POI]
+            best_nuis = best_params[N_POI:]
+
+            print(f"Best log-likelihood found: {best_ll:.6f}")
+            print(f"Best POI parameters: {best_poi}")
+            print(f"Best nuisance parameters: {best_nuis}")
+            print(f"Nuisance parameter deviations from mean (in units of σ):")
+            deviations = (best_nuis - wrapper.nuisance_mean) / wrapper.constraint_sigma
+            for i, dev in enumerate(deviations):
+                print(f"  Nuisance {i}: {dev:.3f}σ")
+
+            # Compare to analytical optimum
+            optimal_nuis = wrapper.get_optimal_nuisance(best_poi)
+            print(f"\nAnalytical optimal nuisance: {optimal_nuis}")
+            print(f"Difference: {np.linalg.norm(best_nuis - optimal_nuis):.6f}")
+
+            print("="*80)
+
+        print("\n")
+        # sampler.close() is called automatically on context exit
 
     # Terminate workers
     print("Master: All projections complete. Terminating workers...")
