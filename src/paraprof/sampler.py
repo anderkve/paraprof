@@ -418,10 +418,12 @@ class ProfileProjector:
         if self.samples_output_file:
             self.samples_buffer = []
             self.sample_buffer_size = 1000
-            # Keep file handle open for performance (avoid repeated open/close)
-            self._samples_file_handle = open(self.samples_output_file, 'a', buffering=8192)
+            # File handle is now None - open/close per flush for crash safety
+            self._samples_file_handle = None
+            self._file_closed = False
         else:
             self._samples_file_handle = None
+            self._file_closed = True
 
         # --- Persistent State (across projections) ---
         self.target_calls = 0
@@ -903,47 +905,92 @@ class ProfileProjector:
         self.boundary_points = None
 
 
-    def __del__(self):
-        """Destructor: ensure file handle is closed."""
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cleanup."""
+        self.close()
+        return False  # Don't suppress exceptions
+
+    def close(self):
+        """
+        Explicitly close the sampler and flush all data to disk.
+
+        This method should be called when done using the sampler.
+        Safe to call multiple times.
+        """
         self._close_sample_file()
 
+    def __del__(self):
+        """
+        Destructor: attempt cleanup as last resort.
+
+        Note: __del__ is unreliable and may not be called. Always use
+        explicit close() or context manager pattern instead.
+        """
+        # Only attempt cleanup if not already closed
+        if hasattr(self, '_file_closed') and not self._file_closed:
+            import warnings
+            warnings.warn(
+                "ProfileProjector was not explicitly closed. "
+                "Use context manager or call close() to ensure data is saved.",
+                ResourceWarning,
+                stacklevel=2
+            )
+            try:
+                self._close_sample_file()
+            except Exception:
+                pass  # Best effort in __del__
 
     def _close_sample_file(self):
-        """Close the sample output file handle."""
-        if self._samples_file_handle:
-            try:
-                self._flush_samples_buffer()
-                self._samples_file_handle.close()
-                self._samples_file_handle = None
-            except Exception as e:
-                # Use print instead of logger in case logger is already destroyed
-                print(f"Warning: Error closing sample file: {e}")
+        """Close the sample output file and flush any remaining data."""
+        if self._file_closed:
+            return
+
+        try:
+            # Flush any remaining buffered samples
+            self._flush_samples_buffer()
+            self._file_closed = True
+            self.logger.debug(f"Closed sample file: {self.samples_output_file}")
+        except Exception as e:
+            # Use print instead of logger in case logger is already destroyed
+            print(f"Warning: Error closing sample file: {e}")
 
 
     def _flush_samples_buffer(self):
         """
         Writes the content of the samples buffer to the output file.
-        Uses persistent file handle and vectorized writing for performance.
+        Opens and closes file per flush for crash safety.
         """
-        if not self._samples_file_handle or not self.samples_buffer:
+        if not self.samples_output_file or not self.samples_buffer or self._file_closed:
             return
 
         try:
-            # Vectorized writing for large buffers (more efficient)
-            if len(self.samples_buffer) > 100:
-                # Convert buffer to numpy array
-                data = np.array([(list(params) + [target_val])
-                               for params, target_val in self.samples_buffer])
-                # Use savetxt for efficient vectorized formatting
-                np.savetxt(self._samples_file_handle, data, fmt='%.10e', delimiter=', ')
-            else:
-                # Loop for small buffers (overhead not worth vectorization)
-                for params, target_val in self.samples_buffer:
-                    param_str = ", ".join([f"{p:.10e}" for p in params])
-                    self._samples_file_handle.write(f"{param_str}, {target_val:.10e}\n")
+            # Open file for each flush operation (append mode)
+            with open(self.samples_output_file, 'a', buffering=1) as f:
+                # Vectorized writing for large buffers (more efficient)
+                if len(self.samples_buffer) > 100:
+                    # Convert buffer to numpy array
+                    data = np.array([(list(params) + [target_val])
+                                   for params, target_val in self.samples_buffer])
+                    # Use savetxt for efficient vectorized formatting
+                    np.savetxt(f, data, fmt='%.10e', delimiter=', ')
+                else:
+                    # Loop for small buffers (overhead not worth vectorization)
+                    for params, target_val in self.samples_buffer:
+                        param_str = ", ".join([f"{p:.10e}" for p in params])
+                        f.write(f"{param_str}, {target_val:.10e}\n")
 
-            self._samples_file_handle.flush()  # Explicit flush
+                # Explicit flush to OS buffers
+                f.flush()
+                # Force write to disk (optional - uncomment for maximum safety)
+                # os.fsync(f.fileno())
+
+            # Clear buffer only after successful write
             self.samples_buffer = []
+
         except IOError as e:
             self.logger.warning(f"Warning: Could not write to sample file: {e}")
 

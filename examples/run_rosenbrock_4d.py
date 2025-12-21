@@ -50,7 +50,8 @@ if myrank == 0:
 
     # ===== SIMPLIFIED INTERFACE =====
     # Only specify the core tuning parameters - most defaults work well!
-    sampler = ProfileProjector(
+    # Use context manager to ensure proper cleanup of sampler resources
+    with ProfileProjector(
         target_func=log_likelihood,
         bounds=param_bounds,
         projections=PROJECTIONS_TO_RUN,
@@ -70,32 +71,33 @@ if myrank == 0:
                 'max_num_to_evolve': None,
             },
         }
-    )
+    ) as sampler:
 
-    # Broadcast the target function to all workers (once, before all projections)
-    print("Master: Broadcasting target function to workers...")
-    comm.bcast(sampler.target_func, root=0)
+        # Broadcast the target function to all workers (once, before all projections)
+        print("Master: Broadcasting target function to workers...")
+        comm.bcast(sampler.target_func, root=0)
 
-    # --- Run all projections with automatic refinement handling ---
-    results = run_all_projections(
-        comm=comm,
-        sampler=sampler,
-        projections=PROJECTIONS_TO_RUN,
-        save_plots=True,
-        plot_settings={'dpi': 300, 'filetype': 'png'},
-        myrank=myrank
-    )
+        # --- Run all projections with automatic refinement handling ---
+        results = run_all_projections(
+            comm=comm,
+            sampler=sampler,
+            projections=PROJECTIONS_TO_RUN,
+            save_plots=True,
+            plot_settings={'dpi': 300, 'filetype': 'png'},
+            myrank=myrank
+        )
 
-    # Print summary of all projections
-    print("\n" + "="*80)
-    print("=== Summary of All Projections ===")
-    print("="*80)
-    for i, res in enumerate(results):
-        dims = res['projection_config']['dims']
-        calls = res['metrics']['total_target_calls']
-        max_ll = res['metrics']['global_max']
-        print(f"  Projection {i+1} (dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
-    print("="*80 + "\n")
+        # Print summary of all projections
+        print("\n" + "="*80)
+        print("=== Summary of All Projections ===")
+        print("="*80)
+        for i, res in enumerate(results):
+            dims = res['projection_config']['dims']
+            calls = res['metrics']['total_target_calls']
+            max_ll = res['metrics']['global_max']
+            print(f"  Projection {i+1} (dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
+        print("="*80 + "\n")
+        # sampler.close() is called automatically on context exit
 
     # Terminate all workers after all projections complete
     print("Master: All projections complete. Terminating workers...")
