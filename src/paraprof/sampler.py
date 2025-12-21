@@ -415,9 +415,12 @@ class ProfileProjector:
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
+        # Always initialize buffer (unconditional - makes code robust)
+        self.samples_buffer = []
+        self.sample_buffer_size = 1000
+
+        # File handle and closed flag depend on whether output file is configured
         if self.samples_output_file:
-            self.samples_buffer = []
-            self.sample_buffer_size = 1000
             # File handle is now None - open/close per flush for crash safety
             self._samples_file_handle = None
             self._file_closed = False
@@ -998,7 +1001,8 @@ class ProfileProjector:
     def _register_target_call(self, params, target_val):
         """Registers a completed target call (only on master)."""
         self.target_calls += 1
-        if hasattr(self, 'samples_buffer'):
+        # Buffer samples for output if file is configured
+        if self.samples_output_file:
             self.samples_buffer.append((params, target_val))
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
