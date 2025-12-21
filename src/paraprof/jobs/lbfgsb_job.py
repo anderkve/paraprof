@@ -160,7 +160,6 @@ class LBFGSBJob(Job):
                 'job_id': self.id,
                 'sub_type': 'LBFGS_INITIAL_F'
             }
-            # self.start_params_full was constructed by the factory
             return [{'params': self.start_params_full, 'context': context}]
 
         # Should not be reached
@@ -216,7 +215,7 @@ class LBFGSBJob(Job):
         """Generates tasks needed to numerically calculate the gradient."""
         tasks = []
         x = self.current_params
-        self.gradient_components = {} # Clear old components
+        self.gradient_components = {}
 
         # Adaptive step size per dimension: scale with parameter magnitude
         # This ensures numerical stability across parameters with different scales

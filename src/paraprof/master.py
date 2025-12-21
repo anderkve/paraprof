@@ -522,7 +522,6 @@ def master_main(comm, sampler,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                # Update F/CR memory from *previous* generation
                 if de_generation > 0:
                     sampler.update_de_memory(de_successful_F, de_successful_CR)
 

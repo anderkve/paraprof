@@ -71,8 +71,6 @@ def setup_logger(
         level = logging.getLevelName(level.upper())
 
     # Default to rank 0 if not provided
-    # Note: We do NOT auto-detect from MPI.COMM_WORLD to ensure ParaProf
-    # can be used with custom MPI communicators (subsets of COMM_WORLD)
     if rank is None:
         rank = 0
 

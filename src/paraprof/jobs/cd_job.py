@@ -316,18 +316,15 @@ class CoordinateDescentJob(Job):
             best_simple = max(f0, f_plus, f_minus)
 
             if f_parabolic > best_simple:
-                # Parabolic step is best
                 self.current_params[dim_idx] = x0 + x_min
                 self.current_fitness = f_parabolic
             else:
-                # Simple step was better
                 if f_plus > best_simple:
                     self.current_params[dim_idx] = x0 + state['step']
                     self.current_fitness = f_plus
                 elif f_minus > best_simple:
                     self.current_params[dim_idx] = x0 - state['step']
                     self.current_fitness = f_minus
-                # else keep current (f0 was best)
 
             self.line_search_state = None
             new_tasks = self._advance_to_next_coordinate()

@@ -933,7 +933,6 @@ class ProfileProjector:
         Note: __del__ is unreliable and may not be called. Always use
         explicit close() or context manager pattern instead.
         """
-        # Only attempt cleanup if not already closed
         if hasattr(self, '_file_closed') and not self._file_closed:
             import warnings
             warnings.warn(

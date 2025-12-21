@@ -265,7 +265,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
             f"Added {len(sampler.global_eval_cache)} points from global cache"
         )
 
-    # Strategy 3: Fallback to legacy eval_cache
+    # Strategy 3: Fallback to eval_cache
     if len(all_params) < min_points and hasattr(sampler, 'eval_cache') and sampler.eval_cache:
         for e in sampler.eval_cache:
             params = np.asarray(e['params'])
@@ -273,7 +273,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
                 all_params.append(params)
                 all_fitness.append(e['fitness'])
         logger.debug(
-            f"Added {len(sampler.eval_cache)} points from legacy eval_cache"
+            f"Added {len(sampler.eval_cache)} points from eval_cache"
         )
 
     # Strategy 4: Ultimate fallback - gather from population
