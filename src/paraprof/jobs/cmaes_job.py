@@ -168,7 +168,6 @@ class CMAESGridPointJob(Job):
                 if 'cmaes_C' not in neighbor_state:
                     continue
 
-                # Check if this neighbor is better than previous candidates
                 if neighbor_state['best_fitness'] > best_fitness:
                     C_candidate = neighbor_state['cmaes_C']
 
