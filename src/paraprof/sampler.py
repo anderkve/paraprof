@@ -447,6 +447,9 @@ class ProfileProjector:
         self.de_trials_generated = 0
         self.de_trials_screened_out = 0
 
+        # --- Initial points tracking ---
+        self._initial_points_evaluated = False
+
         # --- Refinement State ---
         self.is_refinement_run = False
         self.refinement_factor = None
@@ -933,7 +936,7 @@ class ProfileProjector:
         Note: __del__ is unreliable and may not be called. Always use
         explicit close() or context manager pattern instead.
         """
-        if hasattr(self, '_file_closed') and not self._file_closed:
+        if not self._file_closed:
             import warnings
             warnings.warn(
                 "ProfileProjector was not explicitly closed. "

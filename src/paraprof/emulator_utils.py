@@ -230,7 +230,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
     expected_ndim = len(center_params)
 
     # Strategy 1: Use local caches if grid_idx provided
-    if grid_idx is not None and hasattr(sampler, 'local_eval_caches'):
+    if grid_idx is not None:
         # Gather from center grid point's cache
         if grid_idx in sampler.local_eval_caches:
             for e in sampler.local_eval_caches[grid_idx]:
@@ -240,22 +240,21 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
                     all_fitness.append(e['fitness'])
 
         # Gather from neighboring grid points' caches
-        if hasattr(sampler, '_get_valid_neighbors'):
-            neighbors = sampler._get_valid_neighbors(grid_idx)
-            for neighbor_idx in neighbors:
-                if neighbor_idx in sampler.local_eval_caches:
-                    for e in sampler.local_eval_caches[neighbor_idx]:
-                        params = np.asarray(e['params'])
-                        if len(params) == expected_ndim:
-                            all_params.append(params)
-                            all_fitness.append(e['fitness'])
+        neighbors = sampler._get_valid_neighbors(grid_idx)
+        for neighbor_idx in neighbors:
+            if neighbor_idx in sampler.local_eval_caches:
+                for e in sampler.local_eval_caches[neighbor_idx]:
+                    params = np.asarray(e['params'])
+                    if len(params) == expected_ndim:
+                        all_params.append(params)
+                        all_fitness.append(e['fitness'])
 
         logger.debug(
             f"Gathered {len(all_params)} points from local cache (grid {grid_idx} + neighbors)"
         )
 
     # Strategy 2: Use global cache if no grid_idx or local caches insufficient
-    if len(all_params) < min_points and hasattr(sampler, 'global_eval_cache') and sampler.global_eval_cache:
+    if len(all_params) < min_points and sampler.global_eval_cache:
         for e in sampler.global_eval_cache:
             params = np.asarray(e['params'])
             if len(params) == expected_ndim:
@@ -265,18 +264,7 @@ def gather_nearby_evaluations(sampler, center_params, radius_factor=2.0, min_poi
             f"Added {len(sampler.global_eval_cache)} points from global cache"
         )
 
-    # Strategy 3: Fallback to eval_cache
-    if len(all_params) < min_points and hasattr(sampler, 'eval_cache') and sampler.eval_cache:
-        for e in sampler.eval_cache:
-            params = np.asarray(e['params'])
-            if len(params) == expected_ndim:
-                all_params.append(params)
-                all_fitness.append(e['fitness'])
-        logger.debug(
-            f"Added {len(sampler.eval_cache)} points from eval_cache"
-        )
-
-    # Strategy 4: Ultimate fallback - gather from population
+    # Strategy 3: Ultimate fallback - gather from population
     if len(all_params) < min_points:
         for gidx, state in sampler.population.items():
             for i in range(len(state['fitnesses'])):
