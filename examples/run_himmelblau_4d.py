@@ -34,6 +34,12 @@ TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
 
+    # 1D projections
+    {'dims': [0], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [1], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [2], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+
     # 2D projections
     {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
     {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
@@ -41,12 +47,6 @@ PROJECTIONS_TO_RUN = [
     {'dims': [1, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
     {'dims': [1, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
     {'dims': [2, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
-
-    # 1D projections
-    {'dims': [0], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
-    {'dims': [1], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
-    {'dims': [2], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
-    {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
 
 ]
 
@@ -162,7 +162,7 @@ if myrank == 0:
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
         lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE/CMA-ES
-        n_initial_optimizations=20,                   # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
+        n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
         # initial_points=[[3.0, 0.0, -3.0, 0.0]],       # Optional: User-provided initial points to activate grid
         #                                             # Use with n_initial_optimizations=0 to only use these points
 
