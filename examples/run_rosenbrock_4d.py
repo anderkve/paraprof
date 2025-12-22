@@ -28,12 +28,12 @@ TEST_FUNCTION = "rosenbrock_4d"
 
 PROJECTIONS_TO_RUN = [
 
-    {'dims': [0, 1], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [0, 2], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [0, 3], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [1, 2], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [1, 3], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    {'dims': [2, 3], 'grid_points': [150, 150], 'patching_coarse': True, 'patching_refined': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 1], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    {'dims': [0, 2], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    {'dims': [0, 3], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    {'dims': [1, 2], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    {'dims': [1, 3], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    {'dims': [2, 3], 'grid_points': [150, 150], 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
 
 ]
 
@@ -60,6 +60,7 @@ if myrank == 0:
         pop_per_grid_point=3,
         max_patching_waves=20,
         lbfgsb_max_iter=20,
+        lbfgsb_polish=True,                  # Apply L-BFGS-B polishing after DE
         n_initial_optimizations=100,         # Default would be min(100, 20*4) = 80
         # I/O
         samples_output_file=output_file,

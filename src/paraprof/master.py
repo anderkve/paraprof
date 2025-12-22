@@ -68,12 +68,10 @@ def run_projection(comm, sampler, projection_config,
         - 'grid_points': list of int - grid points per dimension
         Optional keys:
         - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
-        - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
-        - 'enable_refinement': bool - enable grid refinement (default: False)
-        - 'refinement_factor': int - refinement factor (default: 2)
+        - 'grid_refinement_factor': int - grid refinement factor (default: 2)
         - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
-        - 'patching_coarse': bool - enable patching on coarse grid (default: True)
-        - 'patching_refined': bool - enable patching on refined grid (default: False)
+        - 'patch_coarse_grid': bool - enable patching on coarse grid (default: True)
+        - 'patch_refined_grid': bool - enable patching on refined grid (default: False)
     save_plots : bool
         Whether to save plots to disk after each stage
     plot_settings : dict, optional
@@ -105,16 +103,16 @@ def run_projection(comm, sampler, projection_config,
     ...     projection_config={
     ...         'dims': [0, 1],
     ...         'grid_points': [50, 50],
-    ...         'enable_refinement': True,
-    ...         'refinement_factor': 3
+    ...         'grid_refinement_factor': 3
     ...     },
     ...     save_plots=True
     ... )
     >>> print(f"Best likelihood: {results['metrics']['global_max']}")
     """
     # Extract refinement configuration
-    enable_refinement = projection_config.get('enable_refinement', False)
-    refinement_factor = projection_config.get('refinement_factor', 2)
+    refinement_factor = projection_config.get('grid_refinement_factor', None)
+    # Auto-determine if refinement should be enabled based on refinement_factor
+    use_grid_refinement = refinement_factor is not None and refinement_factor > 1
     dims_str = "_".join(map(str, projection_config['dims']))
 
     logger = setup_logger(rank=myrank)
@@ -154,7 +152,7 @@ def run_projection(comm, sampler, projection_config,
     results['metrics']['coarse_target_calls'] = sampler.target_calls
 
     # --- REFINEMENT RUN (if enabled) ---
-    if enable_refinement:
+    if use_grid_refinement:
         logger.info("=" * 80)
         logger.info("=== Starting Grid Refinement ===")
         logger.info("=" * 80)
@@ -229,12 +227,10 @@ def run_all_projections(comm, sampler, projections,
         - 'grid_points': list of int - grid points per dimension
         Optional keys per projection:
         - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
-        - 'lbfgsb_refinement': bool - L-BFGS-B refinement after DE (default: True)
-        - 'enable_refinement': bool - enable grid refinement (default: False)
-        - 'refinement_factor': int - refinement factor (default: 2)
+        - 'grid_refinement_factor': int - grid refinement factor (default: 2)
         - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
-        - 'patching_coarse': bool - enable patching on coarse grid (default: True)
-        - 'patching_refined': bool - enable patching on refined grid (default: False)
+        - 'patch_coarse_grid': bool - enable patching on coarse grid (default: True)
+        - 'patch_refined_grid': bool - enable patching on refined grid (default: False)
     save_plots : bool
         Whether to save plots to disk after each stage
     plot_settings : dict, optional
@@ -262,8 +258,8 @@ def run_all_projections(comm, sampler, projections,
     Examples
     --------
     >>> projections = [
-    ...     {'dims': [0, 1], 'grid_points': [50, 50], 'enable_refinement': True},
-    ...     {'dims': [0, 2], 'grid_points': [50, 50], 'enable_refinement': True},
+    ...     {'dims': [0, 1], 'grid_points': [50, 50], 'grid_refinement_factor': 2},
+    ...     {'dims': [0, 2], 'grid_points': [50, 50], 'grid_refinement_factor': 2},
     ... ]
     >>> results = run_all_projections(
     ...     comm=comm,
@@ -353,7 +349,7 @@ def master_main(comm, sampler,
     if sampler.is_refinement_run:
         stages = ['REFINEMENT_LBFGSB']
         # Disable patching in direct evaluation mode (no continuous params to share)
-        if sampler.patching_refined and not sampler.direct_eval_mode:
+        if sampler.patch_refined_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
         logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
@@ -369,7 +365,7 @@ def master_main(comm, sampler,
             stages.append('CMAES_LOOP')
 
         # Add patching if enabled (applies to all optimization methods)
-        if sampler.patching_coarse and not sampler.direct_eval_mode:
+        if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
 
         if sampler.direct_eval_mode:
@@ -624,7 +620,7 @@ def master_main(comm, sampler,
 
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
-                patching_enabled = sampler.patching_refined if sampler.is_refinement_run else sampler.patching_coarse
+                patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
                 if not patching_enabled:
                     logger.info("--- Master: Patching disabled for this stage. Skipping. ---")
                     current_stage = stages.pop(0) if stages else None

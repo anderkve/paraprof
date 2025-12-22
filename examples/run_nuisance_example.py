@@ -46,18 +46,18 @@ CONSTRAINT_SIGMA = 0.5   # Tighter = more constrained (0.2 = tight, 1.0 = loose)
 # Note: We only project over POI dimensions, not nuisance parameters
 PROJECTIONS_TO_RUN = [
     # 1D projection over first POI parameter
-    # {'dims': [0], 'grid_points': [100], 'patching_coarse': True, 'lbfgsb': True},
+    # {'dims': [0], 'grid_points': [100], 'patch_coarse_grid': True},
 
     # 2D projection over first two POI parameters
-    # {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes',  'patching_coarse': False, 'lbfgsb_refinement': False, 'enable_refinement': False, 'patching_refined': True, 'refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
+    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes', 'patch_coarse_grid': False, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
 
-    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
+    {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
+    {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
+    {'dims': [0, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
+    {'dims': [1, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
+    {'dims': [1, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
+    {'dims': [2, 3], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
 
 ]
 
@@ -143,6 +143,7 @@ if myrank == 0:
         pop_per_grid_point=3,
         max_patching_waves=50,
         lbfgsb_max_iter=10,
+        lbfgsb_polish=False,           # Disable L-BFGS-B polishing (using direct optimization_method)
         n_initial_optimizations=100,
         # Feature toggles
         refinement_direct_eval=True,  # Fast interpolation for nuisance parameters
