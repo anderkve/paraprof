@@ -1157,15 +1157,15 @@ class ProfileProjector:
         # Slow path: handle custom dims_to_check
         dims_to_check = np.array(dims_to_check, dtype=int)
         if vec.shape != self.bounds[dims_to_check, 0].shape:
-             # This happens in global optimization, vec is (N_dims,)
-             # but dims_to_check might be smaller.
-             # We only want to clip the dimensions specified.
-             clipped_vec = vec.copy()
-             for i, dim_idx in enumerate(dims_to_check):
-                 clipped_vec[i] = np.clip(vec[i], self.bounds[dim_idx, 0], self.bounds[dim_idx, 1])
-             return clipped_vec
+            # This happens in global optimization, vec is (N_dims,)
+            # but dims_to_check might be smaller.
+            # We only want to clip the dimensions specified.
+            clipped_vec = vec.copy()
+            for i, dim_idx in enumerate(dims_to_check):
+                clipped_vec[i] = np.clip(vec[i], self.bounds[dim_idx, 0], self.bounds[dim_idx, 1])
+            return clipped_vec
         else:
-             return np.clip(vec, self.bounds[dims_to_check, 0], self.bounds[dims_to_check, 1])
+            return np.clip(vec, self.bounds[dims_to_check, 0], self.bounds[dims_to_check, 1])
 
 
     def _get_valid_neighbors(self, grid_idx, include_center=False):
