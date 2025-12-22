@@ -30,6 +30,7 @@ class ProfileProjector:
                  pop_per_grid_point=1,
                  max_patching_waves=10,
                  lbfgsb_max_iter=50,
+                 lbfgsb_polish=True,
                  n_initial_optimizations=None,
                  initial_points=None,
                  # Feature toggles
@@ -67,6 +68,9 @@ class ProfileProjector:
         lbfgsb_max_iter : int, optional
             Maximum L-BFGS-B iterations per optimization (default: 50)
             Typical values: 10-50. Higher = more thorough local optimization
+        lbfgsb_polish : bool, optional
+            Apply L-BFGS-B polishing step after DE/CMA-ES optimization (default: True)
+            Refines solutions found by evolutionary algorithms using gradient-based optimization
         n_initial_optimizations : int, optional
             Number of global L-BFGS-B optimizations to find initial maxima (default: None)
             If None, auto-configured as min(100, 20 * n_dims)
@@ -452,7 +456,7 @@ class ProfileProjector:
 
         # --- Refinement State ---
         self.is_refinement_run = False
-        self.refinement_factor = None
+        self.grid_refinement_factor = None
         self.coarse_grid_solution = None
         self.refinement_interpolator = None
         self.cluster_labels = None
@@ -471,9 +475,9 @@ class ProfileProjector:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
         self.optimization_method = 'de'  # Default optimization method
-        self.lbfgsb_refinement = True  # Default to True (controlled per-projection)
-        self.patching_coarse = True  # Default to True (controlled per-projection)
-        self.patching_refined = False  # Default to False (controlled per-projection)
+        self.lbfgsb_refinement = lbfgsb_polish  # Apply L-BFGS-B polishing after DE/CMA-ES
+        self.patch_coarse_grid = True  # Default to True (controlled per-projection)
+        self.patch_refined_grid = False  # Default to False (controlled per-projection)
 
         # --- Per-Projection State (reset) ---
         # --- Logger ---
@@ -531,15 +535,9 @@ class ProfileProjector:
                 value=self.optimization_method
             )
 
-        # Read L-BFGS-B refinement flag
-        if 'lbfgsb_refinement' in projection_config:
-            self.lbfgsb_refinement = projection_config.get('lbfgsb_refinement', True)
-        else:
-            self.lbfgsb_refinement = True  # Default
-
         # Read patching configuration
-        self.patching_coarse = projection_config.get('patching_coarse', True)
-        self.patching_refined = projection_config.get('patching_refined', False)
+        self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True)
+        self.patch_refined_grid = projection_config.get('patch_refined_grid', False)
 
         # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
@@ -549,9 +547,9 @@ class ProfileProjector:
             # Note: lambda/mu will be set after computing n_cont_dims below
             self.logger.info(f"  CMA-ES max generations: {self.cmaes_max_generations}")
             self.logger.info(f"  L-BFGS-B refinement after CMA-ES: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
-        self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patching_coarse else 'Disabled'}")
+        self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patch_coarse_grid else 'Disabled'}")
         if self.is_refinement_run:
-            self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patching_refined else 'Disabled'}")
+            self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patch_refined_grid else 'Disabled'}")
 
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
@@ -608,7 +606,7 @@ class ProfileProjector:
 
             for coarse_idx, solution in coarse_solutions.items():
                 # Map coarse grid index to fine grid index
-                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.refinement_factor)
+                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.grid_refinement_factor)
 
                 # Verify the fine grid point is valid
                 if not all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
@@ -713,7 +711,7 @@ class ProfileProjector:
         from .interpolation import GridInterpolator
 
         self.is_refinement_run = True
-        self.refinement_factor = refinement_factor
+        self.grid_refinement_factor = refinement_factor
         self.coarse_grid_solution = coarse_solution
         self.refinement_method = refinement_method
 
@@ -903,7 +901,7 @@ class ProfileProjector:
         carrying over refinement flags and data structures.
         """
         self.is_refinement_run = False
-        self.refinement_factor = None
+        self.grid_refinement_factor = None
         self.coarse_grid_solution = None
         self.refinement_interpolator = None
         self.cluster_labels = None
@@ -1654,7 +1652,7 @@ class ProfileProjector:
 
         for coarse_idx, solution in self.coarse_grid_solution['solutions'].items():
             if solution['likelihood'] >= roi_cutoff:
-                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.refinement_factor)
+                fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.grid_refinement_factor)
                 if all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
                     transferred_points.append(fine_idx)
 
@@ -1683,8 +1681,8 @@ class ProfileProjector:
 
             # Coarse point is outside ROI - check if any fine points might be inside
             # Sample fine grid points within this coarse cell and predict their likelihoods
-            fine_start = tuple(ci * self.refinement_factor for ci in coarse_idx)
-            fine_end = tuple((ci + 1) * self.refinement_factor for ci in coarse_idx)
+            fine_start = tuple(ci * self.grid_refinement_factor for ci in coarse_idx)
+            fine_end = tuple((ci + 1) * self.grid_refinement_factor for ci in coarse_idx)
 
             # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
@@ -1696,7 +1694,7 @@ class ProfileProjector:
 
             for fine_idx in itertools.product(*ranges):
                 # Skip coarse grid points (already checked above)
-                if self._is_coarse_grid_point(fine_idx, self.refinement_factor):
+                if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
 
                 # Get grid coordinates and interpolate likelihood
@@ -1726,8 +1724,8 @@ class ProfileProjector:
 
             # Define the cell boundaries in fine grid coordinates
             # Coarse point (ci, cj) maps to fine cell: (ci*RF, cj*RF) to ((ci+1)*RF, (cj+1)*RF)
-            fine_start = tuple(ci * self.refinement_factor for ci in coarse_idx)
-            fine_end = tuple((ci + 1) * self.refinement_factor for ci in coarse_idx)
+            fine_start = tuple(ci * self.grid_refinement_factor for ci in coarse_idx)
+            fine_end = tuple((ci + 1) * self.grid_refinement_factor for ci in coarse_idx)
 
             # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
@@ -1737,7 +1735,7 @@ class ProfileProjector:
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
             for fine_idx in itertools.product(*ranges):
                 # Skip coarse grid points (already transferred)
-                if self._is_coarse_grid_point(fine_idx, self.refinement_factor):
+                if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
 
                 # Skip if already processed

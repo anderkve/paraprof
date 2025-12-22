@@ -34,22 +34,19 @@ TEST_FUNCTION = "himmelblau_4d"
 
 PROJECTIONS_TO_RUN = [
 
-    # 1D projections
-    # {'dims': [0], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [2], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'lbfgsb_refinement': True, 'enable_refinement': True, 'refinement_factor': 2},
-
     # 2D projections
-    # {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': False, 'lbfgsb_refinement': False, 'enable_refinement': True, 'refinement_factor': 3},
+    {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [0, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [1, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [1, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
+    {'dims': [2, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 1, 'patch_coarse_grid': True, 'patch_refined_grid': True},
 
-    {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
-    {'dims': [0, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
-    {'dims': [0, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
-    {'dims': [1, 2], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
-    {'dims': [1, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
-    {'dims': [2, 3], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patching_coarse': True, 'patching_refined': True, 'lbfgsb_refinement': False, 'enable_refinement': False, 'refinement_factor': 5},
+    # 1D projections
+    {'dims': [0], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
+    {'dims': [1], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
+    {'dims': [2], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
+    {'dims': [3], 'grid_points': [100], 'optimization_method': 'lbfgsb', 'grid_refinement_factor': 2, 'patch_coarse_grid': True},
 
 ]
 
@@ -164,6 +161,7 @@ if myrank == 0:
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
+        lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE/CMA-ES
         n_initial_optimizations=20,                   # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
         # initial_points=[[3.0, 0.0, -3.0, 0.0]],       # Optional: User-provided initial points to activate grid
         #                                             # Use with n_initial_optimizations=0 to only use these points

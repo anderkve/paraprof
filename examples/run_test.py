@@ -67,17 +67,17 @@ TEST_FUNCTION = "rosenbrock_4d"
 PROJECTIONS_TO_RUN = [
     # For 2D functions with DIRECT EVALUATION MODE (projects onto both dims)
     # Iteration 4: Higher resolution grid for better coverage
-    {'dims': [0, 3], 'grid_points': [100, 100], 'enable_refinement': True, 'refinement_factor': 2},
+    {'dims': [0, 3], 'grid_points': [100, 100], 'grid_refinement_factor': 2},
 
     # Alternative: 1D projections with optimization (one continuous dim)
-    # {'dims': [0], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
-    # {'dims': [1], 'grid_points': [75], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+    # {'dims': [0], 'grid_points': [75], 'patch_coarse_grid': True, 'grid_refinement_factor': 2},
+    # {'dims': [1], 'grid_points': [75], 'patch_coarse_grid': True, 'grid_refinement_factor': 2},
 ]
 
 # For higher dimensional functions with NORMAL MODE (optimization at each grid point):
 # Example for 4D function:
 # PROJECTIONS_TO_RUN = [
-#     {'dims': [0, 1], 'grid_points': [50, 50], 'patching_coarse': True, 'lbfgsb': True, 'enable_refinement': True, 'refinement_factor': 2},
+#     {'dims': [0, 1], 'grid_points': [50, 50], 'patch_coarse_grid': True, 'grid_refinement_factor': 2},
 # ]
 
 log_likelihood, param_bounds, true_peaks = get_test_function(TEST_FUNCTION)
