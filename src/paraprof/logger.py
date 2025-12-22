@@ -9,12 +9,6 @@ import logging
 import sys
 from typing import Optional, Union
 
-# Global flag to track if MPI is available
-_MPI_AVAILABLE = True
-try:
-    from mpi4py import MPI
-except ImportError:
-    _MPI_AVAILABLE = False
 
 # Global log level storage - allows set_log_level() to persist across setup_logger() calls
 _GLOBAL_LOG_LEVEL: Optional[int] = None
