@@ -1,7 +1,6 @@
 """
 MPI master process orchestration logic.
 """
-import time
 import collections
 import numpy as np
 import sys

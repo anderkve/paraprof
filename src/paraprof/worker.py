@@ -51,12 +51,8 @@ def screen_trial_with_emulator(params, target_fitness, emulator_cache, logger):
     should_evaluate : bool
         True if trial should be evaluated, False to skip
     """
-    # No emulator data provided - must evaluate
-    if emulator_cache is None:
-        return True
-
-    # Emulator utilities not available - must evaluate
-    if not EMULATOR_AVAILABLE:
+    # No emulator data provided or emulator utilities not available - must evaluate
+    if emulator_cache is None or not EMULATOR_AVAILABLE:
         return True
 
     # Build GP emulator from cached data

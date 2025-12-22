@@ -40,5 +40,4 @@ class Job:
         Use this to update the main sampler's state.
         Can optionally return (new_job, next_job_id) to spawn a child job.
         """
-        pass  # Optional
         return None

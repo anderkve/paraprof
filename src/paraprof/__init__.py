@@ -11,11 +11,7 @@ from .exceptions import (
     ParaProfError,
     InvalidProjectionError,
     InvalidBoundsError,
-    ConvergenceError,
-    MPIError,
     ConfigurationError,
-    JobError,
-    ValidationError,
 )
 from .nuisance_wrapper import (
     NuisanceParameterWrapper,
@@ -39,11 +35,7 @@ __all__ = [
     'ParaProfError',
     'InvalidProjectionError',
     'InvalidBoundsError',
-    'ConvergenceError',
-    'MPIError',
     'ConfigurationError',
-    'JobError',
-    'ValidationError',
     'NuisanceParameterWrapper',
     'create_nuisance_wrapped_function',
     'register_nuisance_wrapped_test_functions',

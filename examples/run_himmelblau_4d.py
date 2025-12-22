@@ -164,8 +164,8 @@ if myrank == 0:
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
-        n_initial_optimizations=0,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
-        initial_points=[[3.0, 0.0, -3.0, 0.0]],     # Optional: User-provided initial points to activate grid
+        n_initial_optimizations=20,                   # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
+        # initial_points=[[3.0, 0.0, -3.0, 0.0]],       # Optional: User-provided initial points to activate grid
         #                                             # Use with n_initial_optimizations=0 to only use these points
 
         # === Feature toggles ===
