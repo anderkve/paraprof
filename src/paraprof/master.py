@@ -428,7 +428,7 @@ def master_main(comm, sampler,
             if current_stage == 'INITIAL_OPTIMIZATION':
 
                 # First, evaluate user-provided initial_points if available
-                if sampler.initial_points is not None and not hasattr(sampler, '_initial_points_evaluated'):
+                if sampler.initial_points is not None and not sampler._initial_points_evaluated:
                     logger.info(f"--- Evaluating {len(sampler.initial_points)} user-provided initial points ---")
 
                     # Prepare all tasks

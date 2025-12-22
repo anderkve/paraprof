@@ -178,8 +178,7 @@ class DEGridPointJob(Job):
             self._is_finished = True
 
         # Update global statistics (trials_generated tracked here, screened_out tracked in process_result)
-        if hasattr(self.sampler, 'de_trials_generated'):
-            self.sampler.de_trials_generated += self.trials_generated
+        self.sampler.de_trials_generated += self.trials_generated
 
         return tasks
 
@@ -192,8 +191,7 @@ class DEGridPointJob(Job):
         if was_screened:
             # Worker rejected this trial - count it and skip
             self.trials_screened_out += 1
-            if hasattr(self.sampler, 'de_trials_screened_out'):
-                self.sampler.de_trials_screened_out += 1
+            self.sampler.de_trials_screened_out += 1
 
             self.evals_remaining -= 1
             if self.evals_remaining <= 0:

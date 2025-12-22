@@ -342,8 +342,7 @@ class CMAESGridPointJob(Job):
             tasks.append(task)
 
         # Update global statistics
-        if hasattr(self.sampler, 'de_trials_generated'):
-            self.sampler.de_trials_generated += self.trials_generated
+        self.sampler.de_trials_generated += self.trials_generated
 
         return tasks
 
@@ -356,8 +355,7 @@ class CMAESGridPointJob(Job):
         if was_screened:
             # Worker rejected this trial - mark as very poor fitness
             self.trials_screened_out += 1
-            if hasattr(self.sampler, 'de_trials_screened_out'):
-                self.sampler.de_trials_screened_out += 1
+            self.sampler.de_trials_screened_out += 1
 
             self.offspring_fitness[offspring_idx] = -np.inf
         else:
@@ -427,8 +425,7 @@ class CMAESGridPointJob(Job):
                     tasks.append(task)
 
                 # Update global statistics
-                if hasattr(self.sampler, 'de_trials_generated'):
-                    self.sampler.de_trials_generated += self.trials_generated
+                self.sampler.de_trials_generated += self.trials_generated
 
                 return tasks
 
