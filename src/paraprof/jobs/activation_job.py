@@ -7,6 +7,17 @@ from scipy.stats.qmc import LatinHypercube as LHS
 from .base import Job
 
 
+# Activation job constants
+WARM_START_PERTURBATION_STD = 0.1
+"""Standard deviation for perturbations around warm-start parameters (as fraction of bounds)"""
+
+LHS_SEED_MIN = 1_000_000
+"""Minimum value for random LHS seed generation"""
+
+LHS_SEED_MAX = 1_000_000_000_000
+"""Maximum value for random LHS seed generation"""
+
+
 class ActivationJob(Job):
     """
     A job to evaluate the initial population for a single grid point.
@@ -56,7 +67,7 @@ class ActivationJob(Job):
                 samples_list.append(self.warm_start_params)
                 # Add perturbations around it for the remaining neighbor samples
                 for _ in range(n_from_neighbors - 1):
-                    perturbation = np.random.normal(0, 0.1, size=self.n_cont_dims)
+                    perturbation = np.random.normal(0, WARM_START_PERTURBATION_STD, size=self.n_cont_dims)
                     perturbed = self.warm_start_params + perturbation * (cont_bounds[:, 1] - cont_bounds[:, 0])
                     perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.continuous_dims)
                     samples_list.append(perturbed)
@@ -74,7 +85,7 @@ class ActivationJob(Job):
 
             # 3. Random LHS samples
             if n_from_random > 0:
-                lhs_sampler = LHS(d=self.n_cont_dims, seed=np.random.randint(1e6, 1e12))
+                lhs_sampler = LHS(d=self.n_cont_dims, seed=np.random.randint(LHS_SEED_MIN, LHS_SEED_MAX))
                 unit_samples = lhs_sampler.random(n=n_from_random)
                 random_samples = cont_bounds[:, 0] + unit_samples * (cont_bounds[:, 1] - cont_bounds[:, 0])
                 samples_list.extend(random_samples)
