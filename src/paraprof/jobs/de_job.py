@@ -8,6 +8,20 @@ from .base import Job
 
 logger = get_logger()
 
+
+# DE mutation and crossover constants
+DE_CR_NORMAL_SCALE = 0.1
+"""Standard deviation for sampling CR from normal distribution around memory value"""
+
+DE_F_CAUCHY_SCALE = 0.1
+"""Scale parameter for sampling F from Cauchy distribution around memory value"""
+
+DE_F_MAX_VALUE = 1.0
+"""Maximum allowed value for mutation factor F"""
+
+DE_MIN_PARENT_POOL_SIZE = 3
+"""Minimum number of parents required in pool to perform DE mutation"""
+
 # Try to import emulator utilities
 try:
     from ..emulator_utils import prepare_emulator_cache_for_worker
@@ -63,11 +77,11 @@ class DEGridPointJob(Job):
             mem_loc = np.random.randint(0, self.sampler.memory_size)
             mu_CR, mu_F = self.sampler.memory_CR[mem_loc], self.sampler.memory_F[mem_loc]
 
-            CR_i = np.clip(norm.rvs(loc=mu_CR, scale=0.1), 0, 1)
-            F_i = cauchy.rvs(loc=mu_F, scale=0.1)
+            CR_i = np.clip(norm.rvs(loc=mu_CR, scale=DE_CR_NORMAL_SCALE), 0, 1)
+            F_i = cauchy.rvs(loc=mu_F, scale=DE_F_CAUCHY_SCALE)
             while F_i <= 0:
-                F_i = cauchy.rvs(loc=mu_F, scale=0.1)
-            F_i = min(F_i, 1.0)
+                F_i = cauchy.rvs(loc=mu_F, scale=DE_F_CAUCHY_SCALE)
+            F_i = min(F_i, DE_F_MAX_VALUE)
 
             x_i_params = grid_state['continuous_params'][i]
 
@@ -86,8 +100,8 @@ class DEGridPointJob(Job):
                 if best_neighbor_params is not None and best_neighbor_fitness > grid_state['best_fitness']:
                     use_neighbor_mutation = True
 
-            if len(self.parent_pool) < 3:
-                continue # Not enough parents to mutate
+            if len(self.parent_pool) < DE_MIN_PARENT_POOL_SIZE:
+                continue  # Not enough parents to mutate
 
             mutant = None
             if use_neighbor_mutation:

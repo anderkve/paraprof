@@ -24,6 +24,40 @@ except ImportError:
     )
 
 
+# ============================================================================
+# Gaussian Process Emulator Constants
+# ============================================================================
+
+# Kernel configuration
+GP_CONSTANT_KERNEL_VALUE = 1.0
+"""Initial constant multiplier value for GP kernel"""
+
+GP_CONSTANT_VALUE_BOUNDS_MIN = 1e-8
+"""Lower bound for constant kernel value optimization"""
+
+GP_CONSTANT_VALUE_BOUNDS_MAX = 1e8
+"""Upper bound for constant kernel value optimization"""
+
+GP_LENGTH_SCALE_BOUNDS_MIN = 1e-4
+"""Lower bound for Matern kernel length scale optimization"""
+
+GP_LENGTH_SCALE_BOUNDS_MAX = 1e4
+"""Upper bound for Matern kernel length scale optimization"""
+
+GP_MATERN_NU = 1.5
+"""Smoothness parameter for Matern kernel (nu=1.5 gives once-differentiable functions)"""
+
+# GP optimizer configuration
+GP_OPTIMIZER_MAX_ITER = 20_000
+"""Maximum iterations for L-BFGS-B hyperparameter optimization"""
+
+GP_ALPHA_NOISE = 1e-6
+"""Noise regularization parameter (alpha) for GP fitting"""
+
+GP_N_RESTARTS = 0
+"""Number of random restarts for hyperparameter optimization"""
+
+
 class LocalEmulator:
     """
     Local Gaussian Process emulator for likelihood prediction.
@@ -77,27 +111,29 @@ class LocalEmulator:
         # Build GP with Matern kernel
         # After standardization, a single isotropic length scale works well
         kernel = ConstantKernel(
-            constant_value=1.0,
-            constant_value_bounds=(1e-08, 1e8)
+            constant_value=GP_CONSTANT_KERNEL_VALUE,
+            constant_value_bounds=(GP_CONSTANT_VALUE_BOUNDS_MIN, GP_CONSTANT_VALUE_BOUNDS_MAX)
         ) * Matern(
             length_scale=length_scale,
-            length_scale_bounds=(1e-4, 1e4),
-            nu=1.5
+            length_scale_bounds=(GP_LENGTH_SCALE_BOUNDS_MIN, GP_LENGTH_SCALE_BOUNDS_MAX),
+            nu=GP_MATERN_NU
         )
 
 
         # Define own optimizer
         def optimizer(obj_func, x0, bounds):
             res = minimize(
-                obj_func, x0, bounds=bounds, method="L-BFGS-B", jac=True, options={"maxiter": 20_000})
+                obj_func, x0, bounds=bounds, method="L-BFGS-B", jac=True,
+                options={"maxiter": GP_OPTIMIZER_MAX_ITER}
+            )
             return res.x, res.fun
 
         # Create GP
         self.gp = GaussianProcessRegressor(
             kernel=kernel,
             normalize_y=True,
-            n_restarts_optimizer=0,
-            alpha=1e-6,
+            n_restarts_optimizer=GP_N_RESTARTS,
+            alpha=GP_ALPHA_NOISE,
             optimizer=optimizer,
         )
 
