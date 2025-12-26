@@ -123,6 +123,33 @@ class ActivationJob(Job):
         if not self.success or self.grid_idx in self.sampler.population:
             return None
 
+        # Check if we have speculative state to merge (speculation was correct!)
+        if hasattr(self.sampler, 'speculative_population') and \
+           self.grid_idx in self.sampler.speculative_population:
+            spec_state = self.sampler.speculative_population[self.grid_idx]
+
+            # Use speculative state instead of newly evaluated state
+            # This saves the evaluations we just did (they were unnecessary)
+            self.sampler.population[self.grid_idx] = {
+                'continuous_params': spec_state['continuous_params'].copy(),
+                'fitnesses': spec_state['fitnesses'].copy(),
+                'best_fitness': spec_state['best_fitness'],
+                'status': 'active',
+                'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
+                'last_update_gen': self.sampler.current_generation,
+                'optimizer_state': None
+            }
+
+            self.sampler.active_grid_indices.add(self.grid_idx)
+
+            # Track initial activations for wavefront prediction
+            if hasattr(self.sampler, '_initial_activation_indices'):
+                if len(self.sampler._initial_activation_indices) < 10:  # Track first few activations
+                    self.sampler._initial_activation_indices.add(self.grid_idx)
+
+            # Note: Speculation manager will clean up spec state on next check
+            return None
+
         best_fitness = np.max(self.fitnesses)
         self.sampler.profile_likelihood_grid[self.grid_idx] = best_fitness
 
@@ -160,5 +187,10 @@ class ActivationJob(Job):
             }
 
         self.sampler.active_grid_indices.add(self.grid_idx)
+
+        # Track initial activations for wavefront prediction
+        if hasattr(self.sampler, '_initial_activation_indices'):
+            if len(self.sampler._initial_activation_indices) < 10:  # Track first few activations
+                self.sampler._initial_activation_indices.add(self.grid_idx)
 
         return None

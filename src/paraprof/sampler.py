@@ -338,6 +338,17 @@ class ProfileProjector:
                 'eps_multiplier': 3.0,
                 'projection_weight': 1.0,
             },
+
+            # Speculative evaluation parameters
+            'speculation': {
+                'enabled': True,
+                'max_depth': 2,
+                'worker_fraction': 0.3,
+                'strategies': ['neighbor_proximity', 'wavefront_extrapolation', 'neighbor_interpolation'],
+                'auto_tune': True,
+                'min_accuracy_threshold': 0.5,
+                'discard_stale_after': 60.0,
+            },
         }
 
         # Merge with advanced_config if provided
@@ -417,6 +428,15 @@ class ProfileProjector:
         self.clustering_eps_multiplier = config['clustering']['eps_multiplier']
         self.clustering_projection_weight = config['clustering']['projection_weight']
 
+        # Speculation configuration
+        self.enable_speculation = config['speculation']['enabled']
+        self.speculation_max_depth = config['speculation']['max_depth']
+        self.speculation_worker_fraction = config['speculation']['worker_fraction']
+        self.speculation_strategies = config['speculation']['strategies']
+        self.speculation_auto_tune = config['speculation']['auto_tune']
+        self.speculation_min_accuracy_threshold = config['speculation']['min_accuracy_threshold']
+        self.speculation_discard_stale_after = config['speculation']['discard_stale_after']
+
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         # Always initialize buffer (unconditional - makes code robust)
@@ -470,6 +490,7 @@ class ProfileProjector:
         self.population = {} # {grid_idx: state_dict}
         self.active_grid_indices = set()
         self.pending_activation_indices = set() # For dynamic activation
+        self._initial_activation_indices = set()  # Track initial activations for wavefront prediction
         self.current_generation = 0 # DE generation
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
@@ -1196,6 +1217,54 @@ class ProfileProjector:
         # Yield results
         for neighbor in neighbors:
             yield neighbor
+
+    def _grid_idx_to_coords(self, grid_idx):
+        """
+        Convert grid index tuple to coordinate array (for speculation).
+
+        Parameters
+        ----------
+        grid_idx : tuple
+            Grid indices
+
+        Returns
+        -------
+        np.ndarray
+            Coordinate array
+        """
+        return np.array(grid_idx)
+
+    def _coords_to_grid_idx(self, coords):
+        """
+        Convert coordinate array to grid index tuple (for speculation).
+
+        Parameters
+        ----------
+        coords : np.ndarray
+            Coordinate array
+
+        Returns
+        -------
+        tuple
+            Grid indices
+        """
+        return tuple(coords.astype(int))
+
+    def _coords_in_bounds(self, coords):
+        """
+        Check if coordinates are within grid bounds (for speculation).
+
+        Parameters
+        ----------
+        coords : np.ndarray
+            Coordinate array
+
+        Returns
+        -------
+        bool
+            True if within bounds
+        """
+        return all(0 <= c < s for c, s in zip(coords, self.grid_shape))
 
 
     def _update_global_pool(self, full_params, fitness, grid_idx):

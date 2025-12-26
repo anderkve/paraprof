@@ -6,6 +6,7 @@ import numpy as np
 import sys
 
 from .logger import setup_logger
+from .speculation_manager import SpeculationManager
 
 try:
     from mpi4py import MPI
@@ -378,6 +379,9 @@ def master_main(comm, sampler,
 
     active_jobs = {} # {job_id: Job object}
 
+    # Initialize speculation manager
+    speculation_manager = SpeculationManager(sampler)
+
     # Create priority task queues
     high_prio_tasks = collections.deque()
     low_prio_tasks = collections.deque()
@@ -707,8 +711,19 @@ def master_main(comm, sampler,
 
             # Register the call centrally (only if not screened out by emulator)
             was_screened = result.get('emulator_screened', False)
+            is_speculative = result['context'].get('is_speculative', False)
+
             if not was_screened:
-                sampler._register_target_call(result['params'], result['target_val'])
+                if is_speculative:
+                    # Process speculative result through speculation manager
+                    speculation_manager.process_speculative_result(result)
+                else:
+                    # Normal result processing
+                    sampler._register_target_call(result['params'], result['target_val'])
+
+            # Skip job processing for speculative tasks (they don't have job_id)
+            if is_speculative:
+                continue
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:
@@ -790,6 +805,36 @@ def master_main(comm, sampler,
             req = comm.isend(task, dest=worker_rank)
             pending_sends.append(req)
             tasks_sent += 1
+
+        # --- 3b. Dispatch speculative tasks to remaining free workers ---
+        if free_workers and sampler.enable_speculation:
+            # Generate speculative tasks based on predictions
+            speculative_tasks = speculation_manager.create_speculative_tasks(
+                free_worker_count=len(free_workers),
+                active_jobs=active_jobs
+            )
+
+            # Dispatch speculative tasks (lowest priority, after all definite work)
+            for task in speculative_tasks:
+                if not free_workers:
+                    break
+                worker_rank = free_workers.pop(0)
+
+                # Mark task as speculative
+                task['context']['is_speculative'] = True
+
+                req = comm.isend(task, dest=worker_rank)
+                pending_sends.append(req)
+                tasks_sent += 1
+
+        # Periodically check for successful speculative activations and merge
+        speculation_manager.check_and_merge_activations()
+
+        # Clean up stale speculative state
+        speculation_manager.cleanup_stale_speculative_state()
+
+        # Log metrics periodically
+        speculation_manager.log_metrics_if_needed()
 
         # --- 4. No Sleep Needed ---
         # Iprobe() is non-blocking and very lightweight, so no sleep is needed.
