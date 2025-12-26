@@ -1114,16 +1114,36 @@ class ProfileProjector:
 
 
     def _get_grid_indices_from_point(self, point, grid_axes=None):
-        """Converts a point's projection coordinates to the closest grid indices."""
+        """Converts a point's projection coordinates to the closest grid indices.
+
+        This function exploits the fact that grid_axes is regularly spaced (created
+        via np.linspace) to achieve O(1) lookup instead of O(N) linear search.
+        """
         if grid_axes is None:
             grid_axes = self.grid_axes
 
         grid_coords = point[self.projection_dims]
         indices = []
+
         for i, coord in enumerate(grid_coords):
             axis = grid_axes[i]
-            index = np.argmin(np.abs(axis - coord))
+            n_points = len(axis)
+
+            # Direct calculation for regularly-spaced grid (O(1) instead of O(N))
+            grid_min = axis[0]
+            grid_max = axis[-1]
+
+            # Compute normalized position [0, 1] in the grid
+            normalized_pos = (coord - grid_min) / (grid_max - grid_min)
+
+            # Map to grid index and round to nearest
+            index = int(round(normalized_pos * (n_points - 1)))
+
+            # Clamp to valid range [0, n_points-1]
+            index = np.clip(index, 0, n_points - 1)
+
             indices.append(index)
+
         return tuple(indices)
 
 
