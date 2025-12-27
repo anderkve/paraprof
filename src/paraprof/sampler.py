@@ -12,6 +12,105 @@ from .jobs.de_job import DEGridPointJob
 from .jobs.cd_job import CoordinateDescentJob
 
 
+# ============================================================================
+# Configuration Constants - Default Values
+# ============================================================================
+
+# Initial optimization defaults
+DEFAULT_INITIAL_OPT_MULTIPLIER = 20
+"""Multiplier for calculating number of initial optimizations (n_dims * multiplier)"""
+
+DEFAULT_INITIAL_OPT_MAX = 100
+"""Maximum number of initial optimizations regardless of dimensionality"""
+
+# Global pool and memory defaults
+DEFAULT_GLOBAL_POOL_SIZE = 10000
+"""Maximum number of samples kept in global solution pool"""
+
+MEMORY_SIZE_MULTIPLIER = 25
+"""Multiplier for calculating DE/CMA-ES memory size (max_grid_size * multiplier)"""
+
+CONVERGENCE_THRESHOLD_DIVISOR = 1000
+"""Divisor for calculating convergence threshold from ROI threshold"""
+
+# Differential Evolution (DE) defaults
+DEFAULT_DE_PBEST_FRACTION = 0.1
+"""Fraction of top performers to use in pbest archive for DE mutation"""
+
+DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
+"""Probability of using neighbor-based mutation in DE"""
+
+DEFAULT_DE_CONVERGENCE_WINDOW = 3
+"""Number of generations to track for convergence detection"""
+
+DEFAULT_DE_NUM_GENERATIONS = 100000
+"""Default maximum number of DE generations"""
+
+# L-BFGS-B defaults
+DEFAULT_LBFGSB_FTOL = 1e-9
+"""Function tolerance for L-BFGS-B convergence"""
+
+# Patching defaults
+DEFAULT_PATCHING_N_NEIGHBORS = 1
+"""Number of neighbors to consider during patching refinement"""
+
+# Activation defaults
+DEFAULT_ACTIVATION_MIX_NEIGHBOR_FRACTION = 0.5
+"""Fraction of population initialized from neighbor samples"""
+
+DEFAULT_ACTIVATION_MIX_GLOBAL_FRACTION = 0.25
+"""Fraction of population initialized from global pool"""
+
+DEFAULT_ACTIVATION_MIX_RANDOM_FRACTION = 0.25
+"""Fraction of population initialized randomly (LHS)"""
+
+# Emulator defaults
+DEFAULT_EMULATOR_CONFIDENCE_THRESHOLD = 2.0
+"""Beta parameter for Upper Confidence Bound in emulator screening"""
+
+DEFAULT_EMULATOR_MIN_NEIGHBORS = 10
+"""Minimum number of neighbors for building local emulator"""
+
+DEFAULT_EMULATOR_MAX_NEIGHBORS = 100
+"""Maximum number of neighbors for building local emulator"""
+
+DEFAULT_EMULATOR_LENGTH_SCALE = 1.0
+"""RBF kernel length scale for Gaussian Process emulator"""
+
+DEFAULT_EMULATOR_NOISE_LEVEL = 0.01
+"""White noise level for GP emulator regularization"""
+
+# Coordinate Descent defaults
+DEFAULT_CD_MAX_CYCLES = 3
+"""Maximum number of coordinate descent cycles"""
+
+DEFAULT_CD_STEP_FRACTION = 0.01
+"""Step size as fraction of parameter bounds for coordinate descent"""
+
+# CMA-ES defaults
+DEFAULT_CMAES_MAX_GENERATIONS = 100
+"""Maximum generations per CMA-ES optimization run"""
+
+DEFAULT_CMAES_NUM_GENERATIONS = 100000
+"""Total CMA-ES iteration budget across all grid points"""
+
+CMAES_LAMBDA_BASE = 4
+"""Base constant for CMA-ES lambda (population size) formula"""
+
+CMAES_LAMBDA_LOG_COEFFICIENT = 3
+"""Coefficient for log term in CMA-ES lambda formula: lambda = base + coef * log(n)"""
+
+CMAES_MU_DIVISOR = 2
+"""Divisor for calculating CMA-ES mu (parents) from lambda: mu = lambda / divisor"""
+
+# Clustering defaults
+DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
+"""Multiplier for automatic DBSCAN epsilon estimation"""
+
+DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
+"""Weight for projection dimensions in clustering distance metric"""
+
+
 class ProfileProjector:
     """
     Profile Likelihood Projector for computing profile likelihood projections.
@@ -272,61 +371,68 @@ class ProfileProjector:
 
         # Set n_initial_optimizations with smart default if not provided
         if n_initial_optimizations is None:
-            n_initial_optimizations = min(100, 20 * self.dims)
+            n_initial_optimizations = min(
+                DEFAULT_INITIAL_OPT_MAX,
+                DEFAULT_INITIAL_OPT_MULTIPLIER * self.dims
+            )
 
         config = {
             # Auto-configured parameters
-            'global_pool_size': 10000,
-            'memory_size': max_grid_size * 25,
-            'convergence_threshold': roi_threshold / 1000,
+            'global_pool_size': DEFAULT_GLOBAL_POOL_SIZE,
+            'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
+            'convergence_threshold': roi_threshold / CONVERGENCE_THRESHOLD_DIVISOR,
 
             # DE parameters
             'de': {
                 'mutation_strategy': 'current-to-pbest/1',
-                'pbest_fraction': 0.1,
-                'neighbor_pull_probability': 0.5,
-                'convergence_window': 3,
-                'num_generations': 100000,
+                'pbest_fraction': DEFAULT_DE_PBEST_FRACTION,
+                'neighbor_pull_probability': DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY,
+                'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
+                'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
             },
 
             # L-BFGS-B parameters
             'lbfgsb': {
-                'ftol': 1e-9,
+                'ftol': DEFAULT_LBFGSB_FTOL,
                 'gradient_method': 'forward',
             },
 
             # Patching parameters
             'patching': {
-                'n_neighbors': 1,
+                'n_neighbors': DEFAULT_PATCHING_N_NEIGHBORS,
             },
 
             # Activation parameters
             'activation': {
-                'mix_ratios': {'neighbors': 0.5, 'global': 0.25, 'random': 0.25},
+                'mix_ratios': {
+                    'neighbors': DEFAULT_ACTIVATION_MIX_NEIGHBOR_FRACTION,
+                    'global': DEFAULT_ACTIVATION_MIX_GLOBAL_FRACTION,
+                    'random': DEFAULT_ACTIVATION_MIX_RANDOM_FRACTION
+                },
             },
 
             # Emulator parameters
             'emulator': {
-                'confidence_threshold': 2.0,
-                'min_neighbors': 10,
-                'max_neighbors': 100,
-                'length_scale': 1.0,
-                'noise_level': 0.01,
+                'confidence_threshold': DEFAULT_EMULATOR_CONFIDENCE_THRESHOLD,
+                'min_neighbors': DEFAULT_EMULATOR_MIN_NEIGHBORS,
+                'max_neighbors': DEFAULT_EMULATOR_MAX_NEIGHBORS,
+                'length_scale': DEFAULT_EMULATOR_LENGTH_SCALE,
+                'noise_level': DEFAULT_EMULATOR_NOISE_LEVEL,
             },
 
             # Coordinate Descent parameters
             'cd': {
-                'max_cycles': 3,
-                'step_fraction': 0.01,
+                'max_cycles': DEFAULT_CD_MAX_CYCLES,
+                'step_fraction': DEFAULT_CD_STEP_FRACTION,
             },
 
             # CMA-ES parameters
             'cmaes': {
                 'lambda': None,  # Will be auto-configured per projection
                 'mu': None,      # Will be auto-configured per projection
-                'max_generations': 100,
-                'num_generations': 100000,
+                'max_generations': DEFAULT_CMAES_MAX_GENERATIONS,
+                'num_generations': DEFAULT_CMAES_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
             },
 
@@ -335,8 +441,8 @@ class ProfileProjector:
                 'method': 'dbscan',
                 'eps': None,  # Auto-estimated
                 'min_samples': None,  # Auto-configured
-                'eps_multiplier': 3.0,
-                'projection_weight': 1.0,
+                'eps_multiplier': DEFAULT_CLUSTERING_EPS_MULTIPLIER,
+                'projection_weight': DEFAULT_CLUSTERING_PROJECTION_WEIGHT,
             },
         }
 
@@ -394,14 +500,16 @@ class ProfileProjector:
         cmaes_lambda = config['cmaes']['lambda']
         cmaes_mu = config['cmaes']['mu']
         if cmaes_lambda is None:
-            self.cmaes_lambda_base = lambda n: int(4 + 3 * np.log(max(n, 1)))
+            self.cmaes_lambda_base = lambda n: int(
+                CMAES_LAMBDA_BASE + CMAES_LAMBDA_LOG_COEFFICIENT * np.log(max(n, 1))
+            )
             self.cmaes_lambda = None
         else:
             self.cmaes_lambda_base = None
             self.cmaes_lambda = cmaes_lambda
 
         if cmaes_mu is None:
-            self.cmaes_mu_base = lambda lam: int(lam / 2)
+            self.cmaes_mu_base = lambda lam: int(lam / CMAES_MU_DIVISOR)
             self.cmaes_mu = None
         else:
             self.cmaes_mu_base = None
