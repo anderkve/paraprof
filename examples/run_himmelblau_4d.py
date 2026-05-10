@@ -66,39 +66,18 @@ if myrank == 0:
     max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
 
     advanced_config = {
-        # Override auto-configured parameters
-        'global_pool_size': 10000,                # Default: 10000 (already good)
-        'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25 = 3750
-        'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000 = 0.004
+        'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25
+        'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000
 
-        # Fine-tune Differential Evolution
         'de': {
-            'mutation_strategy': 'current-to-pbest/1',  # Default (best performer)
-            'pbest_fraction': 0.1,                      # Default: 0.1
-            'neighbor_pull_probability': 0.5,           # Default: 0.5
-            'convergence_window': 3,                    # Default: 3
-            'num_generations': 100000,                  # Default: 100000
-            'max_num_to_evolve': None,                  # Default: None (all grid points)
+            'convergence_window': 3,              # Default: 3
+            'num_generations': 100000,            # Default: 100000
+            'max_num_to_evolve': None,            # Default: None (all grid points)
         },
 
-        # Fine-tune L-BFGS-B
         'lbfgsb': {
-            'ftol': 1e-9,                              # Default: 1e-9
-            'gradient_method': 'forward',              # Default: 'forward' (faster than 'central')
-        },
-
-        # Patching parameters
-        'patching': {
-            'n_neighbors': 1,                          # Default: 1 (test more neighbors for this problem)
-        },
-
-        # Activation mixing ratios
-        'activation': {
-            'mix_ratios': {
-                'neighbors': 0.5,                      # Default: 0.5
-                'global': 0.25,                        # Default: 0.25
-                'random': 0.25,                        # Default: 0.25
-            },
+            'ftol': 1e-9,                         # Default: 1e-9
+            'gradient_method': 'forward',         # Default: 'forward' (use 'central' for higher accuracy at ~50% more calls)
         },
 
         # Clustering parameters (only used if use_clustering=True during refinement)
