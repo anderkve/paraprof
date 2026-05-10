@@ -436,7 +436,7 @@ def prepare_emulator_cache_for_worker(sampler, center_params, min_points=10, max
         Returns None if insufficient data or emulator disabled
     """
     # Check if pre-screening is enabled
-    if not getattr(sampler, 'use_de_prescreening', False):
+    if not getattr(sampler, 'use_emulator', False):
         return None
 
     if not SKLEARN_AVAILABLE:

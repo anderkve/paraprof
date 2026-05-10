@@ -86,7 +86,6 @@ if myrank == 0:
         comm=comm,
         sampler=sampler,
         projections=projections,
-        num_generations=1000,
         save_plots=True
     )
 
@@ -133,14 +132,11 @@ ParaProf uses a **grid-based optimization** strategy with multiple algorithm opt
 The `examples/` directory contains several demonstration scripts:
 
 ```bash
-# 2D projection (default)
+# Himmelblau 4D with 1D and 2D projections
 mpiexec -n 4 python examples/run_himmelblau_4d.py
 
-# Multiple 1D projections
-mpiexec -n 4 python examples/run_himmelblau_1d.py
-
-# 3D projection
-mpiexec -n 4 python examples/run_himmelblau_3d.py
+# Rosenbrock 4D
+mpiexec -n 4 python examples/run_rosenbrock_4d.py
 ```
 
 ## Configuration
@@ -148,26 +144,30 @@ mpiexec -n 4 python examples/run_himmelblau_3d.py
 ### Key Parameters
 
 - `pop_per_grid_point`: Population size per grid point (default: 1)
-- `mutation_strategy`: DE mutation strategy ('current-to-rand/1', 'rand/1', 'current-to-pbest/1')
 - `n_initial_optimizations`: Number of global L-BFGS-B optimizations (default: min(100, 20*n_dims))
 - `roi_threshold`: Region of interest threshold in χ² units (default: 3.0)
-- `convergence_threshold`: DE convergence threshold (default: 1e-5)
 - `max_patching_waves`: Maximum patching iterations (default: 10)
-- `use_de_prescreening`: Enable emulator-based trial filtering (default: False)
-- `emulator_confidence_threshold`: UCB exploration parameter (default: 2.0)
+- `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per optimization (default: 50)
+- `lbfgsb_polish`: Apply L-BFGS-B polish after DE/CMA-ES (default: True)
+- `use_emulator`: Enable GP-based trial pre-screening (default: False)
+- `samples_output_file`: Path to CSV log of all evaluations (default: None)
+
+Expert tuning is exposed via the `advanced_config` dict (see the docstring of `ProfileProjector.__init__`).
 
 ### Projection Options
 
-Each projection can specify:
+Each projection is a dict. Required keys:
 
 - `dims`: List of parameter indices to project
 - `grid_points`: Grid resolution per dimension
-- `optimization_method`: Optimization algorithm ('de', 'lbfgsb') (default: 'de')
-- `lbfgsb_refinement`: Enable L-BFGS-B refinement after DE (default: True)
-- `patching_coarse`: Enable patching on coarse grid (default: True)
-- `enable_refinement`: Enable grid refinement (default: False)
-- `refinement_factor`: Refinement multiplier (default: 2)
-- `patching_refined`: Enable patching on refined grid (default: False)
+
+Optional keys:
+
+- `optimization_method`: `'de'`, `'lbfgsb'`, or `'cmaes'` (default: `'de'`)
+- `patch_coarse_grid`: Enable patching on the coarse grid (default: `True`)
+- `patch_refined_grid`: Enable patching on the refined grid (default: `False`)
+- `grid_refinement_factor`: Integer multiplier; values > 1 enable a refinement run (default: no refinement)
+- `refinement_method`: Interpolation method for refinement (default: `'linear'`)
 
 ## Visualization
 
