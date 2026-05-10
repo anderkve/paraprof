@@ -36,17 +36,22 @@ CONVERGENCE_THRESHOLD_DIVISOR = 1000
 """Divisor for calculating convergence threshold from ROI threshold"""
 
 # Differential Evolution (DE) defaults
+DEFAULT_DE_MUTATION_STRATEGY = 'current-to-pbest/1'
+"""DE mutation strategy. Hidden — sensitivity benchmarks show all three
+supported strategies (current-to-pbest/1, rand/1, current-to-rand/1) give
+equivalent grid quality."""
+
 DEFAULT_DE_PBEST_FRACTION = 0.1
-"""Fraction of top performers to use in pbest archive for DE mutation"""
+"""Fraction of top performers used in pbest archive for DE mutation. Hidden."""
 
 DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
-"""Probability of using neighbor-based mutation in DE"""
+"""Probability of using neighbor-based mutation in DE. Hidden."""
 
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
-"""Number of generations to track for convergence detection"""
+"""Number of generations to track for convergence detection."""
 
 DEFAULT_DE_NUM_GENERATIONS = 100000
-"""Default maximum number of DE generations"""
+"""Default maximum number of DE generations."""
 
 # L-BFGS-B defaults
 DEFAULT_LBFGSB_FTOL = 1e-9
@@ -54,17 +59,17 @@ DEFAULT_LBFGSB_FTOL = 1e-9
 
 # Patching defaults
 DEFAULT_PATCHING_N_NEIGHBORS = 1
-"""Number of neighbors to consider during patching refinement"""
+"""Number of neighbors to consider during patching refinement. Hidden."""
 
-# Activation defaults
-DEFAULT_ACTIVATION_MIX_NEIGHBOR_FRACTION = 0.5
-"""Fraction of population initialized from neighbor samples"""
-
-DEFAULT_ACTIVATION_MIX_GLOBAL_FRACTION = 0.25
-"""Fraction of population initialized from global pool"""
-
-DEFAULT_ACTIVATION_MIX_RANDOM_FRACTION = 0.25
-"""Fraction of population initialized randomly (LHS)"""
+# Activation defaults — defaults dominate the algorithm; tuning only made
+# results worse in benchmarks, so the mix is fixed.
+DEFAULT_ACTIVATION_MIX_RATIOS = {
+    'neighbors': 0.5,
+    'global':    0.25,
+    'random':    0.25,
+}
+"""Activation-population mix ratios (neighbours / global pool / random LHS).
+Hidden — defaults dominate; user-tuning only degraded benchmarks."""
 
 
 # Clustering defaults
@@ -160,14 +165,10 @@ class ProfileProjector:
         advanced_config : dict, optional
             Dictionary for expert-level parameter tuning. Structure:
             {
-                'global_pool_size': int,           # Default: 10000
                 'memory_size': int,                # Default: max(grid_sizes) * 25
                 'convergence_threshold': float,    # Default: roi_threshold / 1000
 
                 'de': {
-                    'mutation_strategy': str,      # Default: 'current-to-pbest/1'
-                    'pbest_fraction': float,       # Default: 0.1
-                    'neighbor_pull_probability': float,  # Default: 0.5
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
@@ -178,14 +179,6 @@ class ProfileProjector:
                     'gradient_method': str,        # Default: 'forward'
                 },
 
-                'patching': {
-                    'n_neighbors': int,            # Default: 1
-                },
-
-                'activation': {
-                    'mix_ratios': dict,            # Default: {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
-                },
-
                 'clustering': {
                     'method': str,                 # Default: 'dbscan'
                     'eps': float,                  # Default: None (auto-estimated)
@@ -194,6 +187,12 @@ class ProfileProjector:
                     'projection_weight': float,    # Default: 1.0
                 },
             }
+
+        Several DE knobs that did not show measurable effect on grid quality
+        in benchmarking (mutation_strategy, pbest_fraction,
+        neighbor_pull_probability, global_pool_size, patching.n_neighbors,
+        activation.mix_ratios) are now module-level constants in sampler.py
+        and are no longer user-tunable.
         """
         # --- Input Validation ---
 
@@ -309,46 +308,24 @@ class ProfileProjector:
             )
 
         config = {
-            # Auto-configured parameters
-            'global_pool_size': DEFAULT_GLOBAL_POOL_SIZE,
             'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
             'convergence_threshold': roi_threshold / CONVERGENCE_THRESHOLD_DIVISOR,
 
-            # DE parameters
             'de': {
-                'mutation_strategy': 'current-to-pbest/1',
-                'pbest_fraction': DEFAULT_DE_PBEST_FRACTION,
-                'neighbor_pull_probability': DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY,
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
             },
 
-            # L-BFGS-B parameters
             'lbfgsb': {
                 'ftol': DEFAULT_LBFGSB_FTOL,
                 'gradient_method': 'forward',
             },
 
-            # Patching parameters
-            'patching': {
-                'n_neighbors': DEFAULT_PATCHING_N_NEIGHBORS,
-            },
-
-            # Activation parameters
-            'activation': {
-                'mix_ratios': {
-                    'neighbors': DEFAULT_ACTIVATION_MIX_NEIGHBOR_FRACTION,
-                    'global': DEFAULT_ACTIVATION_MIX_GLOBAL_FRACTION,
-                    'random': DEFAULT_ACTIVATION_MIX_RANDOM_FRACTION
-                },
-            },
-
-            # Clustering parameters
             'clustering': {
                 'method': 'dbscan',
-                'eps': None,  # Auto-estimated
-                'min_samples': None,  # Auto-configured
+                'eps': None,
+                'min_samples': None,
                 'eps_multiplier': DEFAULT_CLUSTERING_EPS_MULTIPLIER,
                 'projection_weight': DEFAULT_CLUSTERING_PROJECTION_WEIGHT,
             },
@@ -369,14 +346,10 @@ class ProfileProjector:
         self.use_clustering = use_clustering
 
         # Store advanced config values
-        self.global_pool_size = config['global_pool_size']
         self.memory_size = config['memory_size']
         self.convergence_threshold = config['convergence_threshold']
 
         # DE configuration
-        self.mutation_strategy = config['de']['mutation_strategy']
-        self.pbest_fraction = config['de']['pbest_fraction']
-        self.neighbor_pull_probability = config['de']['neighbor_pull_probability']
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
@@ -385,11 +358,15 @@ class ProfileProjector:
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
         self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
 
-        # Patching configuration
-        self.patching_n_neighbors = config['patching']['n_neighbors']
-
-        # Activation configuration
-        self.activation_mix_ratios = config['activation']['mix_ratios']
+        # Hidden knobs (kept as instance attributes for read-site compatibility,
+        # sourced from module-level constants — see sensitivity benchmarks for
+        # rationale)
+        self.global_pool_size = DEFAULT_GLOBAL_POOL_SIZE
+        self.mutation_strategy = DEFAULT_DE_MUTATION_STRATEGY
+        self.pbest_fraction = DEFAULT_DE_PBEST_FRACTION
+        self.neighbor_pull_probability = DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY
+        self.patching_n_neighbors = DEFAULT_PATCHING_N_NEIGHBORS
+        self.activation_mix_ratios = DEFAULT_ACTIVATION_MIX_RATIOS
 
         # Clustering configuration
         self.clustering_method = config['clustering']['method']
