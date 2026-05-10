@@ -102,8 +102,6 @@ if myrank == 0:
         max_patching_waves=20,
         lbfgsb_max_iter=10,
         n_initial_optimizations=100,
-        # Enable emulator for speedup
-        use_emulator=True,
         # I/O
         samples_output_file=output_file,
         # Advanced config
@@ -113,11 +111,6 @@ if myrank == 0:
                 'num_generations': 100000,
                 'max_num_to_evolve': None,
             },
-            'emulator': {
-                'max_neighbors': 200,
-                'confidence_threshold': -1.0,
-                'noise_level': 0.0001,
-            }
         }
     ) as sampler:
 

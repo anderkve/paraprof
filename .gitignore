@@ -230,3 +230,7 @@ results_*/
 
 # Test files in root (not in tests/ directory)
 /test_*.py
+
+# Local sensitivity / scratch scripts (Claude Code agent)
+/_*.py
+/_*.sh
