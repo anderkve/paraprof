@@ -1,0 +1,70 @@
+# Example ScannerBit configuration block for the paraprof plugin.
+# Drop the relevant pieces into your full GAMBIT YAML file. Run with:
+#
+#     mpirun -n 5 gambit -f your_yaml_file.yaml
+#
+# (1 master rank + 4 worker ranks).
+
+Parameters:
+  MyModel:
+    par_1:
+      range: [-5.0, 5.0]
+    par_2:
+      range: [-5.0, 5.0]
+    par_3:
+      range: [-5.0, 5.0]
+    par_4:
+      range: [-5.0, 5.0]
+
+Printer:
+  printer: hdf5
+  options:
+    output_file: "paraprof_run.hdf5"
+    group: "/data"
+
+Scanner:
+  use_scanner: paraprof
+
+  scanners:
+
+    paraprof:
+      plugin: paraprof
+      like: LogLike
+
+      # Required: list of projections. Each projection may use parameter
+      # names (matching the Parameters block) or integer indices in 'dims'.
+      projections:
+        - dims: ["MyModel::par_1", "MyModel::par_2"]
+          grid_points: [50, 50]
+          optimization_method: de
+          grid_refinement_factor: 2
+          patch_refined_grid: true
+        - dims: ["MyModel::par_3", "MyModel::par_4"]
+          grid_points: [50, 50]
+          optimization_method: de
+        - dims: ["MyModel::par_1"]
+          grid_points: [100]
+
+      # ParaProf tuning (all optional; defaults follow paraprof's own).
+      roi_threshold: 4.0
+      pop_per_grid_point: 3
+      n_initial_optimizations: 80
+      max_patching_waves: 20
+      lbfgsb_max_iter: 20
+      lbfgsb_polish: true
+      use_clustering: true
+      refinement_direct_eval: false
+
+      # Optional advanced configuration forwarded verbatim to paraprof.
+      advanced_config:
+        de:
+          convergence_window: 3
+        lbfgsb:
+          ftol: 1.0e-9
+
+      # Optional paraprof-side diagnostics.
+      save_plots: true
+      plot_settings:
+        dpi: 200
+        filetype: png
+      # samples_output_file: paraprof_samples.csv  # optional, rank-0 only

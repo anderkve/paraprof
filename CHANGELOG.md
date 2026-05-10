@@ -12,6 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `examples/run_rosenbrock_4d_simple.py` showing the trimmed user API.
 - New module-level constants in `sampler.py` for the DE/activation/patching
   knobs that benchmarking showed do not affect ROI grid quality.
+- **Host-framework integration API** for embedding paraprof inside an
+  external master/worker MPI loop (e.g. as a ScannerBit plugin):
+  - `worker_main(comm, myrank, target_func=None)` accepts a pre-supplied
+    target function instead of waiting on `comm.bcast`. Useful when the
+    target function is a bound method that cannot be pickled.
+  - `ProfileProjector(parameter_names=...)` enables projection `dims` to
+    be specified by parameter name (string), in addition to integer index.
+  - New `paraprof.run_scan(comm, sampler, projections, ...,
+    broadcast_target_func=True)` convenience helper that bundles the
+    target-function broadcast, `run_all_projections`, and `terminate_workers`
+    into a single master-side call.
+- `GAMBIT_plugin/gambit_paraprof.py`: ScannerBit plugin that exposes
+  paraprof as a scanner inside GAMBIT, plus `GAMBIT_plugin/README.md` and
+  a `paraprof_example.yaml` snippet.
 
 ### Changed
 - **Trimmed the user-tunable surface by roughly 2/3.** After the cleanup
