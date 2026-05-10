@@ -6,10 +6,12 @@ import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
 from .logger import get_logger
+from .exceptions import (
+    InvalidBoundsError, InvalidProjectionError, ConfigurationError,
+)
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
-from .jobs.cd_job import CoordinateDescentJob
 
 
 # ============================================================================
@@ -28,7 +30,7 @@ DEFAULT_GLOBAL_POOL_SIZE = 10000
 """Maximum number of samples kept in global solution pool"""
 
 MEMORY_SIZE_MULTIPLIER = 25
-"""Multiplier for calculating DE/CMA-ES memory size (max_grid_size * multiplier)"""
+"""Multiplier for calculating DE memory size (max_grid_size * multiplier)"""
 
 CONVERGENCE_THRESHOLD_DIVISOR = 1000
 """Divisor for calculating convergence threshold from ROI threshold"""
@@ -64,44 +66,6 @@ DEFAULT_ACTIVATION_MIX_GLOBAL_FRACTION = 0.25
 DEFAULT_ACTIVATION_MIX_RANDOM_FRACTION = 0.25
 """Fraction of population initialized randomly (LHS)"""
 
-# Emulator defaults
-DEFAULT_EMULATOR_CONFIDENCE_THRESHOLD = 2.0
-"""Beta parameter for Upper Confidence Bound in emulator screening"""
-
-DEFAULT_EMULATOR_MIN_NEIGHBORS = 10
-"""Minimum number of neighbors for building local emulator"""
-
-DEFAULT_EMULATOR_MAX_NEIGHBORS = 100
-"""Maximum number of neighbors for building local emulator"""
-
-DEFAULT_EMULATOR_LENGTH_SCALE = 1.0
-"""RBF kernel length scale for Gaussian Process emulator"""
-
-DEFAULT_EMULATOR_NOISE_LEVEL = 0.01
-"""White noise level for GP emulator regularization"""
-
-# Coordinate Descent defaults
-DEFAULT_CD_MAX_CYCLES = 3
-"""Maximum number of coordinate descent cycles"""
-
-DEFAULT_CD_STEP_FRACTION = 0.01
-"""Step size as fraction of parameter bounds for coordinate descent"""
-
-# CMA-ES defaults
-DEFAULT_CMAES_MAX_GENERATIONS = 100
-"""Maximum generations per CMA-ES optimization run"""
-
-DEFAULT_CMAES_NUM_GENERATIONS = 100000
-"""Total CMA-ES iteration budget across all grid points"""
-
-CMAES_LAMBDA_BASE = 4
-"""Base constant for CMA-ES lambda (population size) formula"""
-
-CMAES_LAMBDA_LOG_COEFFICIENT = 3
-"""Coefficient for log term in CMA-ES lambda formula: lambda = base + coef * log(n)"""
-
-CMAES_MU_DIVISOR = 2
-"""Divisor for calculating CMA-ES mu (parents) from lambda: mu = lambda / divisor"""
 
 # Clustering defaults
 DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
@@ -116,9 +80,8 @@ class ProfileProjector:
     Profile Likelihood Projector for computing profile likelihood projections.
 
     This class primarily holds state and configuration for grid-based profile
-    likelihood computation. It supports multiple optimization algorithms including
-    differential evolution (DE), L-BFGS-B, and CMA-ES. The execution logic
-    is in the Job classes and master_main.
+    likelihood computation. It supports differential evolution (DE) and L-BFGS-B
+    optimization. The execution logic is in the Job classes and master_main.
     """
     def __init__(self,
                  target_func,
@@ -133,9 +96,7 @@ class ProfileProjector:
                  n_initial_optimizations=None,
                  initial_points=None,
                  # Feature toggles
-                 use_emulator=False,
                  use_clustering=True,
-                 use_cd_refinement=True,
                  refinement_direct_eval=False,
                  # I/O
                  samples_output_file=None,
@@ -168,8 +129,8 @@ class ProfileProjector:
             Maximum L-BFGS-B iterations per optimization (default: 50)
             Typical values: 10-50. Higher = more thorough local optimization
         lbfgsb_polish : bool, optional
-            Apply L-BFGS-B polishing step after DE/CMA-ES optimization (default: True)
-            Refines solutions found by evolutionary algorithms using gradient-based optimization
+            Apply L-BFGS-B polishing step after DE optimization (default: True)
+            Refines solutions found by DE using gradient-based optimization
         n_initial_optimizations : int, optional
             Number of global L-BFGS-B optimizations to find initial maxima (default: None)
             If None, auto-configured as min(100, 20 * n_dims)
@@ -182,15 +143,9 @@ class ProfileProjector:
 
         Feature Toggles
         ---------------
-        use_emulator : bool, optional
-            Enable GP-based trial pre-screening (default: False)
-            Can reduce evaluations by 30-50% but requires scikit-learn
         use_clustering : bool, optional
             Enable mode detection for multi-modal refinement (default: True)
             Helps handle multiple basins during grid refinement
-        use_cd_refinement : bool, optional
-            Use coordinate descent for refinement (default: True)
-            If False, uses L-BFGS-B (slower but potentially more accurate)
         refinement_direct_eval : bool, optional
             Skip optimization during refinement, just evaluate interpolated points (default: False)
             True = fast, False = thorough
@@ -231,27 +186,6 @@ class ProfileProjector:
                     'mix_ratios': dict,            # Default: {'neighbors': 0.5, 'global': 0.25, 'random': 0.25}
                 },
 
-                'emulator': {
-                    'confidence_threshold': float,  # Default: 2.0
-                    'min_neighbors': int,          # Default: 10
-                    'max_neighbors': int,          # Default: 100
-                    'length_scale': float,         # Default: 1.0
-                    'noise_level': float,          # Default: 0.01
-                },
-
-                'cd': {
-                    'max_cycles': int,             # Default: 3
-                    'step_fraction': float,        # Default: 0.01
-                },
-
-                'cmaes': {
-                    'lambda': int,                 # Default: 4 + floor(3*log(n_cont_dims))
-                    'mu': int,                     # Default: lambda/2
-                    'max_generations': int,        # Default: 100
-                    'num_generations': int,        # Default: 100000
-                    'max_num_to_evolve': int,      # Default: None (all grid points)
-                },
-
                 'clustering': {
                     'method': str,                 # Default: 'dbscan'
                     'eps': float,                  # Default: None (auto-estimated)
@@ -261,8 +195,6 @@ class ProfileProjector:
                 },
             }
         """
-        from .exceptions import InvalidBoundsError, InvalidProjectionError, ConfigurationError
-
         # --- Input Validation ---
 
         # Validate target function
@@ -412,30 +344,6 @@ class ProfileProjector:
                 },
             },
 
-            # Emulator parameters
-            'emulator': {
-                'confidence_threshold': DEFAULT_EMULATOR_CONFIDENCE_THRESHOLD,
-                'min_neighbors': DEFAULT_EMULATOR_MIN_NEIGHBORS,
-                'max_neighbors': DEFAULT_EMULATOR_MAX_NEIGHBORS,
-                'length_scale': DEFAULT_EMULATOR_LENGTH_SCALE,
-                'noise_level': DEFAULT_EMULATOR_NOISE_LEVEL,
-            },
-
-            # Coordinate Descent parameters
-            'cd': {
-                'max_cycles': DEFAULT_CD_MAX_CYCLES,
-                'step_fraction': DEFAULT_CD_STEP_FRACTION,
-            },
-
-            # CMA-ES parameters
-            'cmaes': {
-                'lambda': None,  # Will be auto-configured per projection
-                'mu': None,      # Will be auto-configured per projection
-                'max_generations': DEFAULT_CMAES_MAX_GENERATIONS,
-                'num_generations': DEFAULT_CMAES_NUM_GENERATIONS,
-                'max_num_to_evolve': None,
-            },
-
             # Clustering parameters
             'clustering': {
                 'method': 'dbscan',
@@ -458,7 +366,6 @@ class ProfileProjector:
         self.n_initial_optimizations = n_initial_optimizations
         self.initial_points = initial_points
         self.refinement_direct_eval = refinement_direct_eval
-        self.use_cd_refinement = use_cd_refinement
         self.use_clustering = use_clustering
 
         # Store advanced config values
@@ -483,40 +390,6 @@ class ProfileProjector:
 
         # Activation configuration
         self.activation_mix_ratios = config['activation']['mix_ratios']
-
-        # Emulator configuration
-        self.use_emulator = use_emulator
-        self.emulator_confidence_threshold = config['emulator']['confidence_threshold']
-        self.emulator_min_neighbors = config['emulator']['min_neighbors']
-        self.emulator_max_neighbors = config['emulator']['max_neighbors']
-        self.emulator_length_scale = config['emulator']['length_scale']
-        self.emulator_noise_level = config['emulator']['noise_level']
-
-        # Coordinate Descent configuration
-        self.cd_max_cycles = config['cd']['max_cycles']
-        self.cd_step_fraction = config['cd']['step_fraction']
-
-        # CMA-ES configuration
-        cmaes_lambda = config['cmaes']['lambda']
-        cmaes_mu = config['cmaes']['mu']
-        if cmaes_lambda is None:
-            self.cmaes_lambda_base = lambda n: int(
-                CMAES_LAMBDA_BASE + CMAES_LAMBDA_LOG_COEFFICIENT * np.log(max(n, 1))
-            )
-            self.cmaes_lambda = None
-        else:
-            self.cmaes_lambda_base = None
-            self.cmaes_lambda = cmaes_lambda
-
-        if cmaes_mu is None:
-            self.cmaes_mu_base = lambda lam: int(lam / CMAES_MU_DIVISOR)
-            self.cmaes_mu = None
-        else:
-            self.cmaes_mu_base = None
-            self.cmaes_mu = cmaes_mu
-        self.cmaes_max_generations = config['cmaes']['max_generations']
-        self.cmaes_num_generations = config['cmaes']['num_generations']
-        self.cmaes_max_num_to_evolve = config['cmaes']['max_num_to_evolve']
 
         # Clustering configuration
         self.clustering_method = config['clustering']['method']
@@ -545,19 +418,6 @@ class ProfileProjector:
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
-
-        # --- Evaluation cache for emulator training ---
-        # Per-grid-point local caches for efficient emulator training
-        self.local_eval_caches = {}  # {grid_idx: [{'params': ..., 'fitness': ..., 'call_number': ...}, ...]}
-        self.local_cache_max_size = 500 # 5000  # Much smaller per grid point
-
-        # Keep small global cache for initial optimizations (before grid activation)
-        self.global_eval_cache = []
-        self.global_cache_max_size = 5000
-
-        # --- DE pre-screening statistics ---
-        self.de_trials_generated = 0
-        self.de_trials_screened_out = 0
 
         # --- Initial points tracking ---
         self._initial_points_evaluated = False
@@ -634,7 +494,7 @@ class ProfileProjector:
         self.optimization_method = projection_config.get('optimization_method', 'de')
 
         # Validate optimization method
-        valid_methods = ['de', 'lbfgsb', 'cmaes']
+        valid_methods = ['de', 'lbfgsb']
         if self.optimization_method not in valid_methods:
             raise ConfigurationError(
                 f"Invalid optimization_method: '{self.optimization_method}'. "
@@ -651,10 +511,6 @@ class ProfileProjector:
         self.logger.info(f"  Optimization method: {self.optimization_method}")
         if self.optimization_method == 'de':
             self.logger.info(f"  L-BFGS-B polish after DE: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
-        elif self.optimization_method == 'cmaes':
-            # Note: lambda/mu will be set after computing n_cont_dims below
-            self.logger.info(f"  CMA-ES max generations: {self.cmaes_max_generations}")
-            self.logger.info(f"  L-BFGS-B polish after CMA-ES: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
         self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patch_coarse_grid else 'Disabled'}")
         if self.is_refinement_run:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patch_refined_grid else 'Disabled'}")
@@ -662,18 +518,6 @@ class ProfileProjector:
         self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
         self.n_cont_dims = len(self.continuous_dims)
-
-        # Initialize CMA-ES population sizes based on continuous dimensions
-        if self.optimization_method == 'cmaes':
-            # Set lambda and mu based on continuous dimensions if not explicitly set
-            if self.cmaes_lambda_base is not None:
-                self.cmaes_lambda = max(4, self.cmaes_lambda_base(self.n_cont_dims))
-            if self.cmaes_mu_base is not None and self.cmaes_lambda is not None:
-                self.cmaes_mu = max(2, self.cmaes_mu_base(self.cmaes_lambda))
-
-            # Log CMA-ES configuration
-            self.logger.info(f"  CMA-ES lambda (population size): {self.cmaes_lambda}")
-            self.logger.info(f"  CMA-ES mu (parents): {self.cmaes_mu}")
 
         # Detect direct evaluation mode (no continuous dimensions to optimize)
         self.direct_eval_mode = (self.n_cont_dims == 0)
@@ -1042,18 +886,20 @@ class ProfileProjector:
         Note: __del__ is unreliable and may not be called. Always use
         explicit close() or context manager pattern instead.
         """
-        if not self._file_closed:
-            import warnings
-            warnings.warn(
-                "ProfileProjector was not explicitly closed. "
-                "Use context manager or call close() to ensure data is saved.",
-                ResourceWarning,
-                stacklevel=2
-            )
-            try:
-                self._close_sample_file()
-            except Exception:
-                pass  # Best effort in __del__
+        # Guard against partially-initialised objects (e.g. when __init__ raised)
+        if getattr(self, '_file_closed', True):
+            return
+        import warnings
+        warnings.warn(
+            "ProfileProjector was not explicitly closed. "
+            "Use context manager or call close() to ensure data is saved.",
+            ResourceWarning,
+            stacklevel=2
+        )
+        try:
+            self._close_sample_file()
+        except Exception:
+            pass  # Best effort in __del__
 
     def _close_sample_file(self):
         """Close the sample output file and flush any remaining data."""
@@ -1113,113 +959,8 @@ class ProfileProjector:
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
 
-        # Add to eval cache for emulator training (only if pre-screening enabled)
-        if self.use_emulator:
-            # Determine which grid point this evaluation belongs to
-            # If we can map it to a grid point, add to local cache; otherwise add to global cache
-            try:
-                grid_idx = self._get_grid_indices_from_point(params)
-
-                # Add to local cache for this grid point
-                if grid_idx not in self.local_eval_caches:
-                    self.local_eval_caches[grid_idx] = []
-
-                self.local_eval_caches[grid_idx].append({
-                    'params': params.copy(),
-                    'fitness': target_val,
-                    'call_number': self.target_calls
-                })
-
-                # Prune local cache if too large
-                # Only prune when reaching 2x max size to reduce pruning frequency
-                if len(self.local_eval_caches[grid_idx]) > 2 * self.local_cache_max_size:
-                    self._prune_local_cache(grid_idx)
-
-            except (AttributeError, KeyError):
-                # Grid not yet initialized or point outside grid - add to global cache
-                # This handles initial L-BFGS-B optimizations before grid activation
-                self.global_eval_cache.append({
-                    'params': params.copy(),
-                    'fitness': target_val,
-                    'call_number': self.target_calls
-                })
-
-                # Prune global cache if too large
-                if len(self.global_eval_cache) > self.global_cache_max_size:
-                    self.global_eval_cache = self._prune_global_cache()
-
         # Updating global max is now handled by the jobs
         # to ensure it happens at the right time (e.g., after refinement).
-
-    def _prune_local_cache(self, grid_idx):
-        """
-        Prunes local eval cache for a specific grid point.
-
-        Strategy: Keep top 50% by fitness + most recent 50% by call number.
-
-        Parameters
-        ----------
-        grid_idx : tuple
-            Grid index of the cache to prune
-        """
-        cache = self.local_eval_caches[grid_idx]
-        target_size = self.local_cache_max_size
-
-        # Sort by fitness (keep best)
-        sorted_by_fitness = sorted(cache, key=lambda x: x['fitness'], reverse=True)
-        keep_best = sorted_by_fitness[:target_size // 2]
-
-        # Sort by recency (keep recent)
-        sorted_by_time = sorted(cache, key=lambda x: x['call_number'], reverse=True)
-        keep_recent = sorted_by_time[:target_size // 2]
-
-        # Merge and deduplicate by call_number
-        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
-        pruned = list(combined.values())
-
-        self.local_eval_caches[grid_idx] = pruned
-
-        self.logger.debug(
-            f"Pruned local cache for grid {grid_idx} from {len(cache)} to {len(pruned)} entries"
-        )
-
-    def _prune_global_cache(self):
-        """
-        Prunes global eval cache to max size, keeping best and most recent evaluations.
-
-        Strategy: Keep top 50% by fitness + most recent 50% by call number.
-
-        Returns
-        -------
-        list
-            Pruned evaluation cache
-        """
-        # Sort by fitness (keep best)
-        sorted_by_fitness = sorted(
-            self.global_eval_cache,
-            key=lambda x: x['fitness'],
-            reverse=True
-        )
-        keep_best = sorted_by_fitness[:self.global_cache_max_size // 2]
-
-        # Sort by recency (keep recent)
-        sorted_by_time = sorted(
-            self.global_eval_cache,
-            key=lambda x: x['call_number'],
-            reverse=True
-        )
-        keep_recent = sorted_by_time[:self.global_cache_max_size // 2]
-
-        # Merge and deduplicate by call_number
-        combined = {e['call_number']: e for e in (keep_best + keep_recent)}
-        pruned = list(combined.values())
-
-        self.logger.debug(
-            f"Pruned global cache from {len(self.global_eval_cache)} to {len(pruned)} entries"
-        )
-
-        return pruned
-
 
     def _get_grid_indices_from_point(self, point, grid_axes=None):
         """Converts a point's projection coordinates to the closest grid indices.
@@ -1762,8 +1503,7 @@ class ProfileProjector:
         Returns
         -------
         jobs : list
-            List of ActivationJob (if refinement_direct_eval=True),
-            CoordinateDescentJob, or LBFGSBJob objects
+            List of ActivationJob (if refinement_direct_eval=True) or LBFGSBJob objects
         next_job_id : int
             Updated job ID counter
         """
@@ -1948,32 +1688,18 @@ class ProfileProjector:
                         job.fitnesses = np.full(1, -np.inf)
                         job.evals_remaining = 1
                     else:
-                        # Optimization mode: create optimization job (CD or L-BFGS-B)
-                        if self.use_cd_refinement:
-                            job = CoordinateDescentJob(
-                                job_id=next_job_id,
-                                job_type='REFINEMENT_CD',
-                                sampler=self,
-                                opt_dims=tuple(self.continuous_dims),
-                                start_params=start_params_partial,
-                                grid_idx=fine_idx,
-                                start_params_full=start_params_full,
-                                start_fitness=-np.inf,
-                                max_cycles=self.cd_max_cycles,
-                                step_fraction=self.cd_step_fraction
-                            )
-                        else:
-                            job = LBFGSBJob(
-                                job_id=next_job_id,
-                                job_type='REFINEMENT_LBFGSB',
-                                sampler=self,
-                                opt_dims=tuple(self.continuous_dims),
-                                start_params=start_params_partial,
-                                grid_idx=fine_idx,
-                                start_params_full=start_params_full,
-                                seed_history=None,
-                                start_fitness=-np.inf
-                            )
+                        # Optimization mode: create L-BFGS-B refinement job
+                        job = LBFGSBJob(
+                            job_id=next_job_id,
+                            job_type='REFINEMENT_LBFGSB',
+                            sampler=self,
+                            opt_dims=tuple(self.continuous_dims),
+                            start_params=start_params_partial,
+                            grid_idx=fine_idx,
+                            start_params_full=start_params_full,
+                            seed_history=None,
+                            start_fitness=-np.inf
+                        )
                     jobs.append(job)
                     lbfgsb_job_created_for_grid_points.add(fine_idx)
                     next_job_id += 1
@@ -1988,7 +1714,7 @@ class ProfileProjector:
                 self.logger.info(f"--- Multi-candidate evaluations: {n_multi_candidate} grid points with multiple clusters ---")
                 self.logger.info(f"--- Single-candidate evaluations: {n_single_candidate} grid points ---")
         else:
-            opt_method = "CD" if self.use_cd_refinement else "LBFGSB"
+            opt_method = "LBFGSB"
         self.logger.info(f"--- Generating {len(jobs)} refinement {opt_method} jobs ---")
         return jobs, next_job_id
 
@@ -2082,89 +1808,6 @@ class ProfileProjector:
             self.memory_F[self.memory_idx] = muF
             self.memory_CR[self.memory_idx] = muCR
             self.memory_idx = (self.memory_idx + 1) % self.memory_size
-
-    def create_cmaes_generation_jobs(self, next_job_id, max_num_to_evolve):
-        """
-        Generates all CMAESGridPointJobs for one generation.
-
-        Similar to DE generation, but for CMA-ES optimization.
-
-        Parameters
-        ----------
-        next_job_id : int
-            Next available job ID
-        max_num_to_evolve : int or None
-            Maximum number of grid points to evolve (None = all)
-
-        Returns
-        -------
-        jobs : list
-            List of CMAESGridPointJob instances
-        next_job_id : int
-            Updated job ID counter
-        """
-        from .jobs.cmaes_job import CMAESGridPointJob
-
-        # Find unconverged points (status 'active' means not yet converged)
-        unconverged_indices = [idx for idx, state in self.population.items() if state['status'] == 'active']
-
-        if not unconverged_indices:
-            self.logger.info("All active points have converged. Ending CMA-ES phase.")
-            # Debug: log status distribution
-            status_counts = {}
-            for state in self.population.values():
-                status = state['status']
-                status_counts[status] = status_counts.get(status, 0) + 1
-            self.logger.debug(f"Status distribution: {status_counts}")
-            return [], next_job_id
-
-        # --- Prioritize which grid points to evolve ---
-        # Use same prioritization as DE: fitness + improvement rate
-        priority_scores = []
-        for idx in unconverged_indices:
-            state = self.population[idx]
-            fitness_score = max(0, state['best_fitness'] - (self.global_max_target_val - 2 * self.roi_threshold))
-            improvement_rate = np.mean(state['improvement_history']) if state['improvement_history'] else 0
-            improvement_score = improvement_rate * 10
-            pri_score = fitness_score + improvement_score + (1./len(unconverged_indices))
-            priority_scores.append(pri_score)
-
-        priority_scores = np.array(priority_scores)
-        probabilities = priority_scores / np.sum(priority_scores)
-
-        if max_num_to_evolve is not None:
-            num_to_evolve = min(len(unconverged_indices), max_num_to_evolve)
-        else:
-            num_to_evolve = len(unconverged_indices)
-
-        if num_to_evolve == 0:
-             return [], next_job_id
-
-        indices_to_process_map = np.random.choice(
-            np.arange(len(unconverged_indices)),
-            size=num_to_evolve,
-            replace=False,
-            p=probabilities
-        )
-        indices_to_process = [unconverged_indices[i] for i in indices_to_process_map]
-
-        # --- Create CMA-ES jobs for selected grid points ---
-        jobs = []
-        for grid_idx in indices_to_process:
-            job = CMAESGridPointJob(
-                job_id=next_job_id,
-                sampler=self,
-                grid_idx=grid_idx,
-                # For first generation, jobs will initialize from neighbors
-                # For subsequent generations, they continue with their own state
-                initial_mean=None,
-                initial_sigma=None,
-                initial_C=None
-            )
-            jobs.append(job)
-            next_job_id += 1
-
-        return jobs, next_job_id
 
     def create_LBFGSB_job_for_point(self, grid_idx, next_job_id):
         """

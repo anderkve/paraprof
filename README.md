@@ -4,19 +4,18 @@
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**ParaProf** is a high-performance Python package for computing profile likelihood projections using parallelized grid-based optimization. It efficiently explores parameter spaces by strategically placing populations on grid points and dynamically activating regions of interest. It supports multiple optimization algorithms including differential evolution (DE), L-BFGS-B, and CMA-ES.
+**ParaProf** is a Python package for computing profile likelihood projections using parallelized grid-based optimization. It places populations on grid points and dynamically activates regions of interest, optimizing the remaining parameters at each grid point with differential evolution (DE) or L-BFGS-B.
 
 ## Key Features
 
-- 🚀 **Parallel Execution**: MPI-based master-worker architecture for efficient parallelization
-- 📊 **N-Dimensional Projections**: Supports 1D, 2D, 3D, and higher-dimensional profile likelihood grids
-- 🎯 **Adaptive Sampling**: Dynamic grid activation focuses computational effort on high-likelihood regions
-- 🔄 **Grid Refinement**: Interpolation-based refinement for increased resolution without full re-computation
-- 🔧 **Patching Algorithm**: Wave-based gradient refinement to escape local optima
-- 🧠 **Emulator-Enhanced Sampling**: Optional GP-based trial pre-screening reduces evaluations by 30-50%
-- 📈 **Built-in Visualization**: Automatic plotting for 1D, 2D, and N-D projections
-- 🧪 **Benchmark Suite**: Comprehensive test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
-- 💾 **Warm Starting**: Reuse results across multiple projections
+- **Parallel Execution**: MPI-based master-worker architecture
+- **N-Dimensional Projections**: 1D, 2D, 3D, and higher-dimensional profile likelihood grids
+- **Adaptive Sampling**: Dynamic grid activation focuses effort on high-likelihood regions
+- **Grid Refinement**: Interpolation-based refinement for increased resolution without full re-computation
+- **Patching Algorithm**: Wave-based refinement to escape local optima
+- **Built-in Visualization**: Plotting for 1D, 2D, and N-D projections
+- **Benchmark Suite**: Test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
+- **Warm Starting**: Reuse results across multiple projections
 
 ## Installation
 
@@ -32,9 +31,6 @@ pip install -e .
 # With visualization support
 pip install -e ".[viz]"
 
-# With emulator support (recommended for 30-50% fewer evaluations)
-pip install -e ".[emulator]"
-
 # With development tools
 pip install -e ".[dev]"
 
@@ -49,7 +45,7 @@ pip install -e ".[all]"
 - SciPy
 - mpi4py (requires MPI implementation like OpenMPI or MPICH)
 - Matplotlib (optional, for visualization)
-- scikit-learn (optional, for emulator-based optimization)
+- scikit-learn (optional, for clustering during refinement)
 
 ## Quick Start
 
@@ -148,8 +144,7 @@ mpiexec -n 4 python examples/run_rosenbrock_4d.py
 - `roi_threshold`: Region of interest threshold in χ² units (default: 3.0)
 - `max_patching_waves`: Maximum patching iterations (default: 10)
 - `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per optimization (default: 50)
-- `lbfgsb_polish`: Apply L-BFGS-B polish after DE/CMA-ES (default: True)
-- `use_emulator`: Enable GP-based trial pre-screening (default: False)
+- `lbfgsb_polish`: Apply L-BFGS-B polish after DE (default: True)
 - `samples_output_file`: Path to CSV log of all evaluations (default: None)
 
 Expert tuning is exposed via the `advanced_config` dict (see the docstring of `ProfileProjector.__init__`).
@@ -163,7 +158,7 @@ Each projection is a dict. Required keys:
 
 Optional keys:
 
-- `optimization_method`: `'de'`, `'lbfgsb'`, or `'cmaes'` (default: `'de'`)
+- `optimization_method`: `'de'` or `'lbfgsb'` (default: `'de'`)
 - `patch_coarse_grid`: Enable patching on the coarse grid (default: `True`)
 - `patch_refined_grid`: Enable patching on the refined grid (default: `False`)
 - `grid_refinement_factor`: Integer multiplier; values > 1 enable a refinement run (default: no refinement)

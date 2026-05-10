@@ -102,12 +102,3 @@ class TestProfileProjector:
                 projections=[invalid_projection],
             )
 
-    def test_mutation_strategy_validation(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        """Test that invalid mutation strategies are rejected."""
-        with pytest.raises(ValueError, match="mutation_strategy"):
-            sampler = ProfileProjector(
-                target_func=simple_2d_function,
-                bounds=simple_bounds_2d,
-                projections=[basic_projection_2d],
-                mutation_strategy='invalid-strategy',
-            )
