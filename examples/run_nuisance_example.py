@@ -50,7 +50,6 @@ PROJECTIONS_TO_RUN = [
 
     # 2D projection over first two POI parameters
     # {'dims': [0, 1], 'grid_points': [100, 100], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
-    # {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'cmaes', 'patch_coarse_grid': False, 'patch_refined_grid': True, 'grid_refinement_factor': 2},
 
     {'dims': [0, 1], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
     {'dims': [0, 2], 'grid_points': [50, 50], 'optimization_method': 'lbfgsb', 'patch_coarse_grid': True, 'patch_refined_grid': True, 'grid_refinement_factor': 3},
@@ -147,7 +146,6 @@ if myrank == 0:
         n_initial_optimizations=100,
         # Feature toggles
         refinement_direct_eval=True,  # Fast interpolation for nuisance parameters
-        use_cd_refinement=False,       # Use L-BFGS-B for refinement
         # I/O
         samples_output_file=output_file,
         # Advanced config

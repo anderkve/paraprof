@@ -22,14 +22,6 @@ DE_F_MAX_VALUE = 1.0
 DE_MIN_PARENT_POOL_SIZE = 3
 """Minimum number of parents required in pool to perform DE mutation"""
 
-# Try to import emulator utilities
-try:
-    from ..emulator_utils import prepare_emulator_cache_for_worker
-    EMULATOR_AVAILABLE = True
-except ImportError:
-    EMULATOR_AVAILABLE = False
-    logger.debug("Emulator utilities not available")
-
 
 class DEGridPointJob(Job):
     """
@@ -56,16 +48,11 @@ class DEGridPointJob(Job):
         # Store trial info to process results
         self.trial_info = {} # {point_idx: (trial_params, F_i, CR_i)}
 
-        # Track pre-screening statistics
-        self.trials_generated = 0
-        self.trials_screened_out = 0
-
 
     def start(self):
         """Generate all trial points and return their evaluation tasks."""
         # Direct evaluation mode: no continuous dimensions, so no evolution needed
         if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
-            # Grid point already evaluated by ActivationJob, mark as converged
             self.success = True
             self._is_finished = True
             return []
@@ -134,56 +121,33 @@ class DEGridPointJob(Job):
                     if not (np.array_equal(r2_p['continuous_params'], x_pbest) or
                             np.array_equal(r3_p['continuous_params'], x_pbest)):
                         break
-                # Use r2_p, r3_p even if they match (negligible probability with large pools)
 
                 r2, r3 = r2_p['continuous_params'], r3_p['continuous_params']
                 mutant = x_i_params + F_i * (x_pbest - x_i_params) + F_i * (r2 - r3)
 
             if mutant is None:
-                self.evals_remaining -= 1 # This individual won't be evaluated
+                self.evals_remaining -= 1
                 continue
 
-            # Crossover first, then apply bounds once (avoids intermediate array)
             cross_points = np.random.rand(self.sampler.n_cont_dims) < CR_i
             if not np.any(cross_points):
                 cross_points[np.random.randint(0, self.sampler.n_cont_dims)] = True
             trial_params = np.where(cross_points, mutant, x_i_params)
 
-            # Apply bounds after crossover
             trial_params = self.sampler._ensure_bounds(trial_params, self.sampler.continuous_dims)
 
-            # Track trial generation
-            self.trials_generated += 1
-
-            # Construct full params
             full_trial_params = self.sampler._construct_params(self.grid_idx, trial_params)
-            target_fitness = grid_state['fitnesses'][i]
 
-            # Store info needed when result comes back
             self.trial_info[i] = (trial_params, F_i, CR_i)
-
-            # === PREPARE EMULATOR DATA FOR WORKER-SIDE PRE-SCREENING ===
-            emulator_cache = None
-            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_emulator', False):
-                emulator_cache = prepare_emulator_cache_for_worker(
-                    sampler=self.sampler,
-                    center_params=full_trial_params,
-                    min_points=self.sampler.emulator_min_neighbors,
-                    max_points=getattr(self.sampler, 'emulator_max_neighbors', None),
-                    grid_idx=self.grid_idx  # Pass grid index for local cache gathering
-                )
-            # === END EMULATOR PREPARATION ===
 
             context = {
                 'type': self.type,
                 'job_id': self.id,
                 'point_idx': i,
-                'target_fitness': target_fitness  # Worker needs this for UCB comparison
             }
             task = {
                 'params': full_trial_params,
                 'context': context,
-                'emulator_cache': emulator_cache  # None if disabled or insufficient data
             }
             tasks.append(task)
 
@@ -191,37 +155,11 @@ class DEGridPointJob(Job):
             self.success = True
             self._is_finished = True
 
-        # Update global statistics (trials_generated tracked here, screened_out tracked in process_result)
-        self.sampler.de_trials_generated += self.trials_generated
-
         return tasks
 
     def process_result(self, result):
         """Compare trial fitness with target and store successful F/CR."""
         point_idx = result['context']['point_idx']
-
-        # Check if trial was screened out by worker-side emulator
-        was_screened = result.get('emulator_screened', False)
-        if was_screened:
-            # Worker rejected this trial - count it and skip
-            self.trials_screened_out += 1
-            self.sampler.de_trials_screened_out += 1
-
-            self.evals_remaining -= 1
-            if self.evals_remaining <= 0:
-                self.success = True
-                self._is_finished = True
-                # Log pre-screening effectiveness for this job
-                if self.trials_generated > 0 and self.sampler.use_emulator:
-                    screen_rate = 100 * self.trials_screened_out / self.trials_generated
-                    logger.info(
-                        f"DE job {self.id} (grid {self.grid_idx}): "
-                        f"Screened out {self.trials_screened_out}/{self.trials_generated} "
-                        f"trials ({screen_rate:.1f}%)"
-                    )
-            return []
-
-        # Normal evaluation result
         trial_fitness = result['target_val']
 
         if point_idx not in self.trial_info:
@@ -236,10 +174,8 @@ class DEGridPointJob(Job):
         grid_state = self.grid_state
 
         if trial_fitness > grid_state['fitnesses'][point_idx]:
-            # Success! Update the individual
             grid_state['continuous_params'][point_idx] = trial_params
             grid_state['fitnesses'][point_idx] = trial_fitness
-            # Append to the shared lists
             self.successful_F_list.append(F_i)
             self.successful_CR_list.append(CR_i)
 
@@ -247,16 +183,8 @@ class DEGridPointJob(Job):
         if self.evals_remaining <= 0:
             self.success = True
             self._is_finished = True
-            # Log pre-screening effectiveness for this job
-            if self.trials_generated > 0 and self.sampler.use_emulator:
-                screen_rate = 100 * self.trials_screened_out / self.trials_generated
-                logger.info(
-                    f"DE job {self.id} (grid {self.grid_idx}): "
-                    f"Screened out {self.trials_screened_out}/{self.trials_generated} "
-                    f"trials ({screen_rate:.1f}%)"
-                )
 
-        return [] # No new tasks
+        return []
 
     def on_finish(self, next_job_id):
         """
@@ -266,7 +194,6 @@ class DEGridPointJob(Job):
         if not self.success:
             return None
 
-        # Direct evaluation mode: already marked as converged by ActivationJob
         if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
             return None
 
@@ -284,14 +211,11 @@ class DEGridPointJob(Job):
             if new_best_fitness > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = new_best_fitness
 
-            # Update global solution pool with improved solution
             best_idx = np.argmax(grid_state['fitnesses'])
             best_continuous_params = grid_state['continuous_params'][best_idx]
-            # Construct full parameter vector for the pool
             full_params = self.sampler._construct_params(self.grid_idx, best_continuous_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
-        # Check for convergence
         if grid_state['status'] == 'active' and \
            len(grid_state['improvement_history']) == self.sampler.convergence_window:
 

@@ -61,7 +61,7 @@ def run_projection(comm, sampler, projection_config,
         MPI communicator
     sampler : ProfileProjector
         The sampler instance (already configured with num_generations and max_num_to_evolve
-        in advanced_config['de'] or advanced_config['cmaes'])
+        in advanced_config['de'])
     projection_config : dict
         Projection configuration. Required keys:
         - 'dims': list of int - projection dimension indices
@@ -321,8 +321,7 @@ def master_main(comm, sampler,
         MPI communicator
     sampler : ProfileProjector
         The sampler instance (contains num_generations and max_num_to_evolve
-        in de_num_generations, de_max_num_to_evolve, cmaes_num_generations,
-        cmaes_max_num_to_evolve)
+        in de_num_generations, de_max_num_to_evolve)
     plot_settings : dict, optional
         Plot settings dictionary with keys:
         - 'dpi': int (default: 300)
@@ -361,8 +360,6 @@ def master_main(comm, sampler,
             stages.append('DE_LOOP')
         elif sampler.optimization_method == 'lbfgsb':
             stages.append('LBFGSB_LOOP')
-        elif sampler.optimization_method == 'cmaes':
-            stages.append('CMAES_LOOP')
 
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
@@ -388,7 +385,7 @@ def master_main(comm, sampler,
         if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
-            # DE_GRID_POINT, CMAES_GRID_POINT, ACTIVATION go to low priority
+            # DE_GRID_POINT, ACTIVATION go to low priority
             low_prio_tasks.extend(tasks)
 
     next_job_id = 0
@@ -578,46 +575,6 @@ def master_main(comm, sampler,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-            elif current_stage == 'CMAES_LOOP':
-                # Iterative CMA-ES optimization with dynamic activation
-                # Similar to LBFGSB_LOOP but using CMA-ES
-                # This stage loops: after CMA-ES jobs complete, check for new activations
-                # and create new CMA-ES jobs for them
-
-                # Count status distribution before creating jobs
-                total_grid_points = len(sampler.population)
-                active_count_before = len([s for s in sampler.population.values() if s['status'] == 'active'])
-
-                # Create CMA-ES jobs for all active (non-converged) grid points
-                new_cmaes_jobs, next_job_id = sampler.create_cmaes_generation_jobs(next_job_id, sampler.cmaes_max_num_to_evolve)
-
-                # Create dynamic activation jobs for neighbors of high-likelihood points
-                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
-                new_jobs = new_cmaes_jobs + new_act_jobs
-
-                # --- Print iteration summary ---
-                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
-                converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
-                newly_activated_count = len(new_act_jobs)
-
-                if new_jobs:  # Only log if we created jobs
-                    logger.info(f"CMA-ES Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
-                          f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
-                          f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                          f"New Activations: {newly_activated_count:3d} | "
-                          f"CMA-ES Jobs: {len(new_cmaes_jobs):3d}")
-                else:
-                    logger.info(f"CMA-ES Loop: No jobs to create. Active points at start: {active_count_before}, after activation: {active_count}")
-
-                # Check convergence: no active jobs and no new activations
-                if not new_jobs:
-                    logger.info("--- Master: CMAES_LOOP converged (no active points, no new activations). ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                # Important: Do NOT move to next stage - stay in CMAES_LOOP
-                # The stage will re-run after these jobs complete to check for new activations
-
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
                 patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
@@ -693,8 +650,8 @@ def master_main(comm, sampler,
                 _queue_tasks(initial_tasks, job.type)
 
             # If we just finished a non-looping stage, advance to the next
-            # Looping stages: DE_LOOP, LBFGSB_LOOP, CMAES_LOOP (they re-run after jobs complete)
-            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'CMAES_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
+            # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
+            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---
@@ -705,10 +662,7 @@ def master_main(comm, sampler,
             free_workers.append(worker_rank)
             tasks_completed += 1
 
-            # Register the call centrally (only if not screened out by emulator)
-            was_screened = result.get('emulator_screened', False)
-            if not was_screened:
-                sampler._register_target_call(result['params'], result['target_val'])
+            sampler._register_target_call(result['params'], result['target_val'])
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:
