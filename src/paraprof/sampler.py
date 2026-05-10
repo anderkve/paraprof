@@ -485,7 +485,7 @@ class ProfileProjector:
         self.activation_mix_ratios = config['activation']['mix_ratios']
 
         # Emulator configuration
-        self.use_de_prescreening = use_emulator
+        self.use_emulator = use_emulator
         self.emulator_confidence_threshold = config['emulator']['confidence_threshold']
         self.emulator_min_neighbors = config['emulator']['min_neighbors']
         self.emulator_max_neighbors = config['emulator']['max_neighbors']
@@ -583,7 +583,7 @@ class ProfileProjector:
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
         self.optimization_method = 'de'  # Default optimization method
-        self.lbfgsb_refinement = lbfgsb_polish  # Apply L-BFGS-B polishing after DE/CMA-ES
+        self.lbfgsb_polish = lbfgsb_polish
         self.patch_coarse_grid = True  # Default to True (controlled per-projection)
         self.patch_refined_grid = False  # Default to False (controlled per-projection)
 
@@ -650,11 +650,11 @@ class ProfileProjector:
         # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
         if self.optimization_method == 'de':
-            self.logger.info(f"  L-BFGS-B refinement after DE: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
+            self.logger.info(f"  L-BFGS-B polish after DE: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
         elif self.optimization_method == 'cmaes':
             # Note: lambda/mu will be set after computing n_cont_dims below
             self.logger.info(f"  CMA-ES max generations: {self.cmaes_max_generations}")
-            self.logger.info(f"  L-BFGS-B refinement after CMA-ES: {'Enabled' if self.lbfgsb_refinement else 'Disabled'}")
+            self.logger.info(f"  L-BFGS-B polish after CMA-ES: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
         self.logger.info(f"  Patching on coarse grid: {'Enabled' if self.patch_coarse_grid else 'Disabled'}")
         if self.is_refinement_run:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patch_refined_grid else 'Disabled'}")
@@ -1114,7 +1114,7 @@ class ProfileProjector:
                 self._flush_samples_buffer()
 
         # Add to eval cache for emulator training (only if pre-screening enabled)
-        if self.use_de_prescreening:
+        if self.use_emulator:
             # Determine which grid point this evaluation belongs to
             # If we can map it to a grid point, add to local cache; otherwise add to global cache
             try:

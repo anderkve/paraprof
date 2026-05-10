@@ -12,7 +12,7 @@ def test_de_prescreening_disabled():
     # Create mock sampler with pre-screening disabled
     class MockSampler:
         def __init__(self):
-            self.use_de_prescreening = False
+            self.use_emulator = False
             self.pop_per_grid_point = 3
             self.n_cont_dims = 2
             self.continuous_dims = [2, 3]
@@ -71,7 +71,7 @@ def test_de_job_tracking_statistics():
     # Create mock sampler
     class MockSampler:
         def __init__(self):
-            self.use_de_prescreening = False
+            self.use_emulator = False
             self.pop_per_grid_point = 5
             self.n_cont_dims = 2
             self.continuous_dims = [2, 3]
@@ -137,7 +137,7 @@ def test_de_prescreening_screen_method():
     # Create mock sampler with pre-screening enabled
     class MockSampler:
         def __init__(self):
-            self.use_de_prescreening = True
+            self.use_emulator = True
             self.emulator_confidence_threshold = 2.0
             self.emulator_min_neighbors = 10
             self.pop_per_grid_point = 1
@@ -188,7 +188,7 @@ def test_de_prescreening_disabled_when_sklearn_missing():
     if not EMULATOR_AVAILABLE:
         class MockSampler:
             def __init__(self):
-                self.use_de_prescreening = True  # User enabled it
+                self.use_emulator = True  # User enabled it
                 self.pop_per_grid_point = 1
 
         sampler = MockSampler()

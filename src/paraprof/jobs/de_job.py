@@ -164,7 +164,7 @@ class DEGridPointJob(Job):
 
             # === PREPARE EMULATOR DATA FOR WORKER-SIDE PRE-SCREENING ===
             emulator_cache = None
-            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_de_prescreening', False):
+            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_emulator', False):
                 emulator_cache = prepare_emulator_cache_for_worker(
                     sampler=self.sampler,
                     center_params=full_trial_params,
@@ -212,7 +212,7 @@ class DEGridPointJob(Job):
                 self.success = True
                 self._is_finished = True
                 # Log pre-screening effectiveness for this job
-                if self.trials_generated > 0 and self.sampler.use_de_prescreening:
+                if self.trials_generated > 0 and self.sampler.use_emulator:
                     screen_rate = 100 * self.trials_screened_out / self.trials_generated
                     logger.info(
                         f"DE job {self.id} (grid {self.grid_idx}): "
@@ -248,7 +248,7 @@ class DEGridPointJob(Job):
             self.success = True
             self._is_finished = True
             # Log pre-screening effectiveness for this job
-            if self.trials_generated > 0 and self.sampler.use_de_prescreening:
+            if self.trials_generated > 0 and self.sampler.use_emulator:
                 screen_rate = 100 * self.trials_screened_out / self.trials_generated
                 logger.info(
                     f"DE job {self.id} (grid {self.grid_idx}): "
@@ -297,13 +297,12 @@ class DEGridPointJob(Job):
 
             avg_improvement = np.mean(grid_state['improvement_history'])
             if avg_improvement < self.sampler.convergence_threshold:
-                if self.sampler.lbfgsb_refinement:
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Spawning L-BFGS-B refinement job. ---")
+                if self.sampler.lbfgsb_polish:
+                    logger.info(f"--- DE Converged for {self.grid_idx}. Spawning L-BFGS-B polish job. ---")
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
                 else:
-                    # Mark as optimized without L-BFGS-B refinement
                     grid_state['status'] = 'optimized'
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized (L-BFGS-B refinement disabled). ---")
+                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized. ---")
                     return None
 
         return None

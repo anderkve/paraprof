@@ -318,7 +318,7 @@ class CMAESGridPointJob(Job):
 
             # === PREPARE EMULATOR DATA FOR WORKER-SIDE PRE-SCREENING ===
             emulator_cache = None
-            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_de_prescreening', False):
+            if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_emulator', False):
                 emulator_cache = prepare_emulator_cache_for_worker(
                     sampler=self.sampler,
                     center_params=full_params,
@@ -374,7 +374,7 @@ class CMAESGridPointJob(Job):
                 self._is_finished = True
 
                 # Log pre-screening effectiveness
-                if self.trials_generated > 0 and getattr(self.sampler, 'use_de_prescreening', False):
+                if self.trials_generated > 0 and getattr(self.sampler, 'use_emulator', False):
                     screen_rate = 100 * self.trials_screened_out / self.trials_generated
                     logger.info(
                         f"CMA-ES job {self.id} (grid {self.grid_idx}): "
@@ -402,7 +402,7 @@ class CMAESGridPointJob(Job):
 
                     # Emulator cache
                     emulator_cache = None
-                    if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_de_prescreening', False):
+                    if EMULATOR_AVAILABLE and getattr(self.sampler, 'use_emulator', False):
                         emulator_cache = prepare_emulator_cache_for_worker(
                             sampler=self.sampler,
                             center_params=full_params,
@@ -546,21 +546,17 @@ class CMAESGridPointJob(Job):
         self.grid_state['cmaes_D'] = self.D.copy()
         logger.debug(f"CMA-ES at {self.grid_idx}: Stored converged covariance matrix for neighbor inheritance")
 
-        # Check if we should spawn L-BFGS-B refinement
         if self._check_convergence():
-            if self.sampler.lbfgsb_refinement:
-                logger.info(f"--- CMA-ES Converged for {self.grid_idx}. Spawning L-BFGS-B refinement job. ---")
-                # Mark status and spawn refinement job
+            if self.sampler.lbfgsb_polish:
+                logger.info(f"--- CMA-ES Converged for {self.grid_idx}. Spawning L-BFGS-B polish job. ---")
                 return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
             else:
-                # Mark as optimized without L-BFGS-B refinement
                 self.grid_state['status'] = 'optimized'
-                logger.info(f"--- CMA-ES Converged for {self.grid_idx}. Marked as optimized (L-BFGS-B refinement disabled). ---")
+                logger.info(f"--- CMA-ES Converged for {self.grid_idx}. Marked as optimized. ---")
                 return None
         else:
-            # Max generations reached without convergence
             logger.info(f"--- CMA-ES at {self.grid_idx} reached max generations ({self.max_generations}). ---")
-            if self.sampler.lbfgsb_refinement:
+            if self.sampler.lbfgsb_polish:
                 return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
             else:
                 self.grid_state['status'] = 'optimized'
