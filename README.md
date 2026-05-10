@@ -53,41 +53,34 @@ pip install -e ".[all]"
 
 ```python
 from mpi4py import MPI
-from paraprof import ProfileProjector, run_all_projections, terminate_workers, worker_main
-from paraprof import get_test_function
+from paraprof import (
+    ProfileProjector, run_all_projections, terminate_workers, worker_main,
+    get_test_function,
+)
 
 comm = MPI.COMM_WORLD
 myrank = comm.Get_rank()
 
-# Define target function and projections
 log_likelihood, bounds, _ = get_test_function("himmelblau_4d")
 projections = [
     {'dims': [0, 1], 'grid_points': [50, 50]},
 ]
 
 if myrank == 0:
-    # Master process
-    sampler = ProfileProjector(
+    with ProfileProjector(
         target_func=log_likelihood,
         bounds=bounds,
         projections=projections,
+        roi_threshold=4.0,
         pop_per_grid_point=3,
-    )
-
-    # Broadcast target function
-    comm.bcast(sampler.target_func, root=0)
-
-    # Run projections
-    results = run_all_projections(
-        comm=comm,
-        sampler=sampler,
-        projections=projections,
-        save_plots=True
-    )
-
+    ) as sampler:
+        comm.bcast(sampler.target_func, root=0)
+        results = run_all_projections(
+            comm=comm, sampler=sampler, projections=projections,
+            save_plots=True,
+        )
     terminate_workers(comm, myrank)
 else:
-    # Worker process
     worker_main(comm, myrank)
 ```
 
@@ -101,15 +94,15 @@ mpiexec -n 4 python your_script.py
 
 ### Algorithm Overview
 
-ParaProf uses a **grid-based optimization** strategy with multiple algorithm options:
+ParaProf uses a **grid-based optimization** strategy:
 
-1. **Grid Setup**: Parameters are projected onto a regular grid (user-specified dimensions)
-2. **Initial Optimization**: Global L-BFGS-B finds starting maxima
-3. **Population Initialization**: DE populations are anchored at promising grid points
-4. **Adaptive Evolution**: DE optimizes continuous parameters at each grid point
-5. **Dynamic Activation**: High-likelihood neighbors are automatically activated
-6. **Patching**: Optional gradient-based refinement propagates improvements across the grid
-7. **Refinement**: Optional grid resolution increase using interpolated warm starts
+1. **Grid Setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
+2. **Initial Optimization**: Global L-BFGS-B finds starting maxima.
+3. **Population Initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
+4. **Adaptive Evolution**: DE (or L-BFGS-B) optimizes the continuous parameters at each active grid point.
+5. **Dynamic Activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
+6. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best continuous parameters and locally polishes any improvement found.
+7. **Refinement**: Optional grid-resolution increase, using interpolation of the coarse grid as warm-starts for the finer grid.
 
 ### Master-Worker Architecture
 
@@ -125,13 +118,15 @@ ParaProf uses a **grid-based optimization** strategy with multiple algorithm opt
 
 ## Examples
 
-The `examples/` directory contains several demonstration scripts:
+The `examples/` directory contains demonstration scripts:
 
 ```bash
-# Himmelblau 4D with 1D and 2D projections
-mpiexec -n 4 python examples/run_himmelblau_4d.py
+# Minimal scripts using just the core API (recommended starting point)
+mpiexec -n 4 python examples/run_himmelblau_4d_simple.py
+mpiexec -n 4 python examples/run_rosenbrock_4d_simple.py
 
-# Rosenbrock 4D
+# Power-user scripts that exercise the full advanced_config layout
+mpiexec -n 4 python examples/run_himmelblau_4d.py
 mpiexec -n 4 python examples/run_rosenbrock_4d.py
 ```
 
@@ -139,15 +134,35 @@ mpiexec -n 4 python examples/run_rosenbrock_4d.py
 
 ### Key Parameters
 
-- `pop_per_grid_point`: Population size per grid point (default: 1)
-- `n_initial_optimizations`: Number of global L-BFGS-B optimizations (default: min(100, 20*n_dims))
-- `roi_threshold`: Region of interest threshold in χ² units (default: 3.0)
-- `max_patching_waves`: Maximum patching iterations (default: 10)
-- `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per optimization (default: 50)
-- `lbfgsb_polish`: Apply L-BFGS-B polish after DE (default: True)
-- `samples_output_file`: Path to CSV log of all evaluations (default: None)
+These are the user-facing constructor arguments most scans actually need:
 
-Expert tuning is exposed via the `advanced_config` dict (see the docstring of `ProfileProjector.__init__`).
+- `roi_threshold`: Region-of-interest cutoff in χ² units; cells with `logL > global_max - roi_threshold` are inside the ROI (default: 3.0)
+- `pop_per_grid_point`: DE population size per grid cell (default: 1; 3 is a common choice)
+- `n_initial_optimizations`: Global L-BFGS-B starts before grid optimization (default: `min(100, 20 * n_dims)`)
+- `max_patching_waves`: Cap on patching iterations (default: 10)
+- `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per polish (default: 50)
+- `lbfgsb_polish`: Apply L-BFGS-B polish after DE convergence (default: True)
+- `initial_points`: Optional array of starting points to activate explicitly, useful when prior knowledge of good regions exists (default: None)
+- `use_clustering`: Detect multiple modes during refinement (default: True; only fires inside a refinement run with continuous dimensions)
+- `refinement_direct_eval`: Skip optimization in the refinement run; just evaluate the interpolated point at each fine grid cell (default: False)
+- `samples_output_file`: CSV path to log every evaluation (default: None)
+
+### Advanced Configuration
+
+Pass an `advanced_config` dict for expert tuning. Only keys that move solution quality or are real iteration budgets are exposed:
+
+| Key                                | Default                        | What it does                                                     |
+|------------------------------------|--------------------------------|------------------------------------------------------------------|
+| `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
+| `convergence_threshold`            | `roi_threshold / 1000`         | DE per-cell convergence cutoff (tighter helps stiff valleys)     |
+| `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
+| `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
+| `de.max_num_to_evolve`             | `None` (all active cells)      | Cap on the number of cells evolved per generation                |
+| `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
+| `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` (cheap) or `'central'` (more accurate, ~50% more calls) |
+| `clustering.*`                     | (auto-DBSCAN)                  | Mode detection inside refinement runs (only when `use_clustering=True`) |
+
+See the constructor docstring of `ProfileProjector` for the full structure. Several DE knobs that did not change ROI grid quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are now module-level constants in `sampler.py` and are intentionally not user-tunable.
 
 ### Projection Options
 
@@ -228,19 +243,19 @@ pytest tests/ -v --cov=src/paraprof --cov-report=term-missing
 
 ```
 paraprof/
-├── src/paraprof/          # Source code
-│   ├── sampler.py         # Main sampler class
-│   ├── master.py          # Master orchestration
-│   ├── worker.py          # Worker event loop
-│   ├── logger.py          # Logging utilities
-│   ├── exceptions.py      # Custom exceptions
-│   ├── jobs/              # Job classes
-│   ├── visualization.py   # Plotting utilities
-│   ├── interpolation.py   # Grid refinement
-│   └── test_functions.py  # Benchmark functions
-├── tests/                 # Test suite
-├── examples/              # Example scripts
-└── docs/                  # Documentation
+├── src/paraprof/             # Source code
+│   ├── sampler.py            # ProfileProjector class (state + algorithm config)
+│   ├── master.py             # Master event loop / state machine
+│   ├── worker.py             # Worker event loop
+│   ├── jobs/                 # Job classes (LBFGSB, DE, activation, patching test)
+│   ├── interpolation.py      # Grid interpolation + clustering for refinement
+│   ├── visualization.py      # 1D/2D/N-D plot helpers
+│   ├── nuisance_wrapper.py   # Wrap base test functions with nuisance parameters
+│   ├── test_functions.py     # Himmelblau, Rosenbrock, Rastrigin, ... benchmarks
+│   ├── exceptions.py         # Custom exception classes
+│   └── logger.py             # Logging utilities
+├── tests/                    # Test suite
+└── examples/                 # Example scripts (`*_simple.py` for the minimal API)
 ```
 
 ### Contributing
