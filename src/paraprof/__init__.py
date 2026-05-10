@@ -2,7 +2,13 @@
 ParaProf: Parallel Profile Likelihood Computation using Grid-Based Optimization.
 """
 from .sampler import ProfileProjector
-from .master import master_main, run_projection, run_all_projections, terminate_workers
+from .master import (
+    master_main,
+    run_projection,
+    run_all_projections,
+    run_scan,
+    terminate_workers,
+)
 from .worker import worker_main
 from .visualization import plot_profiles, plot_continuous_parameters
 from .test_functions import get_test_function
@@ -24,6 +30,7 @@ __all__ = [
     'master_main',
     'run_projection',
     'run_all_projections',
+    'run_scan',
     'terminate_workers',
     'worker_main',
     'plot_profiles',

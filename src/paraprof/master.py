@@ -203,6 +203,67 @@ def run_projection(comm, sampler, projection_config,
     return results
 
 
+def run_scan(comm, sampler, projections,
+             save_plots=False,
+             plot_settings=None,
+             broadcast_target_func=True,
+             myrank=0):
+    """Master-side convenience wrapper that runs a full scan and tears down workers.
+
+    This bundles the three steps a master process always performs into a single call:
+
+    1. Optionally broadcast ``sampler.target_func`` to the workers (so they can
+       enter ``worker_main`` with no ``target_func`` argument and pick it up
+       from the broadcast).
+    2. Run all configured projections via :func:`run_all_projections`.
+    3. Send the terminate signal to all workers via :func:`terminate_workers`.
+
+    Use ``broadcast_target_func=False`` when integrating into a host framework
+    that already provides the target function on every rank (e.g. as a bound
+    method that cannot be pickled). In that case the workers should be started
+    with ``worker_main(comm, myrank, target_func=...)`` so they never wait for
+    a broadcast.
+
+    Parameters
+    ----------
+    comm : MPI.Comm
+        MPI communicator. Must be called from the master rank only.
+    sampler : ProfileProjector
+        Configured sampler instance.
+    projections : list of dict
+        Projection configurations (see :func:`run_all_projections`).
+    save_plots : bool, optional
+        Whether to save plots after each projection (default: False).
+    plot_settings : dict, optional
+        Plot settings forwarded to :func:`run_all_projections`.
+    broadcast_target_func : bool, optional
+        If True (default), broadcast ``sampler.target_func`` to workers before
+        starting the scan. Set to False when workers were started with an
+        explicit ``target_func`` argument.
+    myrank : int, optional
+        Master rank (default: 0).
+
+    Returns
+    -------
+    list of dict
+        Per-projection results, as returned by :func:`run_all_projections`.
+    """
+    if broadcast_target_func:
+        comm.bcast(sampler.target_func, root=myrank)
+
+    results = run_all_projections(
+        comm=comm,
+        sampler=sampler,
+        projections=projections,
+        save_plots=save_plots,
+        plot_settings=plot_settings,
+        myrank=myrank,
+    )
+
+    terminate_workers(comm, myrank=myrank)
+    return results
+
+
 def run_all_projections(comm, sampler, projections,
                         save_plots=False,
                         plot_settings=None,

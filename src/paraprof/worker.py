@@ -15,7 +15,7 @@ except ImportError:
 TASK_TERMINATE = -1
 
 
-def worker_main(comm, myrank):
+def worker_main(comm, myrank, target_func=None):
     """
     Main loop for a worker process.
 
@@ -25,12 +25,21 @@ def worker_main(comm, myrank):
         MPI communicator
     myrank : int
         Worker rank
+    target_func : callable, optional
+        Pre-supplied target function to evaluate. If ``None`` (the default),
+        the worker waits for the master to broadcast the target function via
+        ``comm.bcast(..., root=0)``. Pass a callable here when the target
+        function is already available on every rank (e.g. when integrating
+        into a host framework whose evaluation entry point cannot be pickled).
     """
     logger = setup_logger(rank=myrank)
 
-    # First, receive the target function from the master.
-    target_func = comm.bcast(None, root=0)
-    logger.info("Received target function. Ready for tasks.")
+    if target_func is None:
+        # Receive the target function from the master.
+        target_func = comm.bcast(None, root=0)
+        logger.info("Received target function. Ready for tasks.")
+    else:
+        logger.info("Using pre-supplied target function. Ready for tasks.")
 
     while True:
         task = comm.recv(source=0, tag=MPI.ANY_TAG)

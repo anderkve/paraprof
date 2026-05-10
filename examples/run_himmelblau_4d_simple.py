@@ -11,7 +11,7 @@ import numpy as np
 from mpi4py import MPI
 
 from paraprof import (
-    ProfileProjector, run_all_projections, terminate_workers, worker_main,
+    ProfileProjector, run_scan, worker_main,
     get_test_function, set_log_level,
 )
 
@@ -58,9 +58,9 @@ if myrank == 0:
         samples_output_file=output_file,
     ) as sampler:
 
-        comm.bcast(sampler.target_func, root=0)
-
-        results = run_all_projections(
+        # run_scan handles broadcasting target_func, running every projection
+        # and terminating workers, so the main script doesn't have to.
+        results = run_scan(
             comm=comm,
             sampler=sampler,
             projections=PROJECTIONS,
@@ -75,7 +75,5 @@ if myrank == 0:
             calls = res['metrics']['total_target_calls']
             max_ll = res['metrics']['global_max']
             print(f"  Projection {i+1} (dims {dims}): {calls} calls, max logL = {max_ll:.4e}")
-
-    terminate_workers(comm, myrank)
 else:
     worker_main(comm, myrank)
