@@ -32,8 +32,13 @@ DEFAULT_GLOBAL_POOL_SIZE = 10000
 MEMORY_SIZE_MULTIPLIER = 25
 """Multiplier for calculating DE memory size (max_grid_size * multiplier)"""
 
-CONVERGENCE_THRESHOLD_DIVISOR = 1000
-"""Divisor for calculating convergence threshold from ROI threshold"""
+DEFAULT_CONVERGENCE_THRESHOLD = 1e-6
+"""Default DE per-cell convergence cutoff (logL improvement per generation
+averaged over `de.convergence_window` generations). The earlier default of
+roi_threshold/1000 was 1000x looser than this and left Rosenbrock-style
+narrow valleys insufficiently refined; benchmarking on a gold-standard grid
+showed that tightening to 1e-6 cuts mean ROI grid error ~2.4x on stiff
+projections at negligible target-call cost."""
 
 # Differential Evolution (DE) defaults
 DEFAULT_DE_MUTATION_STRATEGY = 'current-to-pbest/1'
@@ -94,7 +99,7 @@ class ProfileProjector:
                  projections,
                  # Core tuning parameters (commonly adjusted)
                  roi_threshold=3.0,
-                 pop_per_grid_point=1,
+                 pop_per_grid_point=3,
                  max_patching_waves=10,
                  lbfgsb_max_iter=50,
                  lbfgsb_polish=True,
@@ -125,8 +130,10 @@ class ProfileProjector:
             Region of interest threshold in chi-squared units (default: 3.0)
             Points with likelihood > global_max - roi_threshold are in the ROI
         pop_per_grid_point : int, optional
-            Population size per grid point for DE (default: 1)
-            Typical values: 1-5. Higher = more thorough but slower
+            Population size per grid point for DE (default: 3)
+            Typical values: 1-5. Lower = fewer evaluations per cell but
+            more cells need to be activated; higher = more thorough but
+            slower per cell.
         max_patching_waves : int, optional
             Maximum number of patching refinement waves (default: 10)
             Typical values: 10-50. Higher = more refinement but more evaluations
@@ -166,7 +173,7 @@ class ProfileProjector:
             Dictionary for expert-level parameter tuning. Structure:
             {
                 'memory_size': int,                # Default: max(grid_sizes) * 25
-                'convergence_threshold': float,    # Default: roi_threshold / 1000
+                'convergence_threshold': float,    # Default: 1e-6
 
                 'de': {
                     'convergence_window': int,     # Default: 3
@@ -309,7 +316,7 @@ class ProfileProjector:
 
         config = {
             'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
-            'convergence_threshold': roi_threshold / CONVERGENCE_THRESHOLD_DIVISOR,
+            'convergence_threshold': DEFAULT_CONVERGENCE_THRESHOLD,
 
             'de': {
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
@@ -366,7 +373,7 @@ class ProfileProjector:
         self.pbest_fraction = DEFAULT_DE_PBEST_FRACTION
         self.neighbor_pull_probability = DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY
         self.patching_n_neighbors = DEFAULT_PATCHING_N_NEIGHBORS
-        self.activation_mix_ratios = DEFAULT_ACTIVATION_MIX_RATIOS
+        self.activation_mix_ratios = dict(DEFAULT_ACTIVATION_MIX_RATIOS)
 
         # Clustering configuration
         self.clustering_method = config['clustering']['method']

@@ -137,7 +137,7 @@ mpiexec -n 4 python examples/run_rosenbrock_4d.py
 These are the user-facing constructor arguments most scans actually need:
 
 - `roi_threshold`: Region-of-interest cutoff in χ² units; cells with `logL > global_max - roi_threshold` are inside the ROI (default: 3.0)
-- `pop_per_grid_point`: DE population size per grid cell (default: 1; 3 is a common choice)
+- `pop_per_grid_point`: DE population size per grid cell (default: 3)
 - `n_initial_optimizations`: Global L-BFGS-B starts before grid optimization (default: `min(100, 20 * n_dims)`)
 - `max_patching_waves`: Cap on patching iterations (default: 10)
 - `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per polish (default: 50)
@@ -154,7 +154,7 @@ Pass an `advanced_config` dict for expert tuning. Only keys that move solution q
 | Key                                | Default                        | What it does                                                     |
 |------------------------------------|--------------------------------|------------------------------------------------------------------|
 | `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
-| `convergence_threshold`            | `roi_threshold / 1000`         | DE per-cell convergence cutoff (tighter helps stiff valleys)     |
+| `convergence_threshold`            | `1e-6`                         | DE per-cell convergence cutoff (tighter helps stiff valleys)     |
 | `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None` (all active cells)      | Cap on the number of cells evolved per generation                |
