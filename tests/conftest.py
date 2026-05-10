@@ -31,8 +31,7 @@ def basic_projection_1d():
     return {
         'dims': [0],
         'grid_points': [10],
-        'lbfgsb': False,
-        'patching_coarse': False,
+        'patch_coarse_grid': False,
     }
 
 
@@ -42,6 +41,5 @@ def basic_projection_2d():
     return {
         'dims': [0, 1],
         'grid_points': [5, 5],
-        'lbfgsb': False,
-        'patching_coarse': False,
+        'patch_coarse_grid': False,
     }

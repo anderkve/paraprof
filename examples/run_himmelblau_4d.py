@@ -66,63 +66,18 @@ if myrank == 0:
     max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
 
     advanced_config = {
-        # Override auto-configured parameters
-        'global_pool_size': 10000,                # Default: 10000 (already good)
-        'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25 = 3750
-        'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000 = 0.004
+        'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25
+        'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000
 
-        # Fine-tune Differential Evolution
         'de': {
-            'mutation_strategy': 'current-to-pbest/1',  # Default (best performer)
-            'pbest_fraction': 0.1,                      # Default: 0.1
-            'neighbor_pull_probability': 0.5,           # Default: 0.5
-            'convergence_window': 3,                    # Default: 3
-            'num_generations': 100000,                  # Default: 100000
-            'max_num_to_evolve': None,                  # Default: None (all grid points)
+            'convergence_window': 3,              # Default: 3
+            'num_generations': 100000,            # Default: 100000
+            'max_num_to_evolve': None,            # Default: None (all grid points)
         },
 
-        # Fine-tune L-BFGS-B
         'lbfgsb': {
-            'ftol': 1e-9,                              # Default: 1e-9
-            'gradient_method': 'forward',              # Default: 'forward' (faster than 'central')
-        },
-
-        # Patching parameters
-        'patching': {
-            'n_neighbors': 1,                          # Default: 1 (test more neighbors for this problem)
-        },
-
-        # Activation mixing ratios
-        'activation': {
-            'mix_ratios': {
-                'neighbors': 0.5,                      # Default: 0.5
-                'global': 0.25,                        # Default: 0.25
-                'random': 0.25,                        # Default: 0.25
-            },
-        },
-
-        # Emulator parameters (only used if use_emulator=True)
-        'emulator': {
-            'confidence_threshold': -1.0,              # Default: 2.0 (negative = accept all)
-            'min_neighbors': 10,                       # Default: 10
-            'max_neighbors': 100,                      # Default: 100
-            'length_scale': 1.0,                       # Default: 1.0
-            'noise_level': 0.0001,                     # Default: 0.01
-        },
-
-        # Coordinate Descent parameters (only used if use_cd_refinement=True)
-        'cd': {
-            'max_cycles': 50,                          # Default: 3
-            'step_fraction': 0.01,                     # Default: 0.01
-        },
-
-        # CMA-ES parameters (only used if optimization_method='cmaes' in projection)
-        'cmaes': {
-            'lambda': None,                            # Default: auto = 4 + floor(3*log(n_cont))
-            'mu': None,                                # Default: auto = lambda/2
-            'max_generations': 100,                    # Default: 100
-            'num_generations': 100000,                 # Default: 100000
-            'max_num_to_evolve': None,                 # Default: None (all grid points)
+            'ftol': 1e-9,                         # Default: 1e-9
+            'gradient_method': 'forward',         # Default: 'forward' (use 'central' for higher accuracy at ~50% more calls)
         },
 
         # Clustering parameters (only used if use_clustering=True during refinement)
@@ -161,15 +116,13 @@ if myrank == 0:
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
-        lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE/CMA-ES
+        lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE
         n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
         # initial_points=[[3.0, 0.0, -3.0, 0.0]],       # Optional: User-provided initial points to activate grid
         #                                             # Use with n_initial_optimizations=0 to only use these points
 
         # === Feature toggles ===
-        use_emulator=False,                           # GP-based pre-screening (30-50% speedup)
         use_clustering=True,                          # Mode detection for refinement
-        use_cd_refinement=False,                      # Use L-BFGS-B instead of CD for refinement
         refinement_direct_eval=True,                  # Fast interpolation vs full optimization
 
         # === I/O ===
