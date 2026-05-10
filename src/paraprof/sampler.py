@@ -110,6 +110,8 @@ class ProfileProjector:
                  refinement_direct_eval=False,
                  # I/O
                  samples_output_file=None,
+                 # Parameter naming (optional, enables string dims in projections)
+                 parameter_names=None,
                  # Advanced configuration (optional)
                  advanced_config=None):
         """
@@ -167,6 +169,15 @@ class ProfileProjector:
         samples_output_file : str, optional
             Path to save all evaluated points as CSV (default: None)
 
+        Parameter Naming
+        ----------------
+        parameter_names : list of str, optional
+            Names for each parameter dimension (default: None).
+            When provided, projection ``dims`` entries may be given as parameter
+            names (strings) and will be translated to integer indices. The list
+            must have length equal to the number of parameters. Mixing names
+            and indices within a single projection's ``dims`` is allowed.
+
         Advanced Configuration
         ----------------------
         advanced_config : dict, optional
@@ -223,9 +234,40 @@ class ProfileProjector:
         self.target_func = target_func
         self.dims = len(self.bounds)
 
+        # Validate parameter_names (optional) and store as a name->index map
+        if parameter_names is not None:
+            if (not isinstance(parameter_names, (list, tuple))
+                    or len(parameter_names) != self.dims
+                    or not all(isinstance(n, str) for n in parameter_names)):
+                raise ConfigurationError(
+                    f"parameter_names must be a list of {self.dims} strings, "
+                    f"one per parameter dimension",
+                    parameter="parameter_names",
+                    value=parameter_names,
+                )
+            if len(set(parameter_names)) != len(parameter_names):
+                raise ConfigurationError(
+                    "parameter_names must not contain duplicates",
+                    parameter="parameter_names",
+                    value=parameter_names,
+                )
+            self.parameter_names = list(parameter_names)
+            self._name_to_dim = {n: i for i, n in enumerate(self.parameter_names)}
+        else:
+            self.parameter_names = None
+            self._name_to_dim = None
+
         # Validate projections
         if not isinstance(projections, list) or len(projections) == 0:
             raise InvalidProjectionError("projections must be a non-empty list")
+
+        # Resolve any string dims using parameter_names. We rewrite the
+        # projection dicts in place so all downstream code sees integers.
+        for i, proj in enumerate(projections):
+            if isinstance(proj, dict) and 'dims' in proj:
+                resolved = self._resolve_dims(proj['dims'], context=f"projection {i}")
+                if resolved is not None:
+                    proj['dims'] = resolved
 
         for i, proj in enumerate(projections):
             if not isinstance(proj, dict):
@@ -437,6 +479,43 @@ class ProfileProjector:
 
         self._reset_for_new_projection(self.projections[0])
 
+    def _resolve_dims(self, dims, context="projection"):
+        """Translate a ``dims`` specification to integer indices.
+
+        Accepts a list of ints, strings, or a mix. Strings are resolved via
+        ``self._name_to_dim``. Returns ``None`` if no translation was needed
+        (i.e. all entries were already ints), so callers can avoid mutating
+        when nothing changed. Raises ``InvalidProjectionError`` on unknown
+        names or wrong types.
+        """
+        if not isinstance(dims, (list, tuple)):
+            return None  # let the main validator emit the type error
+
+        any_string = any(isinstance(d, str) for d in dims)
+        if not any_string:
+            return None
+
+        if self._name_to_dim is None:
+            raise InvalidProjectionError(
+                f"{context} 'dims' contains parameter names but ProfileProjector "
+                f"was constructed without parameter_names",
+                projection={'dims': list(dims)},
+            )
+
+        resolved = []
+        for d in dims:
+            if isinstance(d, str):
+                if d not in self._name_to_dim:
+                    raise InvalidProjectionError(
+                        f"{context} 'dims' references unknown parameter name "
+                        f"{d!r}; known names: {self.parameter_names}",
+                        projection={'dims': list(dims)},
+                    )
+                resolved.append(self._name_to_dim[d])
+            else:
+                resolved.append(d)
+        return resolved
+
     def _deep_update(self, base_dict, update_dict):
         """
         Recursively update base_dict with values from update_dict.
@@ -458,6 +537,14 @@ class ProfileProjector:
 
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""
+        # Defensive: resolve string dims if a caller passes a fresh projection
+        # dict whose dims weren't normalized at construction time.
+        if 'dims' in projection_config:
+            resolved = self._resolve_dims(projection_config['dims'],
+                                          context="projection")
+            if resolved is not None:
+                projection_config['dims'] = resolved
+
         self.logger.info("=" * 80)
         self.logger.info(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
         self.logger.info("=" * 80)
