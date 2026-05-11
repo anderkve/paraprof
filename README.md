@@ -180,7 +180,7 @@ Optional keys:
 
 ## Visualization
 
-ParaProf automatically generates publication-ready plots:
+ParaProf has a system for automatically generating some simple plots to check the results of a run.
 
 ### Profile likelihood plots
 
