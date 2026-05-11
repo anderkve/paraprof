@@ -1,6 +1,5 @@
 # ParaProf: Parallel profile likelihood computation
 
-[![Tests](https://github.com/anderkve/paraprof/workflows/Tests/badge.svg)](https://github.com/anderkve/paraprof/actions)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
