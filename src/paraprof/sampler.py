@@ -1803,7 +1803,12 @@ class ProfileProjector:
         n_multi_candidate = sum(1 for job in jobs if hasattr(job, 'pop_size') and job.pop_size > 1)
         n_single_candidate = len(jobs) - n_multi_candidate
 
-        if self.refinement_direct_eval:
+        if self.direct_eval_mode:
+            # In direct_eval_mode the per-point jobs are ActivationJobs that
+            # simply evaluate the target at the fine grid point (no continuous
+            # params to optimize).
+            opt_method = "direct evaluation"
+        elif self.refinement_direct_eval:
             opt_method = "direct evaluation"
             if n_multi_candidate > 0:
                 self.logger.info(f"--- Multi-candidate evaluations: {n_multi_candidate} grid points with multiple clusters ---")

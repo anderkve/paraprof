@@ -104,8 +104,15 @@ class LBFGSBJob(Job):
 
     def start(self):
         """Returns the first task(s) for the job."""
-        # Safety check: if there are no dimensions to optimize, finish immediately
+        # Safety check: if there are no dimensions to optimize, finish immediately.
+        # The master loop has a defensive cleanup for this case; log a warning so
+        # any future caller that hits this path is visible rather than silent.
         if self.n_opt_dims == 0:
+            self.sampler.logger.warning(
+                f"LBFGSBJob {self.id} ({self.type}) created with zero opt_dims; "
+                "finishing immediately. This usually indicates the caller should "
+                "be using a direct evaluation path instead."
+            )
             self.success = False
             self._is_finished = True
             return []
