@@ -52,34 +52,37 @@ master rank performs no target evaluations.
 
 YAML options:
   like:                 Use the functors that correspond to the specified purpose.
-  projections:          List of projection configurations. Each entry is a dict
-                        with required keys 'dims' (list of parameter names or
-                        indices) and 'grid_points' (list of ints, same length
-                        as 'dims'). Optional per-projection keys:
-                          optimization_method:    'de' (default) or 'lbfgsb'
-                          grid_refinement_factor: int > 1 enables a refined run
-                          refinement_method:      interpolation method (default 'linear')
-                          patch_coarse_grid:      bool (default true)
-                          patch_refined_grid:     bool (default false)
-  roi_threshold:           ROI cutoff in chi^2 units (default 3.0).
-  pop_per_grid_point:      DE population size per grid cell (default 3).
-  n_initial_optimizations: Global L-BFGS-B starts before grid optimization
-                           (default min(100, 20*n_dims)).
-  max_patching_waves:      Cap on patching iterations (default 10).
-  lbfgsb_max_iter:         Max L-BFGS-B iterations per polish (default 50).
-  lbfgsb_polish:           Apply L-BFGS-B polish after DE (default true).
-  use_clustering:          Detect modes during refinement (default true).
-  refinement_direct_eval:  Skip optimisation in refinement runs (default false).
-  initial_points:          Optional list of starting points in physical
-                           coordinates to activate explicitly.
-  samples_output_file:     Optional CSV path; written by rank 0 only. Note that
-                           GAMBIT's printers already record every evaluation,
-                           so this is purely a paraprof-side diagnostic file.
-  advanced_config:         Forwarded as-is to ProfileProjector for expert tuning.
-  save_plots:              If true, paraprof writes its diagnostic plots to
-                           the working directory after each projection.
-  plot_settings:           Dict forwarded to paraprof's plotting helpers
-                           (e.g. {dpi: 200, filetype: png}).
+  run:                  All paraprof-native settings live here. Required key:
+    projections:          List of projection configurations. Each entry is a
+                          dict with required keys 'dims' (list of parameter
+                          names or indices) and 'grid_points' (list of ints,
+                          same length as 'dims'). Optional per-projection keys:
+                            optimization_method:    'de' (default) or 'lbfgsb'
+                            grid_refinement_factor: int > 1 enables a refined run
+                            refinement_method:      interpolation method (default 'linear')
+                            patch_coarse_grid:      bool (default true)
+                            patch_refined_grid:     bool (default false)
+                        Optional ProfileProjector tuning keys:
+    roi_threshold:           ROI cutoff in chi^2 units (default 3.0).
+    pop_per_grid_point:      DE population size per grid cell (default 3).
+    n_initial_optimizations: Global L-BFGS-B starts before grid optimization
+                             (default min(100, 20*n_dims)).
+    max_patching_waves:      Cap on patching iterations (default 10).
+    lbfgsb_max_iter:         Max L-BFGS-B iterations per polish (default 50).
+    lbfgsb_polish:           Apply L-BFGS-B polish after DE (default true).
+    use_clustering:          Detect modes during refinement (default true).
+    refinement_direct_eval:  Skip optimisation in refinement runs (default false).
+    initial_points:          Optional list of starting points in physical
+                             coordinates to activate explicitly.
+    samples_output_file:     Optional CSV path; written by rank 0 only. Note that
+                             GAMBIT's printers already record every evaluation,
+                             so this is purely a paraprof-side diagnostic file.
+    advanced_config:         Forwarded as-is to ProfileProjector for expert tuning.
+                        Optional run-time keys:
+    save_plots:              If true, paraprof writes its diagnostic plots to
+                             the working directory after each projection.
+    plot_settings:           Dict forwarded to paraprof's plotting helpers
+                             (e.g. {dpi: 200, filetype: png}).
 """
 
     __version__ = paraprof_version
@@ -111,25 +114,24 @@ YAML options:
 
         self.print_prefix = f"{ParaProf.__plugin_name__} scanner plugin:"
 
-        # All YAML scanner options are surfaced on self.init_args. We pull only
-        # what we recognise; the rest is forwarded to paraprof verbatim where
-        # it makes sense (advanced_config, plot_settings).
-        ia = self.init_args
+        # All paraprof-native settings live under the YAML 'run:' block; the
+        # top level of the scanner block is reserved for ScannerBit itself.
+        ra = self.run_args
 
-        if "projections" not in ia:
+        if "projections" not in ra:
             raise RuntimeError(
                 f"{self.print_prefix} The required scanner option 'projections' "
-                "is missing."
+                "is missing from the 'run:' block."
             )
         # Defensive copy so downstream mutation (string-dim resolution etc.)
         # doesn't disturb the YAML dict.
-        self.projections = [dict(p) for p in ia["projections"]]
+        self.projections = [dict(p) for p in ra["projections"]]
         for p in self.projections:
             for k in ('dims', 'grid_points'):
                 if k in p and isinstance(p[k], tuple):
                     p[k] = list(p[k])
 
-        # Top-level paraprof tuning. Each is optional; we only forward keys the
+        # ProfileProjector tuning. Each is optional; we only forward keys the
         # user actually set so paraprof's own defaults stay authoritative.
         self.projector_kwargs = {}
         for key in (
@@ -138,12 +140,12 @@ YAML options:
             "initial_points", "use_clustering", "refinement_direct_eval",
             "samples_output_file", "advanced_config",
         ):
-            if key in ia:
-                self.projector_kwargs[key] = ia[key]
+            if key in ra:
+                self.projector_kwargs[key] = ra[key]
 
         # Plot / output controls (paraprof-side, not GAMBIT printer side).
-        self.save_plots = bool(ia.get("save_plots", False))
-        self.plot_settings = ia.get("plot_settings", None)
+        self.save_plots = bool(ra.get("save_plots", False))
+        self.plot_settings = ra.get("plot_settings", None)
 
 
     @copydoc(paraprof_ProfileProjector)
