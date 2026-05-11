@@ -710,6 +710,15 @@ def master_main(comm, sampler,
                 # Add to correct priority queue
                 _queue_tasks(initial_tasks, job.type)
 
+                # A job may finish during start() without dispatching any tasks
+                # (e.g. an LBFGSBJob with zero dims to optimize). Without this
+                # cleanup it would stay in active_jobs forever and hang the
+                # main loop, since the finalization path below only runs when
+                # a result arrives.
+                if not initial_tasks and job.is_finished():
+                    job.on_finish(next_job_id)
+                    del active_jobs[job.id]
+
             # If we just finished a non-looping stage, advance to the next
             # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
             if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
