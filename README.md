@@ -21,7 +21,7 @@
 ### Basic installation
 
 ```bash
-pip install -e .
+pip install git+https://github.com/anderkve/paraprof.git
 ```
 
 ### With optional dependencies
