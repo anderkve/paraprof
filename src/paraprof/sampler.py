@@ -1686,6 +1686,25 @@ class ProfileProjector:
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
+                # Direct-evaluation mode: no continuous parameters to optimize,
+                # so refinement is just a single target evaluation at the fine
+                # grid point. ActivationJob handles this natively in
+                # direct_eval_mode (single eval at grid coords, status set to
+                # 'converged'). Bypass interpolation/LBFGSB entirely — an
+                # LBFGSBJob with n_opt_dims==0 hangs the master loop because
+                # its start() returns no tasks but stays in active_jobs.
+                if self.direct_eval_mode:
+                    job = ActivationJob(
+                        job_id=next_job_id,
+                        sampler=self,
+                        grid_idx=fine_idx,
+                        warm_start_params=None,
+                    )
+                    jobs.append(job)
+                    lbfgsb_job_created_for_grid_points.add(fine_idx)
+                    next_job_id += 1
+                    continue
+
                 # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
                 candidates = self._get_refined_initialization_candidates(grid_coords)
