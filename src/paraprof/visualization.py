@@ -161,10 +161,20 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     for grid_idx, fitness in sampler.profile_likelihood_grid.items():
         profile_2d[grid_idx] = fitness
 
+    # Express the profile relative to the best-fit log-likelihood so that the
+    # default colorbar range (and contour levels) are meaningful regardless of
+    # the absolute offset of the log-likelihood.
+    finite_mask = np.isfinite(profile_2d)
+    if np.any(finite_mask):
+        best_fit_loglike = np.max(profile_2d[finite_mask])
+    else:
+        best_fit_loglike = 0.0
+    delta_profile_2d = np.where(finite_mask, profile_2d - best_fit_loglike, -np.inf)
+
     extent = [sampler.grid_axes[0][0], sampler.grid_axes[0][-1],
               sampler.grid_axes[1][0], sampler.grid_axes[1][-1]]
 
-    masked_profile = np.ma.masked_where(profile_2d == -np.inf, profile_2d)
+    masked_profile = np.ma.masked_where(~finite_mask, delta_profile_2d)
 
     cmap = plt.get_cmap('viridis')
     cmap.set_bad(color='0.75')
@@ -195,7 +205,8 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     ax.grid(True, linestyle='--', alpha=0.5)
 
     cax = axes[1]
-    fig.colorbar(im, cax=cax, orientation='vertical', label='Log Likelihood')
+    fig.colorbar(im, cax=cax, orientation='vertical',
+                 label=r'$\log L - \log L_{\mathrm{best\text{-}fit}}$')
 
     fig.tight_layout()
 
@@ -270,11 +281,17 @@ def _plot_nd_profile(sampler, filename, plot_settings):
             # Marginalize over all other dimensions
             profile_slice = _marginalize_to_2d(sampler, dim_i, dim_j)
 
+        # Express the slice relative to the best-fit log-likelihood so that
+        # the colorbar range and contour levels are independent of the
+        # absolute log-likelihood offset.
+        finite_mask = np.isfinite(profile_slice)
+        profile_slice = np.where(finite_mask, profile_slice - max_likelihood, -np.inf)
+
         # Plot the slice
         extent = [sampler.grid_axes[dim_i][0], sampler.grid_axes[dim_i][-1],
                   sampler.grid_axes[dim_j][0], sampler.grid_axes[dim_j][-1]]
 
-        masked_profile = np.ma.masked_where(profile_slice == -np.inf, profile_slice)
+        masked_profile = np.ma.masked_where(~finite_mask, profile_slice)
 
         cmap = plt.get_cmap('viridis')
         cmap.set_bad(color='0.75')
@@ -300,7 +317,9 @@ def _plot_nd_profile(sampler, filename, plot_settings):
         ax.grid(True, linestyle='--', alpha=0.3)
 
         # Add colorbar for each subplot
-        fig.colorbar(im, ax=ax, orientation='vertical', label='Log L', fraction=0.046)
+        fig.colorbar(im, ax=ax, orientation='vertical',
+                     label=r'$\log L - \log L_{\mathrm{best\text{-}fit}}$',
+                     fraction=0.046)
 
     # Hide unused subplots
     for idx in range(n_pairs, len(axes)):
