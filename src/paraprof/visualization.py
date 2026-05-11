@@ -83,13 +83,22 @@ def _plot_1d_profile(sampler, filename, plot_settings):
     for grid_idx, fitness in sampler.profile_likelihood_grid.items():
         profile_1d[grid_idx[0]] = fitness
 
+    # Locate the best-fit grid point.
+    valid_mask = ~np.isnan(profile_1d)
+    best_fit_x = None
+    best_fit_loglike = None
+    if np.any(valid_mask):
+        best_idx = int(np.nanargmax(profile_1d))
+        best_fit_x = grid_axis[best_idx]
+        best_fit_loglike = float(profile_1d[best_idx])
+
     # Create figure
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
+    ax.tick_params(axis='both', labelsize=20)
 
     dim = sampler.projection_dims[0]
 
     # Plot profile
-    valid_mask = ~np.isnan(profile_1d)
     ax.plot(grid_axis[valid_mask], profile_1d[valid_mask], 'b-', linewidth=2, label='Profile Likelihood')
     ax.scatter(grid_axis[valid_mask], profile_1d[valid_mask], c='blue', s=20, zorder=5)
 
@@ -107,17 +116,26 @@ def _plot_1d_profile(sampler, filename, plot_settings):
                    marker='o', edgecolor='black', linewidth=1.5,
                    label='Active DE Points', zorder=10)
 
+    # Mark the best-fit point with a white star with a black border.
+    if best_fit_x is not None:
+        ax.scatter([best_fit_x], [best_fit_loglike], c='white', s=240,
+                   marker='*', edgecolor='black', linewidth=1.5,
+                   label='Best fit', zorder=11)
+
     # Add confidence level lines
-    if not np.all(np.isnan(profile_1d)):
-        max_likelihood = np.nanmax(profile_1d)
+    if best_fit_loglike is not None:
         for delta, label in [(-1.0, '68% CL'), (-4.0, '95% CL')]:
-            level = max_likelihood + delta
+            level = best_fit_loglike + delta
             ax.axhline(y=level, color='gray', linestyle='--', alpha=0.7, label=label)
 
-    ax.set_xlabel(f'Parameter {dim}', fontsize=12)
-    ax.set_ylabel('Log Likelihood', fontsize=12)
-    ax.set_title(f'1D Profile Likelihood for Parameter {dim}', fontsize=14)
-    ax.legend()
+    title = f'1D Profile Likelihood for Parameter {dim}'
+    if best_fit_x is not None:
+        title += (f'\nBest fit: param {dim} = {best_fit_x:.4g}, '
+                  f'log L = {best_fit_loglike:.4g}')
+    ax.set_title(title, fontsize=20)
+    ax.set_xlabel(f'Parameter {dim}', fontsize=24)
+    ax.set_ylabel('Log Likelihood', fontsize=24)
+    ax.legend(fontsize=18)
     ax.grid(True, linestyle='--', alpha=0.5)
 
     fig.tight_layout()
@@ -151,9 +169,10 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     contour_levels = plot_settings.get('contour_levels', [-3.0, -1.0])
 
     # Create figure and axes
-    fig, axes = plt.subplots(1, 2, figsize=(7, 6),
+    fig, axes = plt.subplots(1, 2, figsize=(9, 8),
                             gridspec_kw={'width_ratios': [20, 1], 'wspace': 0.0})
     ax = axes[0]
+    ax.tick_params(axis='both', labelsize=15)
 
     dim1, dim2 = sampler.projection_dims
 
@@ -216,15 +235,17 @@ def _plot_2d_profile(sampler, filename, plot_settings):
         title += (f'\nBest fit: param {dim1} = {best_fit_coords[0]:.4g}, '
                   f'param {dim2} = {best_fit_coords[1]:.4g}, '
                   f'log L = {best_fit_loglike:.4g}')
-    ax.set_title(title, fontsize=10)
-    ax.set_xlabel(f'Parameter {dim1}')
-    ax.set_ylabel(f'Parameter {dim2}')
-    ax.legend()
+    ax.set_title(title, fontsize=15)
+    ax.set_xlabel(f'Parameter {dim1}', fontsize=15)
+    ax.set_ylabel(f'Parameter {dim2}', fontsize=15)
+    ax.legend(fontsize=13)
     ax.grid(True, linestyle='--', alpha=0.5)
 
     cax = axes[1]
-    fig.colorbar(im, cax=cax, orientation='vertical',
-                 label=r'$\log L - \log L_{\mathrm{best\text{-}fit}}$')
+    cbar = fig.colorbar(im, cax=cax, orientation='vertical',
+                        label=r'$\log L - \log L_{\mathrm{best\text{-}fit}}$')
+    cbar.ax.tick_params(labelsize=13)
+    cbar.set_label(r'$\log L - \log L_{\mathrm{best\text{-}fit}}$', fontsize=15)
 
     fig.tight_layout()
 
