@@ -651,7 +651,9 @@ class ProfileProjector:
                     'status': 'optimized',  # Mark as already optimized from coarse run
                     'improvement_history': [],
                     'last_update_gen': 0,
-                    'optimizer_state': None
+                    'optimizer_state': None,
+                    # Needed by export_grid_solution in direct-eval mode.
+                    'full_params': solution['full_params'].copy(),
                 }
 
                 n_transferred += 1
@@ -681,11 +683,14 @@ class ProfileProjector:
 
         for grid_idx, state in self.population.items():
             if self.direct_eval_mode:
-                # Direct evaluation mode: simpler state structure
-                if state['status'] == 'evaluated':
+                # Direct evaluation mode: simpler state structure.
+                # ActivationJob marks direct-eval points as 'converged', and
+                # transferred coarse points are marked 'optimized' on the fine
+                # grid (see _reset_for_new_projection); accept both.
+                if state['status'] in ['converged', 'optimized']:
                     solutions[grid_idx] = {
                         'continuous_params': np.empty(0),  # Empty array
-                        'likelihood': state['fitness'],
+                        'likelihood': state['best_fitness'],
                         'full_params': state['full_params'].copy()
                     }
             else:
