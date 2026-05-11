@@ -24,9 +24,10 @@ def plot_profiles(sampler, filename, plot_settings=None):
         - 'dpi': int (default: 300)
         - 'filetype': str (default: 'png')
         - 'slice_mode': str (default: 'max') - for 3D+: 'max' or 'all'
-        - 'vmin': float (default: -4.0) - colorbar minimum
-        - 'vmax': float (default: 0.0) - colorbar maximum
-        - 'contour_levels': list (default: [-3.0, -1.0]) - contour levels
+        - 'vmin': float (default: -4.0) - colorbar minimum (relative to best-fit log L)
+        - 'vmax': float (default: 0.0) - colorbar maximum (relative to best-fit log L)
+        - 'contour_levels': list (default: [-3.0, -1.0]) - contour levels for the
+          2D and N-D log-likelihood plots, expressed relative to the best-fit log L
         - 'plot_continuous_params': bool (default: True) - plot optimal continuous parameter values
     """
     try:
@@ -161,14 +162,20 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     for grid_idx, fitness in sampler.profile_likelihood_grid.items():
         profile_2d[grid_idx] = fitness
 
+    # Locate the best-fit grid point.
+    finite_mask = np.isfinite(profile_2d)
+    best_fit_idx = None
+    best_fit_loglike = 0.0
+    best_fit_coords = None
+    if np.any(finite_mask):
+        flat_idx = int(np.argmax(np.where(finite_mask, profile_2d, -np.inf)))
+        best_fit_idx = np.unravel_index(flat_idx, profile_2d.shape)
+        best_fit_loglike = float(profile_2d[best_fit_idx])
+        best_fit_coords = sampler._get_grid_coords_from_indices(best_fit_idx)
+
     # Express the profile relative to the best-fit log-likelihood so that the
     # default colorbar range (and contour levels) are meaningful regardless of
     # the absolute offset of the log-likelihood.
-    finite_mask = np.isfinite(profile_2d)
-    if np.any(finite_mask):
-        best_fit_loglike = np.max(profile_2d[finite_mask])
-    else:
-        best_fit_loglike = 0.0
     delta_profile_2d = np.where(finite_mask, profile_2d - best_fit_loglike, -np.inf)
 
     extent = [sampler.grid_axes[0][0], sampler.grid_axes[0][-1],
@@ -198,7 +205,18 @@ def _plot_2d_profile(sampler, filename, plot_settings):
         ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                    edgecolor='black', lw=0.5, label='Active DE Points')
 
-    ax.set_title(f'Profile likelihood for parameters {sampler.projection_dims}')
+    # Mark the best-fit point with a white star with a black border.
+    if best_fit_coords is not None:
+        ax.scatter([best_fit_coords[0]], [best_fit_coords[1]],
+                   c='white', s=120, marker='*', edgecolor='black',
+                   linewidth=1.0, label='Best fit', zorder=11)
+
+    title = f'Profile likelihood for parameters {sampler.projection_dims}'
+    if best_fit_coords is not None:
+        title += (f'\nBest fit: param {dim1} = {best_fit_coords[0]:.4g}, '
+                  f'param {dim2} = {best_fit_coords[1]:.4g}, '
+                  f'log L = {best_fit_loglike:.4g}')
+    ax.set_title(title, fontsize=10)
     ax.set_xlabel(f'Parameter {dim1}')
     ax.set_ylabel(f'Parameter {dim2}')
     ax.legend()
@@ -242,6 +260,7 @@ def _plot_nd_profile(sampler, filename, plot_settings):
     slice_mode = plot_settings.get('slice_mode', 'max')
     vmin = plot_settings.get('vmin', -4.0)
     vmax = plot_settings.get('vmax', 0.0)
+    contour_levels = plot_settings.get('contour_levels', [-3.0, -1.0])
 
     n_dims = sampler.n_proj_dims
     dims = sampler.projection_dims
@@ -301,15 +320,14 @@ def _plot_nd_profile(sampler, filename, plot_settings):
 
         # Add contours
         X, Y = np.meshgrid(sampler.grid_axes[dim_i], sampler.grid_axes[dim_j])
-        ax.contour(X, Y, masked_profile.T, levels=[-3.0, -1.0],
+        ax.contour(X, Y, masked_profile.T, levels=contour_levels,
                   colors='white', linewidths=1.0)
 
-        # Mark the maximum point (if in slice mode)
-        if slice_mode == 'max':
-            max_coords = sampler._get_grid_coords_from_indices(max_grid_idx)
-            ax.scatter([max_coords[dim_i]], [max_coords[dim_j]],
-                      c='red', s=100, marker='*', edgecolor='white',
-                      linewidth=1.5, label='Global Max', zorder=10)
+        # Mark the best-fit point with a white star with a black border.
+        max_coords = sampler._get_grid_coords_from_indices(max_grid_idx)
+        ax.scatter([max_coords[dim_i]], [max_coords[dim_j]],
+                  c='white', s=120, marker='*', edgecolor='black',
+                  linewidth=1.0, label='Best fit', zorder=10)
 
         ax.set_xlabel(f'Param {dims[dim_i]}')
         ax.set_ylabel(f'Param {dims[dim_j]}')
@@ -326,8 +344,13 @@ def _plot_nd_profile(sampler, filename, plot_settings):
         axes[idx].set_visible(False)
 
     mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
+    max_coords = sampler._get_grid_coords_from_indices(max_grid_idx)
+    best_fit_str = ', '.join(f'param {dims[k]} = {max_coords[k]:.4g}'
+                             for k in range(n_dims))
     fig.suptitle(f'{n_dims}D Profile Likelihood - {mode_str} Projections\n'
-                 f'Dimensions: {dims}', fontsize=14, y=0.995)
+                 f'Dimensions: {dims}\n'
+                 f'Best fit: {best_fit_str}, log L = {max_likelihood:.4g}',
+                 fontsize=12, y=0.995)
     fig.tight_layout()
 
     # Save the plot
