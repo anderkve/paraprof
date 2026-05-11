@@ -1,4 +1,4 @@
-# ParaProf Performance Benchmarks
+# ParaProf performance benchmarks
 
 This directory contains the performance benchmark suite for ParaProf.
 
@@ -24,16 +24,16 @@ pip install -e ".[all]"
 pip install mpi4py
 ```
 
-## Running Benchmarks
+## Running benchmarks
 
-### Run All Benchmarks
+### Run all benchmarks
 
 ```bash
 # Run with 4 MPI processes (1 master + 3 workers)
 mpiexec -n 4 python benchmarks/benchmark_suite.py --all
 ```
 
-### Run Specific Benchmarks
+### Run specific benchmarks
 
 ```bash
 # Grid size scaling
@@ -79,7 +79,7 @@ Each benchmark result includes:
 - Best likelihood values (where applicable)
 - Derived metrics (evaluations per second, speedup factors, etc.)
 
-## Example Output
+## Example output
 
 ```
 ================================================================================
@@ -94,29 +94,29 @@ Timestamp: 2025-11-12T14:30:22.123456
 ================================================================================
 ```
 
-## Interpreting Results
+## Interpreting results
 
-### Grid Size Scaling
+### Grid size scaling
 - **Linear scaling**: Evaluation count grows as O(N²) for 2D grids
 - **Time per evaluation**: Should remain roughly constant
 - **Parallel efficiency**: Check evaluations_per_second consistency
 
-### Mutation Strategies
+### Mutation strategies
 - **best_strategy**: The mutation strategy that found the highest likelihood
 - Compare `evaluation_counts` to see efficiency differences
 - Compare `best_likelihoods` to see solution quality differences
 
-### Convergence Efficiency
+### Convergence efficiency
 - **accuracy_delta**: Should be close to 0 (found true maximum)
 - **evaluations_per_grid_point**: Lower is better (more efficient)
 - **total_evaluations**: Total cost to convergence
 
-### Refinement Efficiency
+### Refinement efficiency
 - **time_speedup**: How much faster refinement is vs direct fine grid
 - **evaluation_speedup**: How many fewer evaluations are needed
 - Values > 1.0 indicate refinement is beneficial
 
-## Customizing Benchmarks
+## Customizing benchmarks
 
 To add custom benchmarks, edit `benchmark_suite.py`:
 
@@ -143,7 +143,7 @@ def benchmark_my_custom_test(self, ...):
     return result
 ```
 
-## Performance Tips
+## Performance tips
 
 1. **Use more MPI processes** for larger grids (e.g., `-n 8` for 30x30 grids)
 2. **Reduce grid sizes** for quicker testing (use `--grid-size 10`)
