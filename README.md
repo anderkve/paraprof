@@ -1,4 +1,4 @@
-# ParaProf: Parallel Profile Likelihood Computation
+# ParaProf: Parallel profile likelihood computation
 
 [![Tests](https://github.com/anderkve/paraprof/workflows/Tests/badge.svg)](https://github.com/anderkve/paraprof/actions)
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -6,26 +6,26 @@
 
 **ParaProf** is a Python package for computing profile likelihood projections using parallelized grid-based optimization. It places populations on grid points and dynamically activates regions of interest, optimizing the remaining parameters at each grid point with differential evolution (DE) or L-BFGS-B.
 
-## Key Features
+## Key features
 
-- **Parallel Execution**: MPI-based master-worker architecture
-- **N-Dimensional Projections**: 1D, 2D, 3D, and higher-dimensional profile likelihood grids
-- **Adaptive Sampling**: Dynamic grid activation focuses effort on high-likelihood regions
-- **Grid Refinement**: Interpolation-based refinement for increased resolution without full re-computation
-- **Patching Algorithm**: Wave-based refinement to escape local optima
-- **Built-in Visualization**: Plotting for 1D, 2D, and N-D projections
-- **Benchmark Suite**: Test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
-- **Warm Starting**: Reuse results across multiple projections
+- **Parallel execution**: MPI-based master-worker architecture
+- **N-dimensional projections**: 1D, 2D, 3D, and higher-dimensional profile likelihood grids
+- **Adaptive sampling**: Dynamic grid activation focuses effort on high-likelihood regions
+- **Grid refinement**: Interpolation-based refinement for increased resolution without full re-computation
+- **Patching algorithm**: Wave-based refinement to escape local optima
+- **Built-in visualization**: Plotting for 1D, 2D, and N-D projections
+- **Benchmark suite**: Test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
+- **Warm starting**: Reuse results across multiple projections
 
 ## Installation
 
-### Basic Installation
+### Basic installation
 
 ```bash
 pip install -e .
 ```
 
-### With Optional Dependencies
+### With optional dependencies
 
 ```bash
 # With visualization support
@@ -47,9 +47,9 @@ pip install -e ".[all]"
 - Matplotlib (optional, for visualization)
 - scikit-learn (optional, for clustering during refinement)
 
-## Quick Start
+## Quick start
 
-### Minimal Example
+### Minimal example
 
 ```python
 from mpi4py import MPI
@@ -90,26 +90,26 @@ Run with MPI:
 mpiexec -n 4 python your_script.py
 ```
 
-## How It Works
+## How it works
 
-### Algorithm Overview
+### Algorithm overview
 
 ParaProf uses a **grid-based optimization** strategy:
 
-1. **Grid Setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
-2. **Initial Optimization**: Global L-BFGS-B finds starting maxima.
-3. **Population Initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
-4. **Adaptive Evolution**: DE (or L-BFGS-B) optimizes the continuous parameters at each active grid point.
-5. **Dynamic Activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
+1. **Grid setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
+2. **Initial optimization**: Global L-BFGS-B finds starting maxima.
+3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
+4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the continuous parameters at each active grid point.
+5. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
 6. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best continuous parameters and locally polishes any improvement found.
 7. **Refinement**: Optional grid-resolution increase, using interpolation of the coarse grid as warm-starts for the finer grid.
 
-### Master-Worker Architecture
+### Master-worker architecture
 
-- **Master Process** (rank 0): Orchestrates workflow, manages job queues, tracks convergence
-- **Worker Processes** (rank 1+): Evaluate target function in parallel, stateless execution
+- **Master process** (rank 0): Orchestrates workflow, manages job queues, tracks convergence
+- **Worker processes** (rank 1+): Evaluate target function in parallel, stateless execution
 
-### Key Components
+### Key components
 
 - `ProfileProjector`: Central state manager and algorithm configuration
 - `master_main()`: State machine coordinating the workflow
@@ -132,7 +132,7 @@ mpiexec -n 4 python examples/run_rosenbrock_4d.py
 
 ## Configuration
 
-### Key Parameters
+### Key parameters
 
 These are the user-facing constructor arguments most scans actually need:
 
@@ -147,7 +147,7 @@ These are the user-facing constructor arguments most scans actually need:
 - `refinement_direct_eval`: Skip optimization in the refinement run; just evaluate the interpolated point at each fine grid cell (default: False)
 - `samples_output_file`: CSV path to log every evaluation (default: None)
 
-### Advanced Configuration
+### Advanced configuration
 
 Pass an `advanced_config` dict for expert tuning. Only keys that move solution quality or are real iteration budgets are exposed:
 
@@ -164,7 +164,7 @@ Pass an `advanced_config` dict for expert tuning. Only keys that move solution q
 
 See the constructor docstring of `ProfileProjector` for the full structure. Several DE knobs that did not change ROI grid quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are now module-level constants in `sampler.py` and are intentionally not user-tunable.
 
-### Projection Options
+### Projection options
 
 Each projection is a dict. Required keys:
 
@@ -183,36 +183,36 @@ Optional keys:
 
 ParaProf automatically generates publication-ready plots:
 
-### Profile Likelihood Plots
+### Profile likelihood plots
 
-**1D Profiles**
+**1D profiles**
 - Line plot with confidence levels (68%, 95%)
 - Active grid point markers
 
-**2D Profiles**
+**2D profiles**
 - Heatmap with contour lines
 - Customizable colorbars
 
-**3D+ Profiles**
+**3D+ profiles**
 - Pairwise 2D slice plots
 - Maximum slice or marginalized views
 
-### Continuous Parameter Plots
+### Continuous parameter plots
 
 When `save_plots=True`, ParaProf also generates plots showing the optimal continuous parameter values across the projection space:
 
-**1D Projections**
+**1D projections**
 - Multi-panel line plots showing how each continuous parameter varies along the projection dimension
 
-**2D Projections**
+**2D projections**
 - Heatmaps (one per continuous parameter) showing the optimal parameter value at each grid point
 
-**3D+ Projections**
+**3D+ projections**
 - 2D slice plots for each continuous parameter through the maximum likelihood point
 
 These plots visualize which parameter values were selected by the profiling procedure at different points in the projection grid, helping you understand the parameter correlations and structure of the likelihood surface.
 
-### Plot Settings
+### Plot settings
 
 ```python
 plot_settings = {
@@ -239,7 +239,7 @@ pytest tests/ -v --cov=src/paraprof --cov-report=term-missing
 
 ## Development
 
-### Project Structure
+### Project structure
 
 ```
 paraprof/
@@ -292,5 +292,5 @@ ParaProf implements grid-anchored differential evolution with adaptive sampling 
 ---
 
 **Maintainer**: Anders Kvellestad
-**Python Version**: 3.10+
+**Python version**: 3.10+
 **Status**: Active Development
