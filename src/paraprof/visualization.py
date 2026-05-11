@@ -130,8 +130,8 @@ def _plot_1d_profile(sampler, filename, plot_settings):
 
     title = f'1D Profile Likelihood for Parameter {dim}'
     if best_fit_x is not None:
-        title += (f'\nBest fit: param {dim} = {best_fit_x:.4g}, '
-                  f'log L = {best_fit_loglike:.4g}')
+        title += (f'\nBest fit: param {dim} = {best_fit_x:.3e}, '
+                  f'log L = {best_fit_loglike:.3e}')
     ax.set_title(title, fontsize=20)
     ax.set_xlabel(f'Parameter {dim}', fontsize=24)
     ax.set_ylabel('Log Likelihood', fontsize=24)
@@ -232,9 +232,9 @@ def _plot_2d_profile(sampler, filename, plot_settings):
 
     title = f'Profile likelihood for parameters {sampler.projection_dims}'
     if best_fit_coords is not None:
-        title += (f'\nBest fit: param {dim1} = {best_fit_coords[0]:.4g}, '
-                  f'param {dim2} = {best_fit_coords[1]:.4g}, '
-                  f'log L = {best_fit_loglike:.4g}')
+        title += (f'\nBest fit: param {dim1} = {best_fit_coords[0]:.3e}, '
+                  f'param {dim2} = {best_fit_coords[1]:.3e}, '
+                  f'log L = {best_fit_loglike:.3e}')
     ax.set_title(title, fontsize=15)
     ax.set_xlabel(f'Parameter {dim1}', fontsize=15)
     ax.set_ylabel(f'Parameter {dim2}', fontsize=15)
@@ -366,11 +366,11 @@ def _plot_nd_profile(sampler, filename, plot_settings):
 
     mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
     max_coords = sampler._get_grid_coords_from_indices(max_grid_idx)
-    best_fit_str = ', '.join(f'param {dims[k]} = {max_coords[k]:.4g}'
+    best_fit_str = ', '.join(f'param {dims[k]} = {max_coords[k]:.3e}'
                              for k in range(n_dims))
     fig.suptitle(f'{n_dims}D Profile Likelihood - {mode_str} Projections\n'
                  f'Dimensions: {dims}\n'
-                 f'Best fit: {best_fit_str}, log L = {max_likelihood:.4g}',
+                 f'Best fit: {best_fit_str}, log L = {max_likelihood:.3e}',
                  fontsize=12, y=0.995)
     fig.tight_layout()
 
