@@ -8,16 +8,16 @@ from .base import Job
 class PatchingTestJob(Job):
     """
     A job to test whether a grid point can be improved using
-    continuous parameters from a neighbor.
+    profiled parameters from a neighbor.
 
     This is used in wave-based patching to systematically verify
     that each grid point has found the best solution.
     """
-    def __init__(self, job_id, sampler, grid_idx, test_continuous_params,
+    def __init__(self, job_id, sampler, grid_idx, test_profiled_params,
                  wave_number):
         super().__init__(job_id, 'PATCHING_TEST', sampler)
         self.grid_idx = grid_idx
-        self.test_continuous_params = test_continuous_params
+        self.test_profiled_params = test_profiled_params
         self.wave_number = wave_number
 
         # Store current best for comparison
@@ -29,7 +29,7 @@ class PatchingTestJob(Job):
 
     def start(self):
         """Return task to evaluate the test parameters."""
-        full_params = self.sampler._construct_params(self.grid_idx, self.test_continuous_params)
+        full_params = self.sampler._construct_params(self.grid_idx, self.test_profiled_params)
         context = {
             'type': self.type,
             'job_id': self.id,
@@ -62,7 +62,7 @@ class PatchingTestJob(Job):
 
         # Construct full parameter vector for initial evaluation
         start_params_full = self.sampler._construct_params(
-            self.grid_idx, self.test_continuous_params
+            self.grid_idx, self.test_profiled_params
         )
 
         # Create L-BFGS-B job to optimize from the improved starting point
@@ -71,8 +71,8 @@ class PatchingTestJob(Job):
             job_id=next_job_id,
             job_type='PATCHING_LBFGSB',
             sampler=self.sampler,
-            opt_dims=tuple(self.sampler.continuous_dims),
-            start_params=self.test_continuous_params,
+            opt_dims=tuple(self.sampler.profiled_dims),
+            start_params=self.test_profiled_params,
             grid_idx=self.grid_idx,
             start_params_full=start_params_full,
             seed_history=None,

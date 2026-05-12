@@ -98,9 +98,9 @@ ParaProf uses a **grid-based optimization** strategy:
 1. **Grid setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
 2. **Initial optimization**: Global L-BFGS-B finds starting maxima.
 3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
-4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the continuous parameters at each active grid point.
+4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the profiled parameters at each active grid point.
 5. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
-6. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best continuous parameters and locally polishes any improvement found.
+6. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best profiled parameters and locally polishes any improvement found.
 7. **Refinement**: Optional grid-resolution increase, using interpolation of the coarse grid as warm-starts for the finer grid.
 
 ### Master-worker architecture
@@ -142,7 +142,7 @@ These are the user-facing constructor arguments most scans actually need:
 - `lbfgsb_max_iter`: Maximum L-BFGS-B iterations per polish (default: 50)
 - `lbfgsb_polish`: Apply L-BFGS-B polish after DE convergence (default: True)
 - `initial_points`: Optional array of starting points to activate explicitly, useful when prior knowledge of good regions exists (default: None)
-- `use_clustering`: Detect multiple modes during refinement (default: True; only fires inside a refinement run with continuous dimensions)
+- `use_clustering`: Detect multiple modes during refinement (default: True; only fires inside a refinement run with profiled dimensions)
 - `refinement_direct_eval`: Skip optimization in the refinement run; just evaluate the interpolated point at each fine grid cell (default: False)
 - `samples_output_file`: CSV path to log every evaluation (default: None)
 
@@ -196,18 +196,18 @@ ParaProf has a system for automatically generating some simple plots to check th
 - Pairwise 2D slice plots
 - Maximum slice or marginalized views
 
-### Continuous parameter plots
+### Profiled parameter plots
 
-When `save_plots=True`, ParaProf also generates plots showing the optimal continuous parameter values across the projection space:
+When `save_plots=True`, ParaProf also generates plots showing the optimal profiled parameter values across the projection space:
 
 **1D projections**
-- Multi-panel line plots showing how each continuous parameter varies along the projection dimension
+- Multi-panel line plots showing how each profiled parameter varies along the projection dimension
 
 **2D projections**
-- Heatmaps (one per continuous parameter) showing the optimal parameter value at each grid point
+- Heatmaps (one per profiled parameter) showing the optimal parameter value at each grid point
 
 **3D+ projections**
-- 2D slice plots for each continuous parameter through the maximum likelihood point
+- 2D slice plots for each profiled parameter through the maximum likelihood point
 
 These plots visualize which parameter values were selected by the profiling procedure at different points in the projection grid, helping you understand the parameter correlations and structure of the likelihood surface.
 
@@ -220,7 +220,7 @@ plot_settings = {
     'slice_mode': 'max',  # or 'all' for marginalization (3D+)
     'vmin': -4.0,
     'vmax': 0.0,
-    'plot_continuous_params': True,  # Enable/disable continuous param plots
+    'plot_profiled_params': True,  # Enable/disable profiled param plots
 }
 ```
 

@@ -10,7 +10,7 @@ from .master import (
     terminate_workers,
 )
 from .worker import worker_main
-from .visualization import plot_profiles, plot_continuous_parameters
+from .visualization import plot_profiles, plot_profiled_parameters
 from .test_functions import get_test_function
 from .logger import setup_logger, get_logger, set_log_level
 from .exceptions import (
@@ -34,7 +34,7 @@ __all__ = [
     'terminate_workers',
     'worker_main',
     'plot_profiles',
-    'plot_continuous_parameters',
+    'plot_profiled_parameters',
     'get_test_function',
     'setup_logger',
     'get_logger',
