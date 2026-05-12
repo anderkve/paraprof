@@ -51,8 +51,8 @@ class DEGridPointJob(Job):
 
     def start(self):
         """Generate all trial points and return their evaluation tasks."""
-        # Direct evaluation mode: no continuous dimensions, so no evolution needed
-        if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
+        # Direct evaluation mode: no profiled dimensions, so no evolution needed
+        if self.sampler.direct_eval_mode or self.sampler.n_prof_dims == 0:
             self.success = True
             self._is_finished = True
             return []
@@ -70,7 +70,7 @@ class DEGridPointJob(Job):
                 F_i = cauchy.rvs(loc=mu_F, scale=DE_F_CAUCHY_SCALE)
             F_i = min(F_i, DE_F_MAX_VALUE)
 
-            x_i_params = grid_state['continuous_params'][i]
+            x_i_params = grid_state['profiled_params'][i]
 
             use_neighbor_mutation = False
             best_neighbor_params = None
@@ -82,7 +82,7 @@ class DEGridPointJob(Job):
                         if neighbor_state['best_fitness'] > best_neighbor_fitness:
                             best_neighbor_fitness = neighbor_state['best_fitness']
                             neighbor_best_idx = np.argmax(neighbor_state['fitnesses'])
-                            best_neighbor_params = neighbor_state['continuous_params'][neighbor_best_idx]
+                            best_neighbor_params = neighbor_state['profiled_params'][neighbor_best_idx]
 
                 if best_neighbor_params is not None and best_neighbor_fitness > grid_state['best_fitness']:
                     use_neighbor_mutation = True
@@ -93,23 +93,23 @@ class DEGridPointJob(Job):
             mutant = None
             if use_neighbor_mutation:
                 r2_p, r3_p = np.random.choice(self.parent_pool, 2, replace=False)
-                r2, r3 = r2_p['continuous_params'], r3_p['continuous_params']
+                r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
                 mutant = x_i_params + F_i * (best_neighbor_params - x_i_params) + F_i * (r2 - r3)
 
             elif self.sampler.mutation_strategy == 'current-to-rand/1':
                 p1_p, p2_p, p3_p = np.random.choice(self.parent_pool, 3, replace=False)
-                p1, p2, p3 = p1_p['continuous_params'], p2_p['continuous_params'], p3_p['continuous_params']
+                p1, p2, p3 = p1_p['profiled_params'], p2_p['profiled_params'], p3_p['profiled_params']
                 mutant = x_i_params + F_i * (p1 - x_i_params) + F_i * (p2 - p3)
 
             elif self.sampler.mutation_strategy == 'rand/1':
                 r1_p, r2_p, r3_p = np.random.choice(self.parent_pool, 3, replace=False)
-                r1, r2, r3 = r1_p['continuous_params'], r2_p['continuous_params'], r3_p['continuous_params']
+                r1, r2, r3 = r1_p['profiled_params'], r2_p['profiled_params'], r3_p['profiled_params']
                 mutant = r1 + F_i * (r2 - r3)
 
             elif self.sampler.mutation_strategy == 'current-to-pbest/1':
                 archive = self.pbest_archive if self.pbest_archive else self.parent_pool
                 x_pbest_p = np.random.choice(archive)
-                x_pbest = x_pbest_p['continuous_params']
+                x_pbest = x_pbest_p['profiled_params']
 
                 potential_diff = self.parent_pool
                 if len(potential_diff) < 2:
@@ -118,23 +118,23 @@ class DEGridPointJob(Job):
                 max_attempts = 10
                 for _ in range(max_attempts):
                     r2_p, r3_p = np.random.choice(potential_diff, 2, replace=False)
-                    if not (np.array_equal(r2_p['continuous_params'], x_pbest) or
-                            np.array_equal(r3_p['continuous_params'], x_pbest)):
+                    if not (np.array_equal(r2_p['profiled_params'], x_pbest) or
+                            np.array_equal(r3_p['profiled_params'], x_pbest)):
                         break
 
-                r2, r3 = r2_p['continuous_params'], r3_p['continuous_params']
+                r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
                 mutant = x_i_params + F_i * (x_pbest - x_i_params) + F_i * (r2 - r3)
 
             if mutant is None:
                 self.evals_remaining -= 1
                 continue
 
-            cross_points = np.random.rand(self.sampler.n_cont_dims) < CR_i
+            cross_points = np.random.rand(self.sampler.n_prof_dims) < CR_i
             if not np.any(cross_points):
-                cross_points[np.random.randint(0, self.sampler.n_cont_dims)] = True
+                cross_points[np.random.randint(0, self.sampler.n_prof_dims)] = True
             trial_params = np.where(cross_points, mutant, x_i_params)
 
-            trial_params = self.sampler._ensure_bounds(trial_params, self.sampler.continuous_dims)
+            trial_params = self.sampler._ensure_bounds(trial_params, self.sampler.profiled_dims)
 
             full_trial_params = self.sampler._construct_params(self.grid_idx, trial_params)
 
@@ -174,7 +174,7 @@ class DEGridPointJob(Job):
         grid_state = self.grid_state
 
         if trial_fitness > grid_state['fitnesses'][point_idx]:
-            grid_state['continuous_params'][point_idx] = trial_params
+            grid_state['profiled_params'][point_idx] = trial_params
             grid_state['fitnesses'][point_idx] = trial_fitness
             self.successful_F_list.append(F_i)
             self.successful_CR_list.append(CR_i)
@@ -194,7 +194,7 @@ class DEGridPointJob(Job):
         if not self.success:
             return None
 
-        if self.sampler.direct_eval_mode or self.sampler.n_cont_dims == 0:
+        if self.sampler.direct_eval_mode or self.sampler.n_prof_dims == 0:
             return None
 
         grid_state = self.grid_state
@@ -212,8 +212,8 @@ class DEGridPointJob(Job):
                 self.sampler.global_max_target_val = new_best_fitness
 
             best_idx = np.argmax(grid_state['fitnesses'])
-            best_continuous_params = grid_state['continuous_params'][best_idx]
-            full_params = self.sampler._construct_params(self.grid_idx, best_continuous_params)
+            best_profiled_params = grid_state['profiled_params'][best_idx]
+            full_params = self.sampler._construct_params(self.grid_idx, best_profiled_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
         if grid_state['status'] == 'active' and \

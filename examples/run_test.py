@@ -51,12 +51,12 @@ TEST_FUNCTION = "rosenbrock_4d"
 #
 # ParaProf now supports two modes:
 #
-# 1. NORMAL MODE (n_continuous_dims > 0):
+# 1. NORMAL MODE (n_profiled_dims > 0):
 #    - Projects onto fewer dimensions than the function has
-#    - Optimizes continuous dimensions at each grid point
+#    - Optimizes profiled dimensions at each grid point
 #    - Example: 4D function with dims=[0,1] projects onto 2D, optimizes [2,3]
 #
-# 2. DIRECT EVALUATION MODE (n_continuous_dims == 0):
+# 2. DIRECT EVALUATION MODE (n_profiled_dims == 0):
 #    - NEW! Projects onto ALL dimensions of the function
 #    - Evaluates directly at grid points (no optimization needed)
 #    - Uses intelligent sparse grid activation for efficiency
@@ -69,7 +69,7 @@ PROJECTIONS_TO_RUN = [
     # Iteration 4: Higher resolution grid for better coverage
     {'dims': [0, 3], 'grid_points': [100, 100], 'grid_refinement_factor': 2},
 
-    # Alternative: 1D projections with optimization (one continuous dim)
+    # Alternative: 1D projections with optimization (one profiled dim)
     # {'dims': [0], 'grid_points': [75], 'patch_coarse_grid': True, 'grid_refinement_factor': 2},
     # {'dims': [1], 'grid_points': [75], 'patch_coarse_grid': True, 'grid_refinement_factor': 2},
 ]

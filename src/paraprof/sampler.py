@@ -200,7 +200,7 @@ class ProfileProjector:
                 'clustering': {
                     'method': str,                 # Default: 'dbscan'
                     'eps': float,                  # Default: None (auto-estimated)
-                    'min_samples': int,            # Default: None (auto: max(2, n_cont_dims))
+                    'min_samples': int,            # Default: None (auto: max(2, n_prof_dims))
                     'eps_multiplier': float,       # Default: 3.0
                     'projection_weight': float,    # Default: 1.0
                 },
@@ -586,17 +586,17 @@ class ProfileProjector:
         if self.is_refinement_run:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patch_refined_grid else 'Disabled'}")
 
-        self.continuous_dims = [d for d in range(self.dims) if d not in self.projection_dims]
+        self.profiled_dims = [d for d in range(self.dims) if d not in self.projection_dims]
         self.n_proj_dims = len(self.projection_dims)
-        self.n_cont_dims = len(self.continuous_dims)
+        self.n_prof_dims = len(self.profiled_dims)
 
-        # Detect direct evaluation mode (no continuous dimensions to optimize)
-        self.direct_eval_mode = (self.n_cont_dims == 0)
+        # Detect direct evaluation mode (no profiled dimensions to optimize)
+        self.direct_eval_mode = (self.n_prof_dims == 0)
 
         if self.direct_eval_mode:
             self.logger.info("")
             self.logger.info(f"  NOTE: Grid dimensionality equals function dimensionality ({self.dims}D).")
-            self.logger.info("  No continuous dimensions to optimize - will evaluate at grid points directly.")
+            self.logger.info("  No profiled dimensions to optimize - will evaluate at grid points directly.")
             self.logger.info("")
 
         self.grid_shape = tuple(self.grid_points_per_dim)
@@ -617,8 +617,8 @@ class ProfileProjector:
         # Performance optimizations: caches
         self._neighbor_cache = {}
 
-        # Cache bounds arrays for continuous and projection dimensions
-        self._continuous_bounds = self.bounds[self.continuous_dims] if len(self.continuous_dims) > 0 else None
+        # Cache bounds arrays for profiled and projection dimensions
+        self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
         self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
 
         # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
@@ -637,15 +637,15 @@ class ProfileProjector:
                     continue
 
                 likelihood = solution['likelihood']
-                continuous_params = solution['continuous_params']
+                profiled_params = solution['profiled_params']
 
                 # Store in profile likelihood grid for visualization
                 self.profile_likelihood_grid[fine_idx] = likelihood
 
                 # Create population state for this transferred point
-                # This ensures continuous parameter plots include coarse grid data
+                # This ensures profiled parameter plots include coarse grid data
                 self.population[fine_idx] = {
-                    'continuous_params': np.array([continuous_params]),  # Shape: (1, n_cont_dims)
+                    'profiled_params': np.array([profiled_params]),  # Shape: (1, n_prof_dims)
                     'fitnesses': np.array([likelihood]),
                     'best_fitness': likelihood,
                     'status': 'optimized',  # Mark as already optimized from coarse run
@@ -658,7 +658,7 @@ class ProfileProjector:
 
                 n_transferred += 1
 
-            self.logger.info(f"Transferred {n_transferred} coarse grid solutions to fine grid (likelihood + continuous params)")
+            self.logger.info(f"Transferred {n_transferred} coarse grid solutions to fine grid (likelihood + profiled params)")
             self.logger.info("=" * 80)
 
 
@@ -672,10 +672,10 @@ class ProfileProjector:
             Dictionary containing:
             - 'grid_axes': List of arrays defining the grid coordinates
             - 'projection_dims': List of projection dimension indices
-            - 'continuous_dims': List of continuous dimension indices
+            - 'profiled_dims': List of profiled dimension indices
             - 'solutions': Dict mapping grid_idx -> solution dict
               Each solution dict contains:
-              - 'continuous_params': Best continuous parameters at this grid point
+              - 'profiled_params': Best profiled parameters at this grid point
               - 'likelihood': Best likelihood value
               - 'full_params': Complete parameter vector
         """
@@ -689,7 +689,7 @@ class ProfileProjector:
                 # grid (see _reset_for_new_projection); accept both.
                 if state['status'] in ['converged', 'optimized']:
                     solutions[grid_idx] = {
-                        'continuous_params': np.empty(0),  # Empty array
+                        'profiled_params': np.empty(0),  # Empty array
                         'likelihood': state['best_fitness'],
                         'full_params': state['full_params'].copy()
                     }
@@ -697,12 +697,12 @@ class ProfileProjector:
                 # Normal mode: only export converged/optimized points
                 if state['status'] in ['converged', 'optimized']:
                     best_ind_idx = np.argmax(state['fitnesses'])
-                    continuous_params = state['continuous_params'][best_ind_idx]
+                    profiled_params = state['profiled_params'][best_ind_idx]
                     likelihood = state['fitnesses'][best_ind_idx]
-                    full_params = self._construct_params(grid_idx, continuous_params)
+                    full_params = self._construct_params(grid_idx, profiled_params)
 
                     solutions[grid_idx] = {
-                        'continuous_params': continuous_params.copy(),
+                        'profiled_params': profiled_params.copy(),
                         'likelihood': likelihood,
                         'full_params': full_params.copy()
                     }
@@ -710,7 +710,7 @@ class ProfileProjector:
         return {
             'grid_axes': [ax.copy() for ax in self.grid_axes],
             'projection_dims': self.projection_dims.copy(),
-            'continuous_dims': self.continuous_dims.copy(),
+            'profiled_dims': self.profiled_dims.copy(),
             'solutions': solutions,
             'grid_shape': self.grid_shape,
             # Convert heap to list of entries for export (extract entry from 3-element tuple)
@@ -762,8 +762,8 @@ class ProfileProjector:
             self.global_pool_counter = len(self.global_solution_pool)
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
-        # Perform clustering if enabled and we have continuous parameters
-        if self.use_clustering and len(coarse_solution['continuous_dims']) > 0:
+        # Perform clustering if enabled and we have profiled parameters
+        if self.use_clustering and len(coarse_solution['profiled_dims']) > 0:
             from .interpolation import cluster_coarse_grid_by_modes
             self.logger.info("=" * 80)
             self.logger.info("--- Clustering Coarse Grid by Modes ---")
@@ -793,7 +793,7 @@ class ProfileProjector:
             if not self.use_clustering:
                 self.logger.info("Clustering disabled by configuration")
             else:
-                self.logger.info("No continuous parameters - clustering not applicable")
+                self.logger.info("No profiled parameters - clustering not applicable")
 
         self.logger.info("=" * 80)
         self.logger.info("--- Refinement Run Configuration ---")
@@ -827,15 +827,15 @@ class ProfileProjector:
         -------
         list of dict
             List of candidates, each containing:
-            - 'continuous_params': np.ndarray
+            - 'profiled_params': np.ndarray
             - 'cluster_id': int or None
             - 'method': str
         """
         # If clustering is not available or disabled, use standard interpolation
         if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
-            continuous_params = self.refinement_interpolator.interpolate(grid_coords)
+            profiled_params = self.refinement_interpolator.interpolate(grid_coords)
             return [{
-                'continuous_params': continuous_params,
+                'profiled_params': profiled_params,
                 'cluster_id': None,
                 'method': 'interpolated'
             }]
@@ -1078,11 +1078,11 @@ class ProfileProjector:
             grid_axes = self.grid_axes
         return np.array([grid_axes[i][idx] for i, idx in enumerate(grid_idx)])
 
-    def _construct_params(self, grid_idx, continuous_params, grid_axes=None):
-        """Constructs a full parameter vector from grid and continuous parts."""
+    def _construct_params(self, grid_idx, profiled_params, grid_axes=None):
+        """Constructs a full parameter vector from grid and profiled parts."""
         full_params = np.zeros(self.dims)
         full_params[self.projection_dims] = self._get_grid_coords_from_indices(grid_idx, grid_axes)
-        full_params[self.continuous_dims] = continuous_params
+        full_params[self.profiled_dims] = profiled_params
         return full_params
 
 
@@ -1092,8 +1092,8 @@ class ProfileProjector:
         Uses cached bounds arrays for performance.
         """
         # Fast path: use cached bounds for common cases
-        if dims_to_check is self.continuous_dims and self._continuous_bounds is not None:
-            return np.clip(vec, self._continuous_bounds[:, 0], self._continuous_bounds[:, 1])
+        if dims_to_check is self.profiled_dims and self._profiled_bounds is not None:
+            return np.clip(vec, self._profiled_bounds[:, 0], self._profiled_bounds[:, 1])
         elif dims_to_check is self.projection_dims and self._projection_bounds is not None:
             return np.clip(vec, self._projection_bounds[:, 0], self._projection_bounds[:, 1])
 
@@ -1183,9 +1183,9 @@ class ProfileProjector:
 
     def _sample_from_global_pool(self, n_samples):
         """
-        Randomly samples continuous parameter values from the global solution pool.
+        Randomly samples profiled parameter values from the global solution pool.
 
-        Extracts continuous dimensions for the current projection from stored full
+        Extracts profiled dimensions for the current projection from stored full
         parameter vectors.
 
         Parameters
@@ -1196,13 +1196,13 @@ class ProfileProjector:
         Returns
         -------
         np.ndarray or None
-            Array of shape (n_samples, n_cont_dims) with continuous params for
+            Array of shape (n_samples, n_prof_dims) with profiled params for
             current projection, or None if pool is empty
         """
         if not self.global_solution_pool or n_samples == 0:
             return None
 
-        # In direct evaluation mode, there are no continuous dimensions to sample
+        # In direct evaluation mode, there are no profiled dimensions to sample
         if self.direct_eval_mode:
             return None
 
@@ -1210,9 +1210,9 @@ class ProfileProjector:
         n_available = len(self.global_solution_pool)
         sample_indices = np.random.choice(n_available, size=min(n_samples, n_available), replace=False)
 
-        # Extract continuous dims from full parameter vectors
+        # Extract profiled dims from full parameter vectors
         # Note: global_solution_pool is a heap of (fitness, count, entry) tuples
-        samples = np.array([self.global_solution_pool[i][2]['full_params'][self.continuous_dims]
+        samples = np.array([self.global_solution_pool[i][2]['full_params'][self.profiled_dims]
                            for i in sample_indices])
 
         return samples
@@ -1340,7 +1340,7 @@ class ProfileProjector:
                     job_id=next_job_id,
                     sampler=self,
                     grid_idx=neighbor_idx,
-                    warm_start_params=point[self.continuous_dims] # Warm start
+                    warm_start_params=point[self.profiled_dims] # Warm start
                 )
                 jobs.append(job)
                 activation_job_created_for_grid_points.add(neighbor_idx)
@@ -1381,8 +1381,8 @@ class ProfileProjector:
         # (status 'active' means activated but not yet optimized)
         for grid_idx, state in self.population.items():
             if state['status'] == 'active':
-                # Direct evaluation mode: no continuous dimensions to optimize
-                if self.direct_eval_mode or self.n_cont_dims == 0:
+                # Direct evaluation mode: no profiled dimensions to optimize
+                if self.direct_eval_mode or self.n_prof_dims == 0:
                     state['status'] = 'optimized'
                     continue
 
@@ -1391,7 +1391,7 @@ class ProfileProjector:
 
                 # Find the best individual to start from
                 best_ind_idx = np.argmax(state['fitnesses'])
-                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_params_partial = state['profiled_params'][best_ind_idx]
                 start_fitness = state['fitnesses'][best_ind_idx]
 
                 # Construct the full parameter vector for the initial task
@@ -1402,7 +1402,7 @@ class ProfileProjector:
                     job_id=next_job_id,
                     job_type='POST_ACTIVATION_LBFGSB',
                     sampler=self,
-                    opt_dims=tuple(self.continuous_dims),
+                    opt_dims=tuple(self.profiled_dims),
                     start_params=start_params_partial,
                     grid_idx=grid_idx,
                     start_params_full=start_params_full,
@@ -1445,8 +1445,8 @@ class ProfileProjector:
         # (status 'active' means activated but not yet converged)
         for grid_idx, state in self.population.items():
             if state['status'] == 'active':
-                # Direct evaluation mode: no continuous dimensions to optimize
-                if self.direct_eval_mode or self.n_cont_dims == 0:
+                # Direct evaluation mode: no profiled dimensions to optimize
+                if self.direct_eval_mode or self.n_prof_dims == 0:
                     state['status'] = 'converged'
                     continue
 
@@ -1455,7 +1455,7 @@ class ProfileProjector:
 
                 # Find the best individual to start from
                 best_ind_idx = np.argmax(state['fitnesses'])
-                start_params_partial = state['continuous_params'][best_ind_idx]
+                start_params_partial = state['profiled_params'][best_ind_idx]
                 start_fitness = state['fitnesses'][best_ind_idx]
 
                 # Construct the full parameter vector for the initial task
@@ -1466,7 +1466,7 @@ class ProfileProjector:
                     job_id=next_job_id,
                     job_type='LBFGSB_LOOP',
                     sampler=self,
-                    opt_dims=tuple(self.continuous_dims),
+                    opt_dims=tuple(self.profiled_dims),
                     start_params=start_params_partial,
                     grid_idx=grid_idx,
                     start_params_full=start_params_full,
@@ -1486,7 +1486,7 @@ class ProfileProjector:
 
         This method is called during refinement runs to activate neighbors of
         transferred coarse grid points, using interpolation to predict good
-        starting values for continuous parameters.
+        starting values for profiled parameters.
 
         Parameters
         ----------
@@ -1529,19 +1529,19 @@ class ProfileProjector:
 
                 # Use first candidate for activation jobs (optimization will explore from there)
                 if len(candidates) > 0:
-                    warm_start_params = candidates[0]['continuous_params']
-                    # Handle case where interpolation returns None (no continuous dims)
+                    warm_start_params = candidates[0]['profiled_params']
+                    # Handle case where interpolation returns None (no profiled dims)
                     if warm_start_params is None:
                         warm_start_params = None
                     # Check for NaN values
                     elif np.any(np.isnan(warm_start_params)):
                         # Fallback: use nearest transferred point's parameters
                         nearest_state = self.population[grid_idx]
-                        warm_start_params = nearest_state['continuous_params'][0]
+                        warm_start_params = nearest_state['profiled_params'][0]
                 else:
                     # No candidates - use fallback
                     nearest_state = self.population[grid_idx]
-                    warm_start_params = nearest_state['continuous_params'][0]
+                    warm_start_params = nearest_state['profiled_params'][0]
 
                 job = ActivationJob(
                     job_id=next_job_id,
@@ -1686,7 +1686,7 @@ class ProfileProjector:
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
-                # Direct-evaluation mode: no continuous parameters to optimize,
+                # Direct-evaluation mode: no profiled parameters to optimize,
                 # so refinement is just a single target evaluation at the fine
                 # grid point. ActivationJob handles this natively in
                 # direct_eval_mode (single eval at grid coords, status set to
@@ -1716,21 +1716,21 @@ class ProfileProjector:
                 # For direct evaluation mode with multiple candidates, evaluate all and pick best
                 if self.refinement_direct_eval and len(candidates) > 1:
                     # Create a special multi-candidate evaluation job
-                    all_cont_params = []
+                    all_prof_params = []
                     all_full_params = []
 
                     for candidate in candidates:
-                        cont_params = candidate['continuous_params']
-                        if cont_params is None:
-                            cont_params = np.array([])
-                        elif np.any(np.isnan(cont_params)):
+                        prof_params = candidate['profiled_params']
+                        if prof_params is None:
+                            prof_params = np.array([])
+                        elif np.any(np.isnan(prof_params)):
                             continue  # Skip NaN candidates
 
-                        full_params = self._construct_params(fine_idx, cont_params)
-                        all_cont_params.append(cont_params)
+                        full_params = self._construct_params(fine_idx, prof_params)
+                        all_prof_params.append(prof_params)
                         all_full_params.append(full_params)
 
-                    if len(all_cont_params) == 0:
+                    if len(all_prof_params) == 0:
                         continue  # All candidates were invalid
 
                     # Create ActivationJob that evaluates all candidates
@@ -1738,15 +1738,15 @@ class ProfileProjector:
                         job_id=next_job_id,
                         sampler=self,
                         grid_idx=fine_idx,
-                        warm_start_params=all_cont_params[0],  # Initial params (will be overridden)
+                        warm_start_params=all_prof_params[0],  # Initial params (will be overridden)
                         mark_converged=True
                     )
                     # Override to evaluate all candidates
-                    job.pop_size = len(all_cont_params)
-                    job.all_continuous_params = np.array(all_cont_params)
+                    job.pop_size = len(all_prof_params)
+                    job.all_profiled_params = np.array(all_prof_params)
                     job.all_full_params = all_full_params
-                    job.fitnesses = np.full(len(all_cont_params), -np.inf)
-                    job.evals_remaining = len(all_cont_params)
+                    job.fitnesses = np.full(len(all_prof_params), -np.inf)
+                    job.evals_remaining = len(all_prof_params)
 
                     jobs.append(job)
                     lbfgsb_job_created_for_grid_points.add(fine_idx)
@@ -1755,7 +1755,7 @@ class ProfileProjector:
                 else:
                     # Single candidate or optimization mode: use first candidate
                     candidate = candidates[0]
-                    start_params_partial = candidate['continuous_params']
+                    start_params_partial = candidate['profiled_params']
 
                     # Handle edge cases
                     if start_params_partial is None:
@@ -1778,7 +1778,7 @@ class ProfileProjector:
                         )
                         # Override to force single evaluation
                         job.pop_size = 1
-                        job.all_continuous_params = np.array([start_params_partial])
+                        job.all_profiled_params = np.array([start_params_partial])
                         job.all_full_params = [start_params_full]
                         job.fitnesses = np.full(1, -np.inf)
                         job.evals_remaining = 1
@@ -1788,7 +1788,7 @@ class ProfileProjector:
                             job_id=next_job_id,
                             job_type='REFINEMENT_LBFGSB',
                             sampler=self,
-                            opt_dims=tuple(self.continuous_dims),
+                            opt_dims=tuple(self.profiled_dims),
                             start_params=start_params_partial,
                             grid_idx=fine_idx,
                             start_params_full=start_params_full,
@@ -1805,7 +1805,7 @@ class ProfileProjector:
 
         if self.direct_eval_mode:
             # In direct_eval_mode the per-point jobs are ActivationJobs that
-            # simply evaluate the target at the fine grid point (no continuous
+            # simply evaluate the target at the fine grid point (no profiled
             # params to optimize).
             opt_method = "direct evaluation"
         elif self.refinement_direct_eval:
@@ -1871,7 +1871,7 @@ class ProfileProjector:
             state = self.population[idx]
             best_idx = np.argmax(state['fitnesses'])
             parent_pool.append({
-                'continuous_params': state['continuous_params'][best_idx],
+                'profiled_params': state['profiled_params'][best_idx],
                 'fitness': state['fitnesses'][best_idx]
             })
 
@@ -1913,8 +1913,8 @@ class ProfileProjector:
         """
         Creates a new L-BFGS-B optimization job for a single converged grid point.
         """
-        # Direct evaluation mode: no continuous dimensions to optimize
-        if self.direct_eval_mode or self.n_cont_dims == 0:
+        # Direct evaluation mode: no profiled dimensions to optimize
+        if self.direct_eval_mode or self.n_prof_dims == 0:
             # Mark as optimized without L-BFGS-B refinement
             state = self.population.get(grid_idx)
             if state:
@@ -1933,7 +1933,7 @@ class ProfileProjector:
         # === L-BFGS-B OPTIMIZATION ===
         # Find the best individual to start from
         best_ind_idx = np.argmax(state['fitnesses'])
-        start_params_partial = state['continuous_params'][best_ind_idx]
+        start_params_partial = state['profiled_params'][best_ind_idx]
         start_fitness = state['fitnesses'][best_ind_idx]
 
         # Construct the full parameter vector for the initial task
@@ -1946,7 +1946,7 @@ class ProfileProjector:
             job_id=next_job_id,
             job_type='LBFGSB',
             sampler=self,
-            opt_dims=tuple(self.continuous_dims), # Optimize continuous dims
+            opt_dims=tuple(self.profiled_dims), # Optimize profiled dims
             start_params=start_params_partial,     # Partial vector
             grid_idx=grid_idx,                     # Grid anchor
             start_params_full=start_params_full,   # Full vector for first eval
@@ -1984,7 +1984,7 @@ class ProfileProjector:
                             if source_state['best_fitness'] > best_warm_start_fitness:
                                 best_warm_start_fitness = source_state['best_fitness']
                                 source_best_idx = np.argmax(source_state['fitnesses'])
-                                best_warm_start_params = source_state['continuous_params'][source_best_idx]
+                                best_warm_start_params = source_state['profiled_params'][source_best_idx]
 
                     job = ActivationJob(
                         job_id=next_job_id,
@@ -1998,9 +1998,9 @@ class ProfileProjector:
 
         return new_jobs, next_job_id
 
-    def _get_best_neighbor_continuous_params(self, grid_idx, n_neighbors=None):
+    def _get_best_neighbor_profiled_params(self, grid_idx, n_neighbors=None):
         """
-        Gets continuous parameters from the best neighbor(s) of a grid point.
+        Gets profiled parameters from the best neighbor(s) of a grid point.
 
         Parameters
         ----------
@@ -2012,7 +2012,7 @@ class ProfileProjector:
         Returns
         -------
         list of tuples or None
-            List of (neighbor_idx, continuous_params, fitness) for best neighbors,
+            List of (neighbor_idx, profiled_params, fitness) for best neighbors,
             sorted by fitness (best first). Returns None if no valid neighbors exist.
         """
         if n_neighbors is None:
@@ -2027,11 +2027,11 @@ class ProfileProjector:
             neighbor_state = self.population[neighbor_idx]
             neighbor_fitness = neighbor_state['best_fitness']
 
-            # Get best continuous params from neighbor
+            # Get best profiled params from neighbor
             best_idx = np.argmax(neighbor_state['fitnesses'])
-            continuous_params = neighbor_state['continuous_params'][best_idx]
+            profiled_params = neighbor_state['profiled_params'][best_idx]
 
-            neighbor_info.append((neighbor_idx, continuous_params, neighbor_fitness))
+            neighbor_info.append((neighbor_idx, profiled_params, neighbor_fitness))
 
         if not neighbor_info:
             return None
@@ -2111,8 +2111,8 @@ class ProfileProjector:
         for grid_idx in candidates:
             current_fitness = self.population[grid_idx]['best_fitness']
 
-            # Get best neighbor(s) continuous parameters
-            neighbor_info = self._get_best_neighbor_continuous_params(
+            # Get best neighbor(s) profiled parameters
+            neighbor_info = self._get_best_neighbor_profiled_params(
                 grid_idx, n_neighbors=self.patching_n_neighbors
             )
 
@@ -2130,7 +2130,7 @@ class ProfileProjector:
                     job_id=next_job_id,
                     sampler=self,
                     grid_idx=grid_idx,
-                    test_continuous_params=test_params.copy(),
+                    test_profiled_params=test_params.copy(),
                     wave_number=wave_number
                 )
                 jobs.append(job)

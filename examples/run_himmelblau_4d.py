@@ -84,7 +84,7 @@ if myrank == 0:
         'clustering': {
             'method': 'dbscan',                        # Default: 'dbscan'
             'eps': None,                               # Default: None (auto-estimated)
-            'min_samples': None,                       # Default: None (auto = max(2, n_cont))
+            'min_samples': None,                       # Default: None (auto = max(2, n_prof))
             'eps_multiplier': 3.0,                     # Default: 3.0
             'projection_weight': 1.0,                  # Default: 1.0
         },
