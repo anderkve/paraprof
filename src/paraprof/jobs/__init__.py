@@ -6,5 +6,13 @@ from .lbfgsb_job import LBFGSBJob
 from .activation_job import ActivationJob
 from .de_job import DEGridPointJob
 from .patching_test_job import PatchingTestJob
+from .initial_points_job import InitialPointEvalJob
 
-__all__ = ['Job', 'LBFGSBJob', 'ActivationJob', 'DEGridPointJob', 'PatchingTestJob']
+__all__ = [
+    'Job',
+    'LBFGSBJob',
+    'ActivationJob',
+    'DEGridPointJob',
+    'PatchingTestJob',
+    'InitialPointEvalJob',
+]
