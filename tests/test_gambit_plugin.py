@@ -52,7 +52,9 @@ RUNNER = textwrap.dedent("""
 
 
     # ---- Test-side config ----------------------------------------------------
-    TEST_INIT_ARGS = {
+    # The plugin reads every paraprof-native option from `self.run_args` (the
+    # YAML `run:` block), so the stub must expose them there.
+    TEST_RUN_ARGS = {
         'projections': [
             # dims supplied as parameter NAMES, exercising the resolver.
             {'dims': ['par_1', 'par_2'], 'grid_points': [10, 10],
@@ -82,8 +84,7 @@ RUNNER = textwrap.dedent("""
             self.mpi_size = size
             self.dim = BOUNDS.shape[0]
             self.parameter_names = ('par_1', 'par_2', 'par_3', 'par_4')
-            self.init_args = dict(TEST_INIT_ARGS)
-            self.run_args = {}
+            self.run_args = dict(TEST_RUN_ARGS)
 
         def loglike_hypercube(self, x):
             STATE['point_id'] += 1
