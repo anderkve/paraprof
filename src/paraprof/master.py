@@ -17,6 +17,22 @@ except ImportError:
 
 TASK_TERMINATE = -1
 
+
+def _log_worker_error(result, sampler, logger):
+    """Log an error reported by a worker, if any. Returns True if an error was reported."""
+    error = result.get('error') if isinstance(result, dict) else None
+    if not error:
+        return False
+    sampler.target_call_errors += 1
+    worker_rank = result.get('context', {}).get('worker_rank', '?')
+    params = result.get('params')
+    logger.warning(
+        f"Worker {worker_rank} reported failure at params {params}: {error} "
+        f"(total errors: {sampler.target_call_errors})"
+    )
+    return True
+
+
 def terminate_workers(comm, myrank=0):
     """
     Terminates all worker processes.
@@ -520,6 +536,7 @@ def master_main(comm, sampler,
                             free_workers.append(worker)
 
                         # Process result
+                        _log_worker_error(result, sampler, logger)
                         idx = result['context']['point_index']
                         target_val = result['target_val']
                         sampler.initial_maxima.append({
@@ -732,6 +749,7 @@ def master_main(comm, sampler,
             free_workers.append(worker_rank)
             tasks_completed += 1
 
+            _log_worker_error(result, sampler, logger)
             sampler._register_target_call(result['params'], result['target_val'])
 
             job_id = result['context'].get('job_id', -1)
@@ -836,6 +854,11 @@ def master_main(comm, sampler,
     logger.info("=" * 80)
     logger.info("--- Master: Workflow Complete ---")
     logger.info(f"  Total Target Function Calls: {sampler.target_calls}")
+    if sampler.target_call_errors:
+        logger.warning(
+            f"  Target Function Errors: {sampler.target_call_errors} "
+            f"(out of {sampler.target_calls} calls)"
+        )
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     logger.info("=" * 80)
