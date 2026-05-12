@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ProfileProjector(warm_start_file=...)` — dedicated path for reading
+  warm-start samples, separate from `samples_output_file`. Previously, the
+  master would implicitly warm-start from `samples_output_file`; that
+  coupling is gone. To preserve the old behaviour, set
+  `warm_start_file=samples_output_file`.
+- `InitialPointEvalJob` (`paraprof.jobs.InitialPointEvalJob`) — user-supplied
+  `initial_points` are now evaluated through the standard master/result loop
+  instead of a hand-rolled send/recv block. They are recorded in
+  `samples_output_file` and `global_solution_pool` like every other
+  evaluation. A new `INITIAL_POINTS_EVAL` stage runs before
+  `INITIAL_OPTIMIZATION`.
 - Simplified example scripts `examples/run_himmelblau_4d_simple.py` and
   `examples/run_rosenbrock_4d_simple.py` showing the trimmed user API.
 - New module-level constants in `sampler.py` for the DE/activation/patching
@@ -72,6 +83,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constructor kwarg.
 
 ### Fixed
+- 1-D profile plots: confidence-level lines were drawn at ΔlogL = -1.0
+  ("68% CL") and -4.0 ("95% CL"). Those deltas don't match the Wilks
+  1-DOF mapping; the correct values are -0.5 and -1.92. Updated the
+  defaults so the labels match the geometry. The 2-D contour defaults
+  ([-1, -3]) were already correct for 2 DOF and are unchanged.
+- `DEGridPointJob` could hang the master if `parent_pool` was below the
+  three-parent minimum (or below two in the `current-to-pbest/1` branch):
+  the per-individual `continue` did not decrement `evals_remaining`, so
+  the job never marked itself finished. The upstream guard in
+  `create_de_generation_jobs` made this practically unreachable, but the
+  job is now defensively safe on its own.
+- Initial-point evaluations no longer bypass `_register_target_call` /
+  `_update_global_pool`, so they now appear in `samples_output_file` and
+  in the global solution pool. The stray `sampler.global_best_params`
+  assignment (never initialised, never read) was removed in the same
+  refactor.
 - `ConfigurationError`, `InvalidBoundsError`, and `InvalidProjectionError`
   were imported only inside `__init__` but referenced from
   `_reset_for_new_projection`; promoted to module scope. Without this

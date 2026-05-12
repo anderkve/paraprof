@@ -430,7 +430,14 @@ def master_main(comm, sampler,
         logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
         # Normal mode: workflow depends on optimization method
-        stages = ['INITIAL_OPTIMIZATION', 'ACTIVATION']
+        stages = []
+        # Evaluate user-supplied initial points first (if any). This stage is
+        # only added on the first projection that sees them; the job sets
+        # ``_initial_points_evaluated`` once complete.
+        if (sampler.initial_points is not None
+                and not sampler._initial_points_evaluated):
+            stages.append('INITIAL_POINTS_EVAL')
+        stages += ['INITIAL_OPTIMIZATION', 'ACTIVATION']
 
         # Add optimization stage based on configured method
         if sampler.optimization_method == 'de':
@@ -494,70 +501,20 @@ def master_main(comm, sampler,
             logger.info(f"--- Master: Entering stage: {current_stage} (all jobs complete, creating new jobs) ---")
             new_jobs = []
 
-            if current_stage == 'INITIAL_OPTIMIZATION':
+            if current_stage == 'INITIAL_POINTS_EVAL':
+                # Evaluate user-supplied initial_points via the standard Job
+                # path so the master result-handler does the bookkeeping
+                # (samples_output_file, global solution pool, etc.).
+                new_jobs, next_job_id = sampler.create_initial_points_eval_job(next_job_id)
+                if not new_jobs:
+                    current_stage = stages.pop(0) if stages else None
+                    continue
 
-                # First, evaluate user-provided initial_points if available
-                if sampler.initial_points is not None and not sampler._initial_points_evaluated:
-                    logger.info(f"--- Evaluating {len(sampler.initial_points)} user-provided initial points ---")
-
-                    # Prepare all tasks
-                    n_points = len(sampler.initial_points)
-                    points_to_send = list(enumerate(sampler.initial_points))
-
-                    # Send all tasks using non-blocking sends for maximum parallelism
-                    send_requests = []
-                    workers_used = []
-
-                    # Dispatch tasks to workers (round-robin if more tasks than workers)
-                    for i, point in points_to_send:
-                        worker = free_workers[i % len(free_workers)]
-                        task = {'params': point, 'context': {'type': 'initial_point', 'point_index': i}}
-                        req = comm.isend(task, dest=worker)
-                        send_requests.append(req)
-                        if worker not in workers_used:
-                            workers_used.append(worker)
-
-                    # Wait for all sends to complete
-                    MPI.Request.Waitall(send_requests)
-
-                    # Remove workers that are now busy from free list
-                    for worker in workers_used:
-                        if worker in free_workers:
-                            free_workers.remove(worker)
-
-                    # Collect all results as they arrive
-                    results_collected = 0
-                    while results_collected < n_points:
-                        result = comm.recv(source=MPI.ANY_SOURCE)
-                        worker = result['context']['worker_rank']
-
-                        # Return worker to free pool
-                        if worker not in free_workers:
-                            free_workers.append(worker)
-
-                        # Process result
-                        _log_worker_error(result, sampler, logger)
-                        idx = result['context']['point_index']
-                        target_val = result['target_val']
-                        sampler.initial_maxima.append({
-                            'point': sampler.initial_points[idx],
-                            'target_val': target_val
-                        })
-                        sampler.target_calls += 1
-
-                        if target_val > sampler.global_max_target_val:
-                            sampler.global_max_target_val = target_val
-                            sampler.global_best_params = sampler.initial_points[idx].copy()
-
-                        results_collected += 1
-
-                    # Mark as evaluated to avoid re-evaluation
-                    sampler._initial_points_evaluated = True
-                    logger.info(f"--- Evaluated {len(sampler.initial_points)} initial points. Best: {sampler.global_max_target_val:.4e} ---")
-
-                # Try to initialize from warm start file
-                if skip_init_opt_on_warm_start and sampler.samples_output_file:
-                    sampler._initialize_from_warm_start_file(sampler.samples_output_file)
+            elif current_stage == 'INITIAL_OPTIMIZATION':
+                # Try to initialize from a warm-start file (separate from the
+                # samples output file; see ProfileProjector.warm_start_file).
+                if skip_init_opt_on_warm_start and sampler.warm_start_file:
+                    sampler._initialize_from_warm_start_file(sampler.warm_start_file)
 
                 # If no maxima found from warm start (or warm start disabled), run global optimization
                 if not sampler.initial_maxima:
