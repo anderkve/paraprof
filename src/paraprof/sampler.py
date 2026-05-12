@@ -441,6 +441,7 @@ class ProfileProjector:
 
         # --- Persistent State (across projections) ---
         self.target_calls = 0
+        self.target_call_errors = 0
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
