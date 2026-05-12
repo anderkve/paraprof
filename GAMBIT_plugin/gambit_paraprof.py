@@ -8,7 +8,7 @@ likelihood scans inside GAMBIT.
 
 ParaProf places populations on a regular grid over a user-chosen subset of
 parameters and dynamically activates the region of interest, optimising the
-remaining parameters at each grid point with differential evolution or
+profiled parameters at each grid point with differential evolution or
 L-BFGS-B. The plugin uses paraprof's master/worker MPI scheme: rank 0 acts as
 the orchestrator and ranks 1+ evaluate the GAMBIT loglike via
 ``self.loglike_hypercube``. Because the bound loglike cannot be pickled, the
@@ -77,6 +77,11 @@ YAML options:
     samples_output_file:     Optional CSV path; written by rank 0 only. Note that
                              GAMBIT's printers already record every evaluation,
                              so this is purely a paraprof-side diagnostic file.
+    warm_start_file:         Optional CSV path read at the start of each projection
+                             to pre-populate ``initial_maxima``, skipping the
+                             global L-BFGS-B seeding step. Set equal to
+                             ``samples_output_file`` to round-trip samples into
+                             the next run.
     advanced_config:         Forwarded as-is to ProfileProjector for expert tuning.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
@@ -138,7 +143,7 @@ YAML options:
             "roi_threshold", "pop_per_grid_point", "max_patching_waves",
             "lbfgsb_max_iter", "lbfgsb_polish", "n_initial_optimizations",
             "initial_points", "use_clustering", "refinement_direct_eval",
-            "samples_output_file", "advanced_config",
+            "samples_output_file", "warm_start_file", "advanced_config",
         ):
             if key in ra:
                 self.projector_kwargs[key] = ra[key]
