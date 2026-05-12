@@ -289,4 +289,3 @@ If you use ParaProf in your research, please cite:
 
 **Maintainer**: Anders Kvellestad
 **Python version**: 3.10+
-**Status**: Active Development
