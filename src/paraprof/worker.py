@@ -51,16 +51,29 @@ def worker_main(comm, myrank, target_func=None):
         params = task['params']
         context = task['context']
 
+        error_message = None
         try:
             target_val = target_func(params)
         except Exception as e:
             logger.error(f"Error evaluating target function at params {params}: {e}")
             target_val = -np.inf
+            error_message = f"{type(e).__name__}: {e}"
+
+        if target_val is None or not np.isfinite(target_val):
+            # Non-finite results (NaN, +inf) are coerced to -inf so the master
+            # never feeds NaN into comparisons. Report them as errors so the
+            # master can warn the user.
+            if not (target_val == -np.inf):
+                error_message = error_message or (
+                    f"Non-finite target value {target_val!r}"
+                )
+                target_val = -np.inf
 
         context['worker_rank'] = myrank
         result = {
             'target_val': target_val,
             'params': params,
             'context': context,
+            'error': error_message,
         }
         comm.send(result, dest=0)

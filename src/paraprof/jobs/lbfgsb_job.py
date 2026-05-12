@@ -294,7 +294,12 @@ class LBFGSBJob(Job):
                 g_old = self.pending_g_old
                 g_new = self.current_gradient
                 y_k = g_new - g_old
-                if np.dot(y_k, s_k) > 1e-10:
+                # Wolfe/relative curvature condition: require y·s to be a
+                # meaningful fraction of ||y||*||s||, not just > tiny absolute.
+                ys = float(np.dot(y_k, s_k))
+                yn = float(np.linalg.norm(y_k))
+                sn = float(np.linalg.norm(s_k))
+                if ys > 1e-10 * max(yn * sn, 1e-30):
                     self.s_hist.append(s_k)
                     self.y_hist.append(y_k)
                 # Clear pending
@@ -303,24 +308,35 @@ class LBFGSBJob(Job):
             # --- End History update ---
 
             # --- L-BFGS two-loop recursion to find search direction ---
+            # Pairs that fail the curvature condition are skipped defensively
+            # so that a degenerate dot product can never produce inf/nan rho.
             q = grad
             a = []
-            s_hist, y_hist = self.s_hist, self.y_hist
+            usable_pairs = []
+            for s, y in zip(self.s_hist, self.y_hist):
+                ys = float(np.dot(y, s))
+                if ys > 1e-30:
+                    usable_pairs.append((s, y, ys))
 
-            for s, y in zip(reversed(s_hist), reversed(y_hist)):
-                rho = 1.0 / np.dot(y, s)
+            for s, y, ys in reversed(usable_pairs):
+                rho = 1.0 / ys
                 alpha = rho * np.dot(s, q)
                 q = q - alpha * y
                 a.append(alpha)
 
-            if s_hist:
-                gamma = np.dot(s_hist[-1], y_hist[-1]) / np.dot(y_hist[-1], y_hist[-1])
+            if usable_pairs:
+                s_last, y_last, _ = usable_pairs[-1]
+                yy = float(np.dot(y_last, y_last))
+                if yy > 1e-30:
+                    gamma = float(np.dot(s_last, y_last)) / yy
+                else:
+                    gamma = 1.0
                 z = gamma * q
             else:
                 z = q
 
-            for (s, y), alpha in zip(zip(s_hist, y_hist), reversed(a)):
-                rho = 1.0 / np.dot(y, s)
+            for (s, y, ys), alpha in zip(usable_pairs, reversed(a)):
+                rho = 1.0 / ys
                 beta = rho * np.dot(y, z)
                 z = z + s * (alpha - beta)
 
