@@ -93,11 +93,11 @@ class LBFGSBJob(Job):
             # We must ensure it's bounded.
             return self.sampler._ensure_bounds(partial_params_to_eval, self.opt_dims)
         else:
-            # Grid-anchored: partial_params_to_eval is *only* the continuous dims
+            # Grid-anchored: partial_params_to_eval is *only* the profiled dims
             # We must ensure *they* are bounded.
             bounded_partial = self.sampler._ensure_bounds(
                 partial_params_to_eval,
-                self.sampler.continuous_dims
+                self.sampler.profiled_dims
             )
             return self.sampler._construct_params(self.grid_idx, bounded_partial)
 
@@ -142,7 +142,7 @@ class LBFGSBJob(Job):
 
                 # 2. Get neighbor's best params to test
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
-                self.neighbor_params_to_test = best_neighbor_state['continuous_params'][neighbor_best_idx]
+                self.neighbor_params_to_test = best_neighbor_state['profiled_params'][neighbor_best_idx]
 
                 # 3. Create a task to test these params at *our* grid point
                 full_params_test = self.sampler._construct_params(self.grid_idx, self.neighbor_params_to_test)
@@ -367,7 +367,7 @@ class LBFGSBJob(Job):
 
         opt_indices = self.opt_dims
         if self.grid_idx is not None:
-            opt_indices = self.sampler.continuous_dims
+            opt_indices = self.sampler.profiled_dims
 
         x_new_bounded = self.sampler._ensure_bounds(x_new, opt_indices)
 
@@ -453,7 +453,7 @@ class LBFGSBJob(Job):
                 if self.current_fitness > state['best_fitness']:
                      state['best_fitness'] = self.current_fitness
                      best_idx = np.argmax(state['fitnesses'])
-                     state['continuous_params'][best_idx] = self.current_params
+                     state['profiled_params'][best_idx] = self.current_params
                      state['fitnesses'][best_idx] = self.current_fitness
                      self.sampler.profile_likelihood_grid[self.grid_idx] = self.current_fitness
 
@@ -471,7 +471,7 @@ class LBFGSBJob(Job):
 
             # Create a minimal population state for this grid point
             self.sampler.population[grid_idx] = {
-                'continuous_params': np.array([self.current_params]),
+                'profiled_params': np.array([self.current_params]),
                 'fitnesses': np.array([self.current_fitness]),
                 'best_fitness': self.current_fitness,
                 'status': 'optimized',

@@ -84,9 +84,9 @@ class TestProfileProjector:
 
         # Check that first projection is configured
         assert sampler.projection_dims == [0]
-        assert sampler.continuous_dims == [1, 2, 3]
+        assert sampler.profiled_dims == [1, 2, 3]
         assert sampler.n_proj_dims == 1
-        assert sampler.n_cont_dims == 3
+        assert sampler.n_prof_dims == 3
 
     def test_invalid_projection_raises_error(self, simple_2d_function, simple_bounds_2d):
         """Test that invalid projections raise errors."""

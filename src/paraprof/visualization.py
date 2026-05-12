@@ -28,7 +28,7 @@ def plot_profiles(sampler, filename, plot_settings=None):
         - 'vmax': float (default: 0.0) - colorbar maximum (relative to best-fit log L)
         - 'contour_levels': list (default: [-3.0, -1.0]) - contour levels for the
           2D and N-D log-likelihood plots, expressed relative to the best-fit log L
-        - 'plot_continuous_params': bool (default: True) - plot optimal continuous parameter values
+        - 'plot_profiled_params': bool (default: True) - plot optimal profiled parameter values
     """
     try:
         import matplotlib
@@ -52,10 +52,10 @@ def plot_profiles(sampler, filename, plot_settings=None):
     else:
         logger.info(f"Invalid projection dimensions: {sampler.n_proj_dims}")
 
-    # Plot continuous parameter values if enabled and continuous parameters exist
-    plot_continuous = plot_settings.get('plot_continuous_params', True)
-    if plot_continuous and sampler.n_cont_dims > 0:
-        plot_continuous_parameters(sampler, filename, plot_settings)
+    # Plot profiled parameter values if enabled and profiled parameters exist
+    plot_profiled = plot_settings.get('plot_profiled_params', True)
+    if plot_profiled and sampler.n_prof_dims > 0:
+        plot_profiled_parameters(sampler, filename, plot_settings)
 
 
 def _plot_1d_profile(sampler, filename, plot_settings):
@@ -453,11 +453,11 @@ def _marginalize_to_2d(sampler, dim_i, dim_j):
     return marginalized_2d
 
 
-def plot_continuous_parameters(sampler, base_filename, plot_settings=None):
+def plot_profiled_parameters(sampler, base_filename, plot_settings=None):
     """
-    Generates plots showing optimal continuous parameter values across the projection space.
+    Generates plots showing optimal profiled parameter values across the projection space.
 
-    Creates one plot per continuous parameter dimension, visualizing which parameter
+    Creates one plot per profiled parameter dimension, visualizing which parameter
     values were selected by the profiling at each point in the projection grid.
 
     Parameters
@@ -474,11 +474,11 @@ def plot_continuous_parameters(sampler, base_filename, plot_settings=None):
         matplotlib.use('Agg')  # Non-interactive backend
         import matplotlib.pyplot as plt
     except ImportError:
-        logger.info("\nMatplotlib not found. Skipping continuous parameter visualization.")
+        logger.info("\nMatplotlib not found. Skipping profiled parameter visualization.")
         return
 
-    if sampler.n_cont_dims == 0:
-        logger.debug("No continuous parameters to plot.")
+    if sampler.n_prof_dims == 0:
+        logger.debug("No profiled parameters to plot.")
         return
 
     # Set default plot settings
@@ -487,18 +487,18 @@ def plot_continuous_parameters(sampler, base_filename, plot_settings=None):
 
     # Route to appropriate plotting function based on projection dimensionality
     if sampler.n_proj_dims == 1:
-        _plot_1d_continuous_params(sampler, base_filename, plot_settings)
+        _plot_1d_profiled_params(sampler, base_filename, plot_settings)
     elif sampler.n_proj_dims == 2:
-        _plot_2d_continuous_params(sampler, base_filename, plot_settings)
+        _plot_2d_profiled_params(sampler, base_filename, plot_settings)
     elif sampler.n_proj_dims >= 3:
-        _plot_nd_continuous_params(sampler, base_filename, plot_settings)
+        _plot_nd_profiled_params(sampler, base_filename, plot_settings)
 
 
-def _plot_1d_continuous_params(sampler, base_filename, plot_settings):
+def _plot_1d_profiled_params(sampler, base_filename, plot_settings):
     """
-    Plots optimal continuous parameter values for 1D projections.
+    Plots optimal profiled parameter values for 1D projections.
 
-    Creates a multi-panel figure with one subplot per continuous parameter,
+    Creates a multi-panel figure with one subplot per profiled parameter,
     showing how the optimal value varies across the projection dimension.
 
     Parameters
@@ -515,63 +515,63 @@ def _plot_1d_continuous_params(sampler, base_filename, plot_settings):
     dpi = plot_settings.get('dpi', 300)
     filetype = plot_settings.get('filetype', 'png')
 
-    # Extract continuous parameter values at each grid point
+    # Extract profiled parameter values at each grid point
     grid_axis = sampler.grid_axes[0]
-    n_cont = sampler.n_cont_dims
+    n_prof = sampler.n_prof_dims
 
-    # Create figure with subplots for each continuous parameter
-    fig, axes = plt.subplots(n_cont, 1, figsize=(10, 4 * n_cont))
-    if n_cont == 1:
+    # Create figure with subplots for each profiled parameter
+    fig, axes = plt.subplots(n_prof, 1, figsize=(10, 4 * n_prof))
+    if n_prof == 1:
         axes = [axes]
 
     proj_dim = sampler.projection_dims[0]
 
-    for cont_idx in range(n_cont):
-        ax = axes[cont_idx]
-        cont_param_values = np.full(len(grid_axis), np.nan)
+    for prof_idx in range(n_prof):
+        ax = axes[prof_idx]
+        prof_param_values = np.full(len(grid_axis), np.nan)
 
-        # Extract optimal continuous parameter values from population
+        # Extract optimal profiled parameter values from population
         for grid_idx, state in sampler.population.items():
             if sampler.direct_eval_mode:
-                continue  # No continuous params in direct eval mode
+                continue  # No profiled params in direct eval mode
             elif state['status'] in ['converged', 'optimized']:
                 best_ind_idx = np.argmax(state['fitnesses'])
-                continuous_params = state['continuous_params'][best_ind_idx]
-                cont_param_values[grid_idx[0]] = continuous_params[cont_idx]
+                profiled_params = state['profiled_params'][best_ind_idx]
+                prof_param_values[grid_idx[0]] = profiled_params[prof_idx]
 
-        # Get the actual continuous dimension index in full parameter space
-        cont_dim = sampler.continuous_dims[cont_idx]
+        # Get the actual profiled dimension index in full parameter space
+        prof_dim = sampler.profiled_dims[prof_idx]
 
-        # Plot the continuous parameter values
-        valid_mask = ~np.isnan(cont_param_values)
-        ax.plot(grid_axis[valid_mask], cont_param_values[valid_mask], 'b-', linewidth=2)
-        ax.scatter(grid_axis[valid_mask], cont_param_values[valid_mask], c='blue', s=30, zorder=5)
+        # Plot the profiled parameter values
+        valid_mask = ~np.isnan(prof_param_values)
+        ax.plot(grid_axis[valid_mask], prof_param_values[valid_mask], 'b-', linewidth=2)
+        ax.scatter(grid_axis[valid_mask], prof_param_values[valid_mask], c='blue', s=30, zorder=5)
 
         # Add parameter bounds as horizontal lines
-        param_bounds = sampler.bounds[cont_dim]
+        param_bounds = sampler.bounds[prof_dim]
         ax.axhline(y=param_bounds[0], color='red', linestyle='--', alpha=0.5, label='Bounds')
         ax.axhline(y=param_bounds[1], color='red', linestyle='--', alpha=0.5)
 
         ax.set_xlabel(f'Parameter {proj_dim} (projection)', fontsize=12)
-        ax.set_ylabel(f'Optimal Parameter {cont_dim}', fontsize=12)
-        ax.set_title(f'Optimal Continuous Parameter {cont_dim} vs Projection Dimension', fontsize=12)
+        ax.set_ylabel(f'Optimal Parameter {prof_dim}', fontsize=12)
+        ax.set_title(f'Optimal Profiled Parameter {prof_dim} vs Projection Dimension', fontsize=12)
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
 
     fig.tight_layout()
 
     # Save the plot
-    output_filename = f"{base_filename}_continuous_params.{filetype}"
+    output_filename = f"{base_filename}_profiled_params.{filetype}"
     fig.savefig(output_filename, dpi=dpi)
     plt.close(fig)
-    logger.info(f"Saved continuous parameter plot to: {output_filename}")
+    logger.info(f"Saved profiled parameter plot to: {output_filename}")
 
 
-def _plot_2d_continuous_params(sampler, base_filename, plot_settings):
+def _plot_2d_profiled_params(sampler, base_filename, plot_settings):
     """
-    Plots optimal continuous parameter values for 2D projections.
+    Plots optimal profiled parameter values for 2D projections.
 
-    Creates one heatmap per continuous parameter showing the optimal value
+    Creates one heatmap per profiled parameter showing the optimal value
     at each point in the 2D projection grid.
 
     Parameters
@@ -587,27 +587,27 @@ def _plot_2d_continuous_params(sampler, base_filename, plot_settings):
 
     dpi = plot_settings.get('dpi', 300)
     filetype = plot_settings.get('filetype', 'png')
-    n_cont = sampler.n_cont_dims
+    n_prof = sampler.n_prof_dims
 
     dim1, dim2 = sampler.projection_dims
 
-    # Create one plot per continuous parameter
-    for cont_idx in range(n_cont):
-        # Create 2D grid for this continuous parameter
-        cont_param_grid = np.full(sampler.grid_shape, np.nan)
+    # Create one plot per profiled parameter
+    for prof_idx in range(n_prof):
+        # Create 2D grid for this profiled parameter
+        prof_param_grid = np.full(sampler.grid_shape, np.nan)
 
         # Extract optimal values from population
         for grid_idx, state in sampler.population.items():
             if sampler.direct_eval_mode:
-                continue  # No continuous params in direct eval mode
+                continue  # No profiled params in direct eval mode
             elif state['status'] in ['converged', 'optimized']:
                 best_ind_idx = np.argmax(state['fitnesses'])
-                continuous_params = state['continuous_params'][best_ind_idx]
-                cont_param_grid[grid_idx] = continuous_params[cont_idx]
+                profiled_params = state['profiled_params'][best_ind_idx]
+                prof_param_grid[grid_idx] = profiled_params[prof_idx]
 
-        # Get the actual continuous dimension index in full parameter space
-        cont_dim = sampler.continuous_dims[cont_idx]
-        param_bounds = sampler.bounds[cont_dim]
+        # Get the actual profiled dimension index in full parameter space
+        prof_dim = sampler.profiled_dims[prof_idx]
+        param_bounds = sampler.bounds[prof_dim]
 
         # Create figure with colorbar
         fig, axes = plt.subplots(1, 2, figsize=(7, 6),
@@ -617,7 +617,7 @@ def _plot_2d_continuous_params(sampler, base_filename, plot_settings):
         extent = [sampler.grid_axes[0][0], sampler.grid_axes[0][-1],
                   sampler.grid_axes[1][0], sampler.grid_axes[1][-1]]
 
-        masked_grid = np.ma.masked_where(np.isnan(cont_param_grid), cont_param_grid)
+        masked_grid = np.ma.masked_where(np.isnan(prof_param_grid), prof_param_grid)
 
         cmap = plt.get_cmap('viridis')
         cmap.set_bad(color='0.75')
@@ -641,30 +641,30 @@ def _plot_2d_continuous_params(sampler, base_filename, plot_settings):
             ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                        edgecolor='black', lw=0.5, label='Active DE Points')
 
-        ax.set_title(f'Optimal Continuous Parameter {cont_dim}')
+        ax.set_title(f'Optimal Profiled Parameter {prof_dim}')
         ax.set_xlabel(f'Parameter {dim1}')
         ax.set_ylabel(f'Parameter {dim2}')
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
 
         cax = axes[1]
-        fig.colorbar(im, cax=cax, orientation='vertical', label=f'Parameter {cont_dim} Value')
+        fig.colorbar(im, cax=cax, orientation='vertical', label=f'Parameter {prof_dim} Value')
 
         fig.tight_layout()
 
         # Save the plot
-        output_filename = f"{base_filename}_continuous_param_{cont_dim}.{filetype}"
+        output_filename = f"{base_filename}_profiled_param_{prof_dim}.{filetype}"
         fig.savefig(output_filename, dpi=dpi)
         plt.close(fig)
-        logger.info(f"Saved continuous parameter {cont_dim} plot to: {output_filename}")
+        logger.info(f"Saved profiled parameter {prof_dim} plot to: {output_filename}")
 
 
-def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
+def _plot_nd_profiled_params(sampler, base_filename, plot_settings):
     """
-    Plots optimal continuous parameter values for 3D+ projections.
+    Plots optimal profiled parameter values for 3D+ projections.
 
     For N-dimensional grids (N >= 3), creates 2D slice plots for each
-    continuous parameter, showing all pairwise projections through the
+    profiled parameter, showing all pairwise projections through the
     maximum likelihood point.
 
     Parameters
@@ -681,7 +681,7 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
     dpi = plot_settings.get('dpi', 300)
     filetype = plot_settings.get('filetype', 'png')
     slice_mode = plot_settings.get('slice_mode', 'max')
-    n_cont = sampler.n_cont_dims
+    n_prof = sampler.n_prof_dims
     n_dims = sampler.n_proj_dims
     dims = sampler.projection_dims
 
@@ -694,20 +694,20 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
             max_grid_idx = grid_idx
 
     if max_grid_idx is None:
-        logger.info("No profile likelihood data found. Skipping continuous parameter plots.")
+        logger.info("No profile likelihood data found. Skipping profiled parameter plots.")
         return
 
     # Generate all pairwise dimension combinations
     dim_pairs = list(itertools.combinations(range(n_dims), 2))
     n_pairs = len(dim_pairs)
 
-    # Create one figure per continuous parameter
-    for cont_idx in range(n_cont):
-        cont_dim = sampler.continuous_dims[cont_idx]
-        param_bounds = sampler.bounds[cont_dim]
+    # Create one figure per profiled parameter
+    for prof_idx in range(n_prof):
+        prof_dim = sampler.profiled_dims[prof_idx]
+        param_bounds = sampler.bounds[prof_dim]
 
-        # Create N-D grid for this continuous parameter
-        cont_param_grid = np.full(sampler.grid_shape, np.nan)
+        # Create N-D grid for this profiled parameter
+        prof_param_grid = np.full(sampler.grid_shape, np.nan)
 
         # Extract optimal values from population
         for grid_idx, state in sampler.population.items():
@@ -715,8 +715,8 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
                 continue
             elif state['status'] in ['converged', 'optimized']:
                 best_ind_idx = np.argmax(state['fitnesses'])
-                continuous_params = state['continuous_params'][best_ind_idx]
-                cont_param_grid[grid_idx] = continuous_params[cont_idx]
+                profiled_params = state['profiled_params'][best_ind_idx]
+                prof_param_grid[grid_idx] = profiled_params[prof_idx]
 
         # Create subplot grid
         n_cols = min(3, n_pairs)
@@ -732,10 +732,10 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
 
             if slice_mode == 'max':
                 # Extract 2D slice through maximum likelihood point
-                param_slice = _extract_2d_param_slice(cont_param_grid, dim_i, dim_j,
+                param_slice = _extract_2d_param_slice(prof_param_grid, dim_i, dim_j,
                                                       max_grid_idx, n_dims)
             else:  # marginalized
-                param_slice = _marginalize_param_to_2d(cont_param_grid, dim_i, dim_j)
+                param_slice = _marginalize_param_to_2d(prof_param_grid, dim_i, dim_j)
 
             # Plot the slice
             extent = [sampler.grid_axes[dim_i][0], sampler.grid_axes[dim_i][-1],
@@ -763,32 +763,32 @@ def _plot_nd_continuous_params(sampler, base_filename, plot_settings):
 
             # Add colorbar for each subplot
             fig.colorbar(im, ax=ax, orientation='vertical',
-                        label=f'Param {cont_dim}', fraction=0.046)
+                        label=f'Param {prof_dim}', fraction=0.046)
 
         # Hide unused subplots
         for idx in range(n_pairs, len(axes)):
             axes[idx].set_visible(False)
 
         mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
-        fig.suptitle(f'Optimal Continuous Parameter {cont_dim} - {mode_str} Projections\n'
+        fig.suptitle(f'Optimal Profiled Parameter {prof_dim} - {mode_str} Projections\n'
                      f'Projection Dimensions: {dims}', fontsize=14, y=0.995)
         fig.tight_layout()
 
         # Save the plot
-        output_filename = f"{base_filename}_continuous_param_{cont_dim}.{filetype}"
+        output_filename = f"{base_filename}_profiled_param_{prof_dim}.{filetype}"
         fig.savefig(output_filename, dpi=dpi)
         plt.close(fig)
-        logger.info(f"Saved continuous parameter {cont_dim} plot to: {output_filename}")
+        logger.info(f"Saved profiled parameter {prof_dim} plot to: {output_filename}")
 
 
 def _extract_2d_param_slice(param_grid, dim_i, dim_j, anchor_idx, n_dims):
     """
-    Extracts a 2D slice of continuous parameter values through an N-D grid.
+    Extracts a 2D slice of profiled parameter values through an N-D grid.
 
     Parameters
     ----------
     param_grid : np.ndarray
-        N-D array of continuous parameter values
+        N-D array of profiled parameter values
     dim_i, dim_j : int
         Dimension indices to extract
     anchor_idx : tuple
@@ -831,7 +831,7 @@ def _marginalize_param_to_2d(param_grid, dim_i, dim_j):
     Parameters
     ----------
     param_grid : np.ndarray
-        N-D array of continuous parameter values
+        N-D array of profiled parameter values
     dim_i, dim_j : int
         Dimension indices to project onto
 
