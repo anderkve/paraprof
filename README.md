@@ -145,6 +145,7 @@ These are the user-facing constructor arguments most scans actually need:
 - `use_clustering`: Detect multiple modes during refinement (default: True; only fires inside a refinement run with profiled dimensions)
 - `refinement_direct_eval`: Skip optimization in the refinement run; just evaluate the interpolated point at each fine grid cell (default: False)
 - `samples_output_file`: CSV path to log every evaluation (default: None)
+- `warm_start_file`: CSV path read at the start of each projection to pre-populate `initial_maxima`, skipping the global L-BFGS-B seeding step (default: None). Set this equal to `samples_output_file` to round-trip the current run's samples into the next one.
 
 ### Advanced configuration
 

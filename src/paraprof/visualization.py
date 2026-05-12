@@ -122,9 +122,10 @@ def _plot_1d_profile(sampler, filename, plot_settings):
                    marker='*', edgecolor='black', linewidth=1.5,
                    label='Best fit', zorder=11)
 
-    # Add confidence level lines
+    # Add confidence level lines (Wilks, 1 DOF: Δχ² = 1 -> ΔlogL = -0.5 for 68%,
+    # Δχ² = 3.84 -> ΔlogL = -1.92 for 95%).
     if best_fit_loglike is not None:
-        for delta, label in [(-1.0, '68% CL'), (-4.0, '95% CL')]:
+        for delta, label in [(-0.5, '68% CL'), (-1.92, '95% CL')]:
             level = best_fit_loglike + delta
             ax.axhline(y=level, color='gray', linestyle='--', alpha=0.7, label=label)
 

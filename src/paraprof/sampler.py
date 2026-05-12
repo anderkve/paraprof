@@ -110,6 +110,7 @@ class ProfileProjector:
                  refinement_direct_eval=False,
                  # I/O
                  samples_output_file=None,
+                 warm_start_file=None,
                  # Parameter naming (optional, enables string dims in projections)
                  parameter_names=None,
                  # Advanced configuration (optional)
@@ -167,7 +168,17 @@ class ProfileProjector:
         I/O
         ---
         samples_output_file : str, optional
-            Path to save all evaluated points as CSV (default: None)
+            Path to save all evaluated points as CSV (default: None).
+            Write-only during the scan.
+        warm_start_file : str, optional
+            Path to a CSV produced by a previous run (same format as
+            ``samples_output_file``). When set and warm-start is allowed for
+            the current projection, the master pre-populates
+            ``initial_maxima`` from this file and skips the global L-BFGS-B
+            starts that would normally seed activation. Default: None (no
+            warm start). To round-trip the current run's samples into the
+            next one, point ``warm_start_file`` at the same path as
+            ``samples_output_file``.
 
         Parameter Naming
         ----------------
@@ -426,6 +437,9 @@ class ProfileProjector:
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
+        # Warm-start input is now a dedicated path. Set it equal to
+        # samples_output_file to round-trip across runs.
+        self.warm_start_file = warm_start_file
         # Always initialize buffer (unconditional - makes code robust)
         self.samples_buffer = []
         self.sample_buffer_size = 1000
@@ -1290,6 +1304,32 @@ class ProfileProjector:
 
 
     # --- Job Factory Methods (Master Only) ---
+
+    def create_initial_points_eval_job(self, next_job_id):
+        """Create a single job that evaluates every user-provided initial point.
+
+        Returns an empty job list if there are no points to evaluate or they
+        have already been processed. Routing the evaluations through a Job
+        (rather than a hand-rolled send/recv loop in the master) ensures they
+        flow through ``_register_target_call`` and ``_update_global_pool``
+        like every other target evaluation.
+        """
+        from .jobs.initial_points_job import InitialPointEvalJob
+
+        if (self.initial_points is None
+                or self._initial_points_evaluated
+                or len(self.initial_points) == 0):
+            return [], next_job_id
+
+        self.logger.info(
+            f"--- Evaluating {len(self.initial_points)} user-provided initial points ---"
+        )
+        job = InitialPointEvalJob(
+            job_id=next_job_id,
+            sampler=self,
+            points=self.initial_points,
+        )
+        return [job], next_job_id + 1
 
     def create_initial_optimization_jobs(self, next_job_id):
         """Generates L-BFGS-B jobs for finding initial maxima."""

@@ -88,7 +88,10 @@ class DEGridPointJob(Job):
                     use_neighbor_mutation = True
 
             if len(self.parent_pool) < DE_MIN_PARENT_POOL_SIZE:
-                continue  # Not enough parents to mutate
+                # Not enough parents to mutate; count this slot as resolved so
+                # the job can finish even if every iteration hits this branch.
+                self.evals_remaining -= 1
+                continue
 
             mutant = None
             if use_neighbor_mutation:
@@ -113,6 +116,7 @@ class DEGridPointJob(Job):
 
                 potential_diff = self.parent_pool
                 if len(potential_diff) < 2:
+                    self.evals_remaining -= 1
                     continue
 
                 max_attempts = 10
