@@ -99,7 +99,7 @@ ParaProf uses a **grid-based optimization** strategy:
 2. **Initial optimization**: Global L-BFGS-B finds starting maxima.
 3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
 4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the profiled parameters at each active grid point.
-5. **Neighbour curvature sharing (L-BFGS-B)**: When an L-BFGS-B optimization starts at a grid point, it warm-starts from its best already-converged neighbour by seeding the quasi-Newton history (the `(s, y)` pairs that approximate the inverse Hessian) and trialling the neighbour's best profiled parameters as an alternative starting point. As optimizations complete, the updated history is stored and made available to the cell's own neighbours, so local curvature information propagates outward across the grid.
+5. **Neighbour curvature sharing (L-BFGS-B)**: Warm-starting grid point L-BFGS-B optimization using information from the best already-converged neighbour by seeding the quasi-Newton history (the `(s, y)` pairs that approximate the inverse Hessian) and trialling the neighbour's best profiled parameters as an alternative starting point. This way local curvature information propagates outward across the grid from already converged points.
 6. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
 7. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best profiled parameters and locally polishes any improvement found.
 8. **Refinement**: Optional grid-resolution increase, using interpolation of the coarse grid as warm-starts for the finer grid.
@@ -284,10 +284,6 @@ If you use ParaProf in your research, please cite:
   url = {https://github.com/anderkve/paraprof}
 }
 ```
-
-## Acknowledgments
-
-ParaProf implements grid-anchored differential evolution with adaptive sampling strategies inspired by modern global optimization research.
 
 ---
 
