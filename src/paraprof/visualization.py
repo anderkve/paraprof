@@ -553,8 +553,8 @@ def _plot_1d_profiled_params(sampler, base_filename, plot_settings):
         ax.axhline(y=param_bounds[1], color='red', linestyle='--', alpha=0.5)
 
         ax.set_xlabel(f'Parameter {proj_dim} (projection)', fontsize=12)
-        ax.set_ylabel(f'Optimal Parameter {prof_dim}', fontsize=12)
-        ax.set_title(f'Optimal Profiled Parameter {prof_dim} vs Projection Dimension', fontsize=12)
+        ax.set_ylabel(f'Optimal parameter {prof_dim}', fontsize=12)
+        ax.set_title(f'Optimal profiled parameter {prof_dim} vs projection dimension', fontsize=12)
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -641,7 +641,7 @@ def _plot_2d_profiled_params(sampler, base_filename, plot_settings):
             ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                        edgecolor='black', lw=0.5, label='Active DE Points')
 
-        ax.set_title(f'Optimal Profiled Parameter {prof_dim}')
+        ax.set_title(f'Optimal profiled parameter {prof_dim}')
         ax.set_xlabel(f'Parameter {dim1}')
         ax.set_ylabel(f'Parameter {dim2}')
         ax.legend()
@@ -770,8 +770,8 @@ def _plot_nd_profiled_params(sampler, base_filename, plot_settings):
             axes[idx].set_visible(False)
 
         mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
-        fig.suptitle(f'Optimal Profiled Parameter {prof_dim} - {mode_str} Projections\n'
-                     f'Projection Dimensions: {dims}', fontsize=14, y=0.995)
+        fig.suptitle(f'Optimal profiled parameter {prof_dim} - {mode_str} projections\n'
+                     f'Projection dimensions: {dims}', fontsize=14, y=0.995)
         fig.tight_layout()
 
         # Save the plot
