@@ -33,10 +33,10 @@ class ActivationJob(Job):
         if self.sampler.direct_eval_mode:
             # Direct evaluation mode: just evaluate at grid point center
             self.pop_size = 1
-            self.n_cont_dims = 0
+            self.n_prof_dims = 0
 
-            # Create empty continuous params (shape: 1 x 0)
-            self.all_continuous_params = np.empty((1, 0))
+            # Create empty profiled params (shape: 1 x 0)
+            self.all_profiled_params = np.empty((1, 0))
 
             # Construct full params at grid point (all dims are projection dims)
             grid_coords = self.sampler._get_grid_coords_from_indices(self.grid_idx)
@@ -49,8 +49,8 @@ class ActivationJob(Job):
         else:
             # Normal mode: population-based initialization
             self.pop_size = self.sampler.pop_per_grid_point
-            self.n_cont_dims = self.sampler.n_cont_dims
-            cont_bounds = self.sampler.bounds[self.sampler.continuous_dims]
+            self.n_prof_dims = self.sampler.n_prof_dims
+            prof_bounds = self.sampler.bounds[self.sampler.profiled_dims]
 
             # --- Mixed initialization strategy ---
             # Calculate how many samples from each source
@@ -67,9 +67,9 @@ class ActivationJob(Job):
                 samples_list.append(self.warm_start_params)
                 # Add perturbations around it for the remaining neighbor samples
                 for _ in range(n_from_neighbors - 1):
-                    perturbation = np.random.normal(0, WARM_START_PERTURBATION_STD, size=self.n_cont_dims)
-                    perturbed = self.warm_start_params + perturbation * (cont_bounds[:, 1] - cont_bounds[:, 0])
-                    perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.continuous_dims)
+                    perturbation = np.random.normal(0, WARM_START_PERTURBATION_STD, size=self.n_prof_dims)
+                    perturbed = self.warm_start_params + perturbation * (prof_bounds[:, 1] - prof_bounds[:, 0])
+                    perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.profiled_dims)
                     samples_list.append(perturbed)
             else:
                 # If no warm start, redistribute to random
@@ -85,17 +85,17 @@ class ActivationJob(Job):
 
             # 3. Random LHS samples
             if n_from_random > 0:
-                lhs_sampler = LHS(d=self.n_cont_dims, seed=np.random.randint(LHS_SEED_MIN, LHS_SEED_MAX))
+                lhs_sampler = LHS(d=self.n_prof_dims, seed=np.random.randint(LHS_SEED_MIN, LHS_SEED_MAX))
                 unit_samples = lhs_sampler.random(n=n_from_random)
-                random_samples = cont_bounds[:, 0] + unit_samples * (cont_bounds[:, 1] - cont_bounds[:, 0])
+                random_samples = prof_bounds[:, 0] + unit_samples * (prof_bounds[:, 1] - prof_bounds[:, 0])
                 samples_list.extend(random_samples)
 
             # Combine all samples
-            self.all_continuous_params = np.array(samples_list)
+            self.all_profiled_params = np.array(samples_list)
 
             self.all_full_params = [
-                self.sampler._construct_params(self.grid_idx, cont_params)
-                for cont_params in self.all_continuous_params
+                self.sampler._construct_params(self.grid_idx, prof_params)
+                for prof_params in self.all_profiled_params
             ]
 
             # State tracking
@@ -140,7 +140,7 @@ class ActivationJob(Job):
         # Determine status based on mode
         if self.sampler.direct_eval_mode or self.mark_converged:
             # Direct evaluation mode or explicit converged flag: mark as converged
-            # (no continuous params to optimize, so it's immediately "converged")
+            # (no profiled params to optimize, so it's immediately "converged")
             status = 'converged'
         else:
             # Normal mode: mark as active for further optimization
@@ -149,7 +149,7 @@ class ActivationJob(Job):
         if self.sampler.direct_eval_mode:
             # Direct evaluation mode: use standard state structure
             self.sampler.population[self.grid_idx] = {
-                'continuous_params': self.all_continuous_params,  # Empty array (shape: 1x0)
+                'profiled_params': self.all_profiled_params,  # Empty array (shape: 1x0)
                 'fitnesses': self.fitnesses,
                 'best_fitness': best_fitness,
                 'status': status,
@@ -161,7 +161,7 @@ class ActivationJob(Job):
         else:
             # Normal mode: full population-based state
             self.sampler.population[self.grid_idx] = {
-                'continuous_params': self.all_continuous_params,
+                'profiled_params': self.all_profiled_params,
                 'fitnesses': self.fitnesses,
                 'best_fitness': best_fitness,
                 'status': status,

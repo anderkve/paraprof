@@ -408,7 +408,7 @@ def master_main(comm, sampler,
     # Define the workflow stages (different for refinement runs only)
     if sampler.is_refinement_run:
         stages = ['REFINEMENT_LBFGSB']
-        # Disable patching in direct evaluation mode (no continuous params to share)
+        # Disable patching in direct evaluation mode (no profiled params to share)
         if sampler.patch_refined_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
         logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
@@ -427,7 +427,7 @@ def master_main(comm, sampler,
             stages.append('PATCHING_WAVES')
 
         if sampler.direct_eval_mode:
-            logger.info("--- Direct Evaluation Mode: No continuous parameters ---")
+            logger.info("--- Direct Evaluation Mode: No profiled parameters ---")
             logger.info("    Patching automatically disabled")
         else:
             logger.info(f"--- Optimization method: {sampler.optimization_method} ---")
