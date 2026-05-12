@@ -64,10 +64,8 @@ Scanner:
         plot_settings:
           dpi: 200
           filetype: png
-          # Contour levels drawn on the 2D/N-D profile log-likelihood plots,
-          # expressed as log L - log L_best-fit. Defaults to [-3.0, -1.0]
-          # (~68% and ~95% CL for a 1-d.o.f. chi-squared approximation).
-          # Override with any list of negative deltas, e.g. include the ~99.7%
-          # CL contour as well:
           contour_levels: [-4.5, -3.0, -1.0]
         # samples_output_file: paraprof_samples.csv  # optional, rank-0 only
+        # warm_start_file: paraprof_samples.csv      # optional; set equal to
+        #                                            # samples_output_file to
+        #                                            # round-trip samples
