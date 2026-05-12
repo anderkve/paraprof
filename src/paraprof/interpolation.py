@@ -101,25 +101,45 @@ class GridInterpolator:
             elif n_valid < 2**self.n_proj_dims:
                 logger.warning(f" Sparse data ({n_valid} points) for profiled dim {prof_dim_idx}. "
                       f"Using nearest neighbor interpolation.")
-                # Use nearest neighbor for sparse data
+                # Nearest with fill_value=None extrapolates to the nearest grid value,
+                # which is the desired behaviour for sparse data.
                 interpolator = RegularGridInterpolator(
                     self.grid_axes,
                     values_grid,
                     method='nearest',
                     bounds_error=False,
-                    fill_value=None  # Will extrapolate using nearest
+                    fill_value=None
                 )
             else:
-                # Use linear interpolation with nearest neighbor extrapolation
+                # Use linear interpolation; out-of-bounds queries return NaN so
+                # that downstream code can detect them instead of receiving a
+                # linearly extrapolated (unbounded) value. Callers clip query
+                # points to the grid via _clip_to_grid below.
                 interpolator = RegularGridInterpolator(
                     self.grid_axes,
                     values_grid,
                     method='linear',
                     bounds_error=False,
-                    fill_value=None  # Will extrapolate using nearest
+                    fill_value=np.nan
                 )
 
             self.interpolators.append(interpolator)
+
+
+    def _clip_to_grid(self, coords):
+        """Clip query coordinates into the closed grid domain.
+
+        scipy's linear RegularGridInterpolator with fill_value=None
+        extrapolates linearly outside the grid, which can produce wildly wrong
+        values for profile likelihoods or profiled parameters. Clipping every
+        query to the grid edges gives nearest-neighbour behaviour at and
+        beyond the boundary, which is the conservative choice the original
+        code intended.
+        """
+        coords = np.asarray(coords, dtype=float).copy()
+        for i, axis in enumerate(self.grid_axes):
+            coords[..., i] = np.clip(coords[..., i], axis[0], axis[-1])
+        return coords
 
 
     def interpolate(self, projection_coords):
@@ -140,7 +160,7 @@ class GridInterpolator:
         if self.n_prof_dims == 0:
             return None
 
-        projection_coords = np.asarray(projection_coords)
+        projection_coords = self._clip_to_grid(np.asarray(projection_coords))
 
         # Ensure projection_coords is in the right shape for interpolation
         # RegularGridInterpolator expects shape (n_points, n_dims)
@@ -185,16 +205,18 @@ class GridInterpolator:
             for grid_idx, solution in self.solutions.items():
                 likelihood_grid[grid_idx] = solution['likelihood']
 
-            # Create interpolator for likelihood
+            # Create interpolator for likelihood. Out-of-bounds queries return
+            # NaN; without this, scipy linearly extrapolates and can produce
+            # arbitrarily large likelihood values outside the grid.
             self._likelihood_interpolator = RegularGridInterpolator(
                 self.grid_axes,
                 likelihood_grid,
                 method='linear',
                 bounds_error=False,
-                fill_value=None
+                fill_value=np.nan
             )
 
-        projection_coords = np.asarray(projection_coords).reshape(1, -1)
+        projection_coords = self._clip_to_grid(np.asarray(projection_coords)).reshape(1, -1)
         return self._likelihood_interpolator(projection_coords)[0]
 
 

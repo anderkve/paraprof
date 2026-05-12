@@ -121,12 +121,11 @@ The `examples/` directory contains demonstration scripts:
 
 ```bash
 # Minimal scripts using just the core API (recommended starting point)
-mpiexec -n 4 python examples/run_himmelblau_4d_simple.py
-mpiexec -n 4 python examples/run_rosenbrock_4d_simple.py
-
-# Power-user scripts that exercise the full advanced_config layout
 mpiexec -n 4 python examples/run_himmelblau_4d.py
 mpiexec -n 4 python examples/run_rosenbrock_4d.py
+
+# Power-user script that exercises the full advanced_config layout
+mpiexec -n 4 python examples/run_himmelblau_4d_advanced.py
 ```
 
 ## Configuration
@@ -254,7 +253,7 @@ paraprof/
 │   ├── exceptions.py         # Custom exception classes
 │   └── logger.py             # Logging utilities
 ├── tests/                    # Test suite
-└── examples/                 # Example scripts (`*_simple.py` for the minimal API)
+└── examples/                 # Example scripts (`*_advanced.py` exercises advanced_config)
 ```
 
 ### Contributing
