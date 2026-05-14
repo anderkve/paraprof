@@ -156,6 +156,7 @@ RUNNER = textwrap.dedent("""
                 'calls': metrics['total_target_calls'],
                 'max_logL': float(metrics['global_max']),
                 'prescreen_count': int(sampler._surrogate_prescreen_count),
+                'init_opt_skip_count': int(sampler._surrogate_init_opt_skip_count),
                 'cache_size': sum(len(v) for v in sampler._surrogate_cache.values()),
                 'grid_logL': grid_logL,
             }
@@ -216,18 +217,25 @@ def test_surrogate_path_taken_and_grid_matches_off_path():
 
     off, on = runs['off'], runs['on']
 
-    # 1. The surrogate path was actually taken when the flag is on, and not
-    # when the flag is off.
+    # 1. Both surrogate code paths fire when the flag is on, and neither
+    # does when the flag is off.
     assert off['prescreen_count'] == 0
-    assert on['prescreen_count'] >= 5, (
-        f"Surrogate prescreen path was taken only {on['prescreen_count']} times; "
-        "expected many. Feature is probably misconfigured."
-    )
-    assert on['cache_size'] > 0
+    assert off['init_opt_skip_count'] == 0
     assert off['cache_size'] == 0, (
         "Surrogate cache should remain empty when use_local_surrogate=False; "
         f"got cache_size={off['cache_size']}"
     )
+    assert on['prescreen_count'] >= 5, (
+        f"DE prescreen fired only {on['prescreen_count']} times; "
+        "expected many. Feature is probably misconfigured."
+    )
+    assert on['init_opt_skip_count'] >= 1, (
+        f"Init-opt basin-redundancy skip fired only "
+        f"{on['init_opt_skip_count']} times on a Himmelblau projection; "
+        "expected at least one redundant LHS start to collide with a known "
+        "basin. Feature is probably misconfigured."
+    )
+    assert on['cache_size'] > 0
 
     # 2. ROI logL grid agreement. Both runs should find peaks near 0.
     assert on['max_logL'] > -1e-3

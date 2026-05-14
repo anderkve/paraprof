@@ -5,6 +5,17 @@ import numpy as np
 import collections
 from .base import Job
 
+# Normalized L2 distance (in bounds-fraction units) below which an
+# initial-optimization iterate is considered to have entered the basin of
+# an already-found maximum. The L-BFGS-B job is then stopped early — the
+# basin is already represented in ``initial_maxima`` and further iterations
+# would only refine a duplicate. 20 % of the bounding-box diagonal sits
+# inside the inter-basin separations of the bundled benchmarks
+# (Himmelblau-4D peaks are ≥ 0.6 of the box apart in the projection plane)
+# while catching most basins early enough to save the bulk of an init-opt's
+# eval budget.
+SURROGATE_INIT_OPT_BASIN_DIST = 0.20
+
 
 class LBFGSBJob(Job):
     """
@@ -115,6 +126,19 @@ class LBFGSBJob(Job):
             )
             self.success = False
             self._is_finished = True
+            return []
+
+        # Pre-flight basin-redundancy skip: if the LHS-sampled start point
+        # is already in the basin of an already-found maximum, skip the
+        # whole optimization. Saves the entire init-opt eval budget for
+        # this job (not just the tail). ``success=False`` keeps the
+        # duplicate out of ``initial_maxima``.
+        if (self.type == 'INITIAL_OPTIMIZATION'
+                and self.sampler.use_local_surrogate
+                and self._init_opt_collides_with_known_basin(self.start_params_full)):
+            self.success = False
+            self._is_finished = True
+            self.sampler._surrogate_init_opt_skip_count += 1
             return []
 
         if self.status == 'NEEDS_NEIGHBOR_TEST':
@@ -401,6 +425,22 @@ class LBFGSBJob(Job):
                 self.current_fitness = -f_new       # Save final fitness
                 return [] # Job is done
 
+            # Local-approximation eval skip: when this initial-optimization
+            # iterate has clearly entered the basin of an already-found
+            # maximum, stop the L-BFGS-B run early. The remaining iterations
+            # would only refine a duplicate basin already represented in
+            # ``initial_maxima`` and drive the dominant cost share on
+            # default-config runs. ``success=False`` keeps the duplicate out
+            # of ``initial_maxima`` while still releasing the job cleanly.
+            if (self.type == 'INITIAL_OPTIMIZATION'
+                    and self.sampler.use_local_surrogate
+                    and self._init_opt_collides_with_known_basin(x_new_bounded)):
+                self.status = 'FINISHED'
+                self._is_finished = True
+                self.success = False
+                self.sampler._surrogate_init_opt_skip_count += 1
+                return []
+
             # --- Not converged, prepare for next iteration ---
 
             # Store s_k and g_old so we can update history *after* new gradient is computed
@@ -426,6 +466,21 @@ class LBFGSBJob(Job):
                 return [] # Job is done
 
             return [self._calculate_line_search_task()]
+
+    def _init_opt_collides_with_known_basin(self, x):
+        """Cheap k-NN approximation: True if ``x`` lies within
+        ``SURROGATE_INIT_OPT_BASIN_DIST`` of any maximum already in
+        ``initial_maxima``, in bounds-normalised L2. Each maximum entry
+        stores a full parameter vector under ``'point'``."""
+        if not self.sampler.initial_maxima:
+            return False
+        bounds_range = self.sampler.bounds[:, 1] - self.sampler.bounds[:, 0]
+        threshold = SURROGATE_INIT_OPT_BASIN_DIST
+        for m in self.sampler.initial_maxima:
+            normalised = (x - m['point']) / bounds_range
+            if float(np.linalg.norm(normalised)) < threshold:
+                return True
+        return False
 
     def on_finish(self, next_job_id):
         """Finalize a job, updating the sampler state."""

@@ -650,11 +650,14 @@ class ProfileProjector:
         # local fit doesn't keep pre-screening every generation.
         self._surrogate_cache = {}
         self._surrogate_health = {}
-        # Counter for how many DE generations actually used the surrogate
-        # pre-screen path (i.e. a local fit was successful and a trial
-        # was filtered). Used by the focused test to verify the feature
-        # is wired, and useful for diagnosing eval-savings runs.
+        # Counters for the two surrogate code paths that actually fire:
+        #  * `_surrogate_prescreen_count` — DE trial prescreen fits per generation
+        #  * `_surrogate_init_opt_skip_count` — initial-optimization L-BFGS-B
+        #     jobs early-stopped after entering a known basin
+        # Used by the focused test (verify the feature is wired) and useful
+        # for diagnosing eval-savings runs.
         self._surrogate_prescreen_count = 0
+        self._surrogate_init_opt_skip_count = 0
 
         # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
