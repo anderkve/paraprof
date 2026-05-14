@@ -651,8 +651,9 @@ class ProfileProjector:
         self._surrogate_cache = {}
         self._surrogate_health = {}
         # Counter for how many DE generations actually used the surrogate
-        # pre-screen path (i.e. a local fit was successful and trials were
-        # filtered). Used by the focused test to verify the feature is wired.
+        # pre-screen path (i.e. a local fit was successful and a trial
+        # was filtered). Used by the focused test to verify the feature
+        # is wired, and useful for diagnosing eval-savings runs.
         self._surrogate_prescreen_count = 0
 
         # Cache bounds arrays for profiled and projection dimensions
