@@ -715,6 +715,13 @@ def master_main(comm, sampler,
                 continue
 
             job = active_jobs[job_id]
+
+            # Feed the local-surrogate cache (no-op when feature is off).
+            sampler._surrogate_cache_add(
+                result['params'], result['target_val'],
+                getattr(job, 'grid_idx', None),
+            )
+
             new_tasks = job.process_result(result)
 
             # Add to correct priority queue

@@ -107,6 +107,7 @@ class ProfileProjector:
                  initial_points=None,
                  # Feature toggles
                  use_clustering=True,
+                 use_local_surrogate=False,
                  refinement_direct_eval=False,
                  # I/O
                  samples_output_file=None,
@@ -161,6 +162,15 @@ class ProfileProjector:
         use_clustering : bool, optional
             Enable mode detection for multi-modal refinement (default: True)
             Helps handle multiple basins during grid refinement
+        use_local_surrogate : bool, optional
+            Enable local-quadratic surrogate-assisted DE trial pre-screening
+            (default: False). When on, DE oversamples trial vectors by 3x per
+            cell per generation, scores them with a cell-local quadratic fit
+            against cached neighbourhood samples, and sends only the top
+            ``pop_per_grid_point`` candidates for full target evaluation.
+            Falls back transparently when too few local samples are available
+            or the fit is ill-conditioned, so default-off behaviour is
+            preserved bit-for-bit.
         refinement_direct_eval : bool, optional
             Skip optimization during refinement, just evaluate interpolated points (default: False)
             True = fast, False = thorough
@@ -404,6 +414,7 @@ class ProfileProjector:
         self.initial_points = initial_points
         self.refinement_direct_eval = refinement_direct_eval
         self.use_clustering = use_clustering
+        self.use_local_surrogate = use_local_surrogate
 
         # Store advanced config values
         self.memory_size = config['memory_size']
@@ -631,6 +642,18 @@ class ProfileProjector:
 
         # Performance optimizations: caches
         self._neighbor_cache = {}
+
+        # Local-surrogate sample cache: maps grid_idx -> list of
+        # (profiled_params, target_val) tuples for evals anchored at that cell.
+        # Populated by _surrogate_cache_add (only when use_local_surrogate is on).
+        # Per-cell health tracks rolling rank-quality of the surrogate so a bad
+        # local fit doesn't keep pre-screening every generation.
+        self._surrogate_cache = {}
+        self._surrogate_health = {}
+        # Counter for how many DE generations actually used the surrogate
+        # pre-screen path (i.e. a local fit was successful and trials were
+        # filtered). Used by the focused test to verify the feature is wired.
+        self._surrogate_prescreen_count = 0
 
         # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
@@ -1052,6 +1075,42 @@ class ProfileProjector:
 
         # Updating global max is now handled by the jobs
         # to ensure it happens at the right time (e.g., after refinement).
+
+    def _surrogate_cache_add(self, full_params, target_val, grid_idx):
+        """Push an evaluation into the local-surrogate sample cache.
+
+        Cheap no-op when surrogate prescreening is disabled, when the result
+        isn't anchored to a grid cell (e.g. global INITIAL_OPTIMIZATION), or
+        when the value is non-finite. Sliced profiled params are stored once
+        here so per-fit queries don't reslice.
+        """
+        if not self.use_local_surrogate:
+            return
+        if grid_idx is None or self.n_prof_dims == 0:
+            return
+        if not np.isfinite(target_val):
+            return
+        profiled = np.asarray(full_params)[self.profiled_dims]
+        self._surrogate_cache.setdefault(grid_idx, []).append(
+            (profiled.copy(), float(target_val))
+        )
+
+    def _surrogate_gather_neighborhood(self, grid_idx):
+        """Aggregate cached samples from the cell and its grid neighbours.
+
+        Returns (X, y) numpy arrays, or (None, None) if there is nothing
+        cached anywhere in the neighbourhood.
+        """
+        Xs, ys = [], []
+        for idx in self._get_valid_neighbors(grid_idx, include_center=True):
+            entries = self._surrogate_cache.get(idx)
+            if entries:
+                for p, v in entries:
+                    Xs.append(p)
+                    ys.append(v)
+        if not Xs:
+            return None, None
+        return np.asarray(Xs), np.asarray(ys)
 
     def _get_grid_indices_from_point(self, point, grid_axes=None):
         """Converts a point's projection coordinates to the closest grid indices.
