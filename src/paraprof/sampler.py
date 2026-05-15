@@ -32,11 +32,20 @@ the target dimensionality (see ``DEFAULT_GLOBAL_POOL_PER_DIM``)."""
 
 DEFAULT_GLOBAL_POOL_PER_DIM = 2500
 """Per-dimension contribution to the global solution pool size. The default
-pool size is ``max(DEFAULT_GLOBAL_POOL_SIZE, n_dims * DEFAULT_GLOBAL_POOL_PER_DIM)``.
+pool size is
+``clip(n_dims * DEFAULT_GLOBAL_POOL_PER_DIM,
+       DEFAULT_GLOBAL_POOL_SIZE, DEFAULT_GLOBAL_POOL_MAX)``.
 This keeps the 4-D default unchanged at 10 000 entries while preventing
 eviction of past-projection knowledge in higher-D scans, where both the
 number of 2-D projections (``C(n_dims, 2)``) and the per-projection eval
 count grow with ``n_dims``."""
+
+DEFAULT_GLOBAL_POOL_MAX = 100000
+"""Hard ceiling on the auto-scaled pool size. Beyond this, additional
+samples give diminishing returns for cross-projection knowledge transfer
+while substantially inflating master-side memory (each entry holds a full
+N-D parameter vector) and the per-projection proximity-cache rebuild cost
+(``O(pool_size * n_dims)`` numpy allocation)."""
 
 MEMORY_SIZE_MULTIPLIER = 25
 """Multiplier for calculating DE memory size (max_grid_size * multiplier)"""
@@ -430,9 +439,10 @@ class ProfileProjector:
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for
         # rationale)
-        self.global_pool_size = max(
-            DEFAULT_GLOBAL_POOL_SIZE,
-            self.dims * DEFAULT_GLOBAL_POOL_PER_DIM,
+        self.global_pool_size = min(
+            DEFAULT_GLOBAL_POOL_MAX,
+            max(DEFAULT_GLOBAL_POOL_SIZE,
+                self.dims * DEFAULT_GLOBAL_POOL_PER_DIM),
         )
         self.mutation_strategy = DEFAULT_DE_MUTATION_STRATEGY
         self.pbest_fraction = DEFAULT_DE_PBEST_FRACTION

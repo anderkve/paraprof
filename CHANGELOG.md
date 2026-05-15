@@ -29,11 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~10% and ~50% reductions in target-function calls, respectively;
   Rosenbrock-6D (15 projections) drops 64%, Rastrigin-4D drops 70%.
 - `global_pool_size` now auto-scales with target dimensionality:
-  `max(DEFAULT_GLOBAL_POOL_SIZE, n_dims * DEFAULT_GLOBAL_POOL_PER_DIM)`.
-  The 4-D default is unchanged (10 000 entries); higher-D scans get a
-  proportionally larger pool so that the cross-projection knowledge
-  accumulated by the hooks above isn't evicted in scans with many
-  projections (`C(n_dims, 2)` grows quadratically in `n_dims`).
+  `clip(n_dims * DEFAULT_GLOBAL_POOL_PER_DIM, DEFAULT_GLOBAL_POOL_SIZE,
+  DEFAULT_GLOBAL_POOL_MAX)`. The 4-D default is unchanged (10 000
+  entries); higher-D scans get a proportionally larger pool so that the
+  cross-projection knowledge accumulated by the hooks above isn't evicted
+  in scans with many projections (`C(n_dims, 2)` grows quadratically in
+  `n_dims`). The cap at `DEFAULT_GLOBAL_POOL_MAX` (100 000 entries)
+  bounds master-side memory and the per-projection proximity-cache
+  rebuild cost at very high `n_dims`.
 - `ProfileProjector(warm_start_file=...)` — dedicated path for reading
   warm-start samples, separate from `samples_output_file`. Previously, the
   master would implicitly warm-start from `samples_output_file`; that
