@@ -269,9 +269,9 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
     ax.set_facecolor("#dadada")
-    ax.tick_params(axis="both", labelsize=8, length=2.5, pad=2)
-    ax.set_xlabel(title["xlabel"], fontsize=10)
-    ax.set_ylabel(title["ylabel"], fontsize=10)
+    ax.tick_params(axis="both", length=3.0, pad=3)
+    ax.set_xlabel(title["xlabel"])
+    ax.set_ylabel(title["ylabel"])
     ax.grid(True, linestyle=":", linewidth=0.4, color="white", alpha=0.5)
     return im
 
@@ -292,18 +292,40 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     os.makedirs(os.path.dirname(gif_path) or ".", exist_ok=True)
 
+    # Match the showcase 2D plot styling: serif text body + STIX math, slightly
+    # larger axis labels, ticks pointing inward on all four sides.
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "font.serif": ["STIX Two Text", "STIXGeneral", "Times New Roman",
+                       "DejaVu Serif"],
+        "mathtext.fontset": "stix",
+        "axes.labelsize": 14,
+        "axes.titlesize": 14,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "axes.linewidth": 1.0,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+    })
+
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad("#dadada")
 
     # Pre-allocate the figure -- we reuse a single figure across frames to keep
     # rendering fast and consistent.
-    fig = plt.figure(figsize=(7.8, 3.9), dpi=110, facecolor="white")
+    # Wider figure + larger inter-panel gap so the right panel's $x_2$ label
+    # is well clear of the left panel's colour-bar/heat-map. Slightly thicker
+    # colour-bar matches the showcase 2D plot styling.
+    fig = plt.figure(figsize=(8.2, 4.0), dpi=110, facecolor="white")
     gs = fig.add_gridspec(
         nrows=2, ncols=3,
         height_ratios=[0.07, 1.0],
-        width_ratios=[1.0, 1.0, 0.04],
-        left=0.07, right=0.94, top=0.96, bottom=0.10,
-        hspace=0.05, wspace=0.22,
+        width_ratios=[1.0, 1.0, 0.06],
+        left=0.07, right=0.93, top=0.96, bottom=0.13,
+        hspace=0.05, wspace=0.36,
     )
 
     info_ax = fig.add_subplot(gs[0, :])
@@ -318,8 +340,8 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     sm = ScalarMappable(norm=Normalize(vmin=VMIN, vmax=VMAX), cmap=cmap)
     sm.set_array([])
     cbar = plt.colorbar(sm, cax=cax)
-    cbar.set_label(r"$\log L - \log L_{\mathrm{best}}$", fontsize=9.5)
-    cbar.ax.tick_params(labelsize=8)
+    cbar.set_label(r"$\Delta \log L = \log L - \log L_{\max}$", fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
 
     bounds = np.asarray(bounds)
     # Projection 1 covers (x0, x1); projection 2 covers (x0, x2). Sharing the
@@ -465,14 +487,14 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             0.0, 0.5,
             f"Target-function evaluations: {snap['target_calls']:,}",
             transform=info_ax.transAxes, ha="left", va="center",
-            fontsize=10.5, color="#222",
+            fontsize=12, color="#222",
         )
         if np.isfinite(global_max):
             info_ax.text(
                 1.0, 0.5,
-                f"Best log L: {global_max:+.3e}",
+                rf"Best $\log L$: {global_max:+.3e}",
                 transform=info_ax.transAxes, ha="right", va="center",
-                fontsize=9.5, color="#666",
+                fontsize=11, color="#666",
             )
 
         fig.canvas.draw()
