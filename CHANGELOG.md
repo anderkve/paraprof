@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **User-supplied gradient support** via the new `grad_func` constructor
+  argument on `ProfileProjector`. When provided, the L-BFGS-B paths
+  request `grad_func(params)` from workers alongside the target evaluation
+  and skip the finite-difference evaluations the user covered. Partial
+  gradients are supported: return a length-`n_dims` array with `NaN` for
+  unknown components, or a `{dim_index: value}` dict for known components.
+  Any uncovered dim still falls back to the configured
+  `lbfgsb.gradient_method` (forward or central FD). DE paths are
+  unchanged. New counters: `sampler.target_calls_saved_by_user_gradient`
+  (FD calls avoided) and `sampler.user_gradient_errors` (grad_func
+  failures that triggered FD fallback); both appear in the end-of-run
+  summary. Sign convention: `grad_func` returns the gradient of the
+  function being MAXIMIZED. The MPI broadcast format for `run_scan` is
+  now a `(target_func, grad_func)` tuple; the worker still accepts the
+  legacy bare-callable form so manual broadcasts continue to work.
+
 - **Cross-projection knowledge transfer** for multi-projection scans, on by
   default. When `run_all_projections` runs more than one projection, the
   later projections automatically reuse evaluations from the earlier ones
