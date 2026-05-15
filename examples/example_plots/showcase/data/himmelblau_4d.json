@@ -1,6 +1,6 @@
 {
   "function": "himmelblau_4d",
-  "total_target_calls": 263118,
+  "total_target_calls": 264617,
   "projections": [
     {
       "dims": [
@@ -22,8 +22,8 @@
         60,
         60
       ],
-      "coarse_target_calls": 42361,
-      "refined_target_calls": 109230,
+      "coarse_target_calls": 42348,
+      "refined_target_calls": 110698,
       "global_max": -1.1083641640785898e-16
     },
     {
@@ -35,9 +35,9 @@
         60,
         60
       ],
-      "coarse_target_calls": 174066,
-      "refined_target_calls": 263118,
-      "global_max": -1.651661245720964e-17
+      "coarse_target_calls": 175521,
+      "refined_target_calls": 264617,
+      "global_max": -2.809803357535081e-17
     }
   ]
 }
