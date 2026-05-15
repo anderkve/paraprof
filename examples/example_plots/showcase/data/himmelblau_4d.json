@@ -1,0 +1,30 @@
+{
+  "function": "himmelblau_4d",
+  "total_target_calls": 98867,
+  "projections": [
+    {
+      "dims": [
+        0
+      ],
+      "grid_points": [
+        120
+      ],
+      "coarse_target_calls": 9109,
+      "refined_target_calls": 10563,
+      "global_max": -5.224242550804959e-16
+    },
+    {
+      "dims": [
+        0,
+        1
+      ],
+      "grid_points": [
+        60,
+        60
+      ],
+      "coarse_target_calls": 42640,
+      "refined_target_calls": 98867,
+      "global_max": -8.89590326495873e-17
+    }
+  ]
+}
