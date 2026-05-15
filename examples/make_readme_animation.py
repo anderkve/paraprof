@@ -42,7 +42,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-from matplotlib.patches import FancyBboxPatch
 from mpi4py import MPI
 
 import imageio.v2 as imageio
@@ -85,26 +84,6 @@ GIF_PATH = os.path.join(OUT_DIR, "paraprof_dynamic_scan.gif")
 VMIN = -6.0
 VMAX = 0.0
 CONTOUR_LEVELS = [-6.18, -2.30]   # 95%, 68% Wilks-Δχ² for 2D
-
-# Phase colour palette (for the phase-tag pill at the top of the frame).
-PHASE_COLORS = {
-    "initial_global_search": "#ff7849",
-    "dynamic_activation":    "#5cb85c",
-    "de_refinement":         "#3e8ed0",
-    "patching":              "#f1b932",
-    "frozen":                "#7a7a7a",
-    "starting":              "#7a7a7a",
-}
-
-PHASE_LABELS = {
-    "initial_global_search": "Initial global search",
-    "dynamic_activation":    "Dynamic grid activation",
-    "de_refinement":         "Differential evolution",
-    "patching":              "Patching wave",
-    "frozen":                "Projection complete",
-    "starting":              "Initializing projection",
-}
-
 
 # ---------------------------------------------------------------------------
 # Snapshot capture
@@ -289,33 +268,8 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
     ax.tick_params(axis="both", labelsize=8, length=2.5, pad=2)
     ax.set_xlabel(title["xlabel"], fontsize=10)
     ax.set_ylabel(title["ylabel"], fontsize=10)
-    # Draw the per-panel title inside the panel (top-left) so it never
-    # collides with the info bar above the panels.
-    ax.text(0.02, 0.97, title["panel_title"],
-            transform=ax.transAxes, ha="left", va="top",
-            fontsize=10.5, fontweight="bold",
-            color=title.get("title_color", "#222"),
-            bbox=dict(facecolor="white", alpha=0.78, edgecolor="none",
-                      boxstyle="round,pad=0.25"))
     ax.grid(True, linestyle=":", linewidth=0.4, color="white", alpha=0.5)
     return im
-
-
-def _make_phase_pill(ax, phase: str):
-    """Draw the phase indicator pill in a dedicated axes."""
-    color = PHASE_COLORS.get(phase, "#888")
-    label = PHASE_LABELS.get(phase, phase)
-    ax.axis("off")
-    # Pill height in axes-fraction; keep it short so adjacent text has room.
-    pill = FancyBboxPatch((0.0, 0.18), 1.0, 0.64,
-                          boxstyle="round,pad=0.0,rounding_size=0.15",
-                          transform=ax.transAxes,
-                          linewidth=0, facecolor=color, alpha=0.95,
-                          mutation_aspect=0.35)
-    ax.add_patch(pill)
-    ax.text(0.5, 0.5, label, transform=ax.transAxes,
-            ha="center", va="center", fontsize=11.0, fontweight="bold",
-            color="white")
 
 
 def _select_recent_samples(samples: np.ndarray, n_recent: int):
@@ -339,33 +293,21 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     # Pre-allocate the figure -- we reuse a single figure across frames to keep
     # rendering fast and consistent.
-    fig = plt.figure(figsize=(7.8, 4.6), dpi=110, facecolor="white")
+    fig = plt.figure(figsize=(7.8, 3.9), dpi=110, facecolor="white")
     gs = fig.add_gridspec(
-        nrows=3, ncols=3,
-        height_ratios=[0.20, 0.11, 1.0],
+        nrows=2, ncols=3,
+        height_ratios=[0.07, 1.0],
         width_ratios=[1.0, 1.0, 0.04],
-        left=0.07, right=0.94, top=0.95, bottom=0.09,
-        hspace=0.20, wspace=0.22,
+        left=0.07, right=0.94, top=0.96, bottom=0.10,
+        hspace=0.05, wspace=0.22,
     )
 
-    title_ax = fig.add_subplot(gs[0, :])
-    title_ax.axis("off")
-    title_ax.text(0.0, 0.72,
-                  "ParaProf — profile-likelihood scan of the 4D Himmelblau function",
-                  fontsize=13.5, fontweight="bold", color="#222",
-                  transform=title_ax.transAxes, ha="left", va="center")
-    title_ax.text(0.0, 0.20,
-                  "Two 2D projections scanned sequentially; the second is warm-started from the first.",
-                  fontsize=9.5, color="#666",
-                  transform=title_ax.transAxes, ha="left", va="center")
-
-    pill_ax = fig.add_subplot(gs[1, 0])
-    info_ax = fig.add_subplot(gs[1, 1:])
+    info_ax = fig.add_subplot(gs[0, :])
     info_ax.axis("off")
 
-    ax_left = fig.add_subplot(gs[2, 0])
-    ax_right = fig.add_subplot(gs[2, 1])
-    cax = fig.add_subplot(gs[2, 2])
+    ax_left = fig.add_subplot(gs[1, 0])
+    ax_right = fig.add_subplot(gs[1, 1])
+    cax = fig.add_subplot(gs[1, 2])
 
     # Build the colour bar ONCE from a fixed mappable so we don't accumulate
     # locator references on every frame (which caused a recursion blow-up).
@@ -429,12 +371,10 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     for i, snap in enumerate(chosen):
         ax_left.cla()
         ax_right.cla()
-        pill_ax.cla()
         info_ax.cla()
         info_ax.axis("off")
 
         proj_idx = snap["proj_idx"]
-        phase = snap["phase"]
 
         # ----- left panel: projection 1 (x0, x1) -----
         if proj_idx == 0:
@@ -447,8 +387,6 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             )
             recent_xy = samples_recent[:, [0, 1]] if samples_recent is not None else None
             old_xy = samples_old[:, [0, 1]] if samples_old is not None else None
-            left_title_color = "#222"
-            left_panel_title = "Projection 1 — (x₀, x₁) profile"
         else:
             # Projection 2 active: freeze left panel at proj 1's final state.
             grid_img, mask = _build_grid_image(
@@ -458,18 +396,12 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             best_idx = frozen_p1["best_fit_idx"]
             recent_xy = None
             old_xy = None
-            left_title_color = "#7a7a7a"
-            left_panel_title = "Projection 1 — (x₀, x₁) ✓ complete"
 
         _draw_panel(
             ax_left, proj_axes_p1[0], proj_axes_p1[1],
             grid_img, mask, active, best_idx,
             recent_xy, old_xy,
-            title={
-                "xlabel": "$x_0$", "ylabel": "$x_1$",
-                "panel_title": left_panel_title,
-                "title_color": left_title_color,
-            },
+            title={"xlabel": "$x_0$", "ylabel": "$x_1$"},
             cmap=cmap,
             show_scatter=(proj_idx == 0),
         )
@@ -485,11 +417,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 empty_img, empty_mask, set(), None,
                 None, None,
-                title={
-                    "xlabel": "$x_0$", "ylabel": "$x_2$",
-                    "panel_title": "Projection 2 — (x₀, x₂) (queued)",
-                    "title_color": "#a0a0a0",
-                },
+                title={"xlabel": "$x_0$", "ylabel": "$x_2$"},
                 cmap=cmap,
                 show_scatter=False,
             )
@@ -499,43 +427,29 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             )
             active2 = snap["active_cells"]
             best_idx2 = snap["best_fit_idx"]
-            samples_recent_p2, samples_old_p2 = _select_recent_samples(
-                snap["recent_samples"], n_recent=90,
-            )
-            recent_xy_p2 = (samples_recent_p2[:, [0, 2]]
-                            if samples_recent_p2 is not None else None)
-            old_xy_p2 = (samples_old_p2[:, [0, 2]]
-                         if samples_old_p2 is not None else None)
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 grid_img2, mask2, active2, best_idx2,
                 None, None,
-                title={
-                    "xlabel": "$x_0$", "ylabel": "$x_2$",
-                    "panel_title": "Projection 2 — (x₀, x₂) warm-started",
-                    "title_color": "#222",
-                },
+                title={"xlabel": "$x_0$", "ylabel": "$x_2$"},
                 cmap=cmap,
                 show_scatter=False,
             )
 
-        # ----- phase indicator pill + info text -----
-        _make_phase_pill(pill_ax, phase)
-
         global_max = snap["global_max"]
-        # Two-line info block, vertically centred in the info row.
+        # Single-line counter, vertically centred in the info row.
         info_ax.text(
-            0.04, 0.72,
+            0.0, 0.5,
             f"Target-function evaluations: {snap['target_calls']:,}",
             transform=info_ax.transAxes, ha="left", va="center",
-            fontsize=10.5, color="#222", fontweight="bold",
+            fontsize=10.5, color="#222",
         )
         if np.isfinite(global_max):
             info_ax.text(
-                0.04, 0.24,
-                f"Best log-likelihood found: {global_max:+.3e}",
-                transform=info_ax.transAxes, ha="left", va="center",
-                fontsize=9.5, color="#444",
+                1.0, 0.5,
+                f"Best log L: {global_max:+.3e}",
+                transform=info_ax.transAxes, ha="right", va="center",
+                fontsize=9.5, color="#666",
             )
 
         fig.canvas.draw()
@@ -550,7 +464,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     plt.close(fig)
 
     print(f"Encoding GIF ({len(images)} frames) -> {gif_path}", flush=True)
-    imageio.mimsave(gif_path, images, format="GIF", fps=9, loop=0)
+    imageio.mimsave(gif_path, images, format="GIF", fps=14, loop=0)
     print(f"Wrote {gif_path} ({os.path.getsize(gif_path) / 1e6:.2f} MB)")
 
 
