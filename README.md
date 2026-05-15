@@ -7,7 +7,7 @@
 
 ## Animated overview
 
-The animation below replays a full two-projection scan of the 4D Himmelblau log-likelihood, sampled at regular intervals during a live MPI run. The scattered red points are the **initial global L-BFGS-B sweep** that locates promising regions; the heatmap that grows outward from those regions is the **dynamic grid activation** that focuses the differential-evolution budget on cells inside the ROI. When projection 1 (left, over `x₀, x₁`) finishes, projection 2 (right, over `x₂, x₃`) **warm-starts** from the accumulated global solution pool: the initial sweep is skipped entirely and the grid fills almost instantly.
+The animation below replays a full two-projection scan of the 4D Himmelblau log-likelihood, sampled at regular intervals during a live MPI run. The scattered red points are the **initial global L-BFGS-B sweep** that locates promising regions; the heatmap that grows outward from those regions is the **dynamic grid activation** that focuses the differential-evolution budget on cells inside the ROI. When projection 1 (left, over `x₀, x₁`) finishes, projection 2 (right, over `x₀, x₂`) **warm-starts** from the accumulated global solution pool: the initial sweep is skipped entirely and the grid fills almost instantly, despite having a very different multi-peak structure.
 
 <p align="center">
   <img src="examples/example_plots/animation/paraprof_dynamic_scan.gif" alt="ParaProf scanning the 4D Himmelblau log-likelihood: two 2D projections side by side" width="780"/>

@@ -74,7 +74,7 @@ SCATTER_HISTORY_INIT = 600    # larger buffer during initial L-BFGS-B phase
 
 PROJECTIONS = [
     {"dims": [0, 1], "grid_points": [GRID_PER_DIM, GRID_PER_DIM]},
-    {"dims": [2, 3], "grid_points": [GRID_PER_DIM, GRID_PER_DIM]},
+    {"dims": [0, 2], "grid_points": [GRID_PER_DIM, GRID_PER_DIM]},
 ]
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "example_plots", "animation")
@@ -374,13 +374,16 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     cbar.ax.tick_params(labelsize=8)
 
     bounds = np.asarray(bounds)
+    # Projection 1 covers (x0, x1); projection 2 covers (x0, x2). Sharing the
+    # x0 axis emphasises that the two projections answer different questions
+    # about the same parameter.
     proj_axes_p1 = [
         np.linspace(bounds[0, 0], bounds[0, 1], GRID_PER_DIM + 1),
         np.linspace(bounds[1, 0], bounds[1, 1], GRID_PER_DIM + 1),
     ]
     proj_axes_p2 = [
+        np.linspace(bounds[0, 0], bounds[0, 1], GRID_PER_DIM + 1),
         np.linspace(bounds[2, 0], bounds[2, 1], GRID_PER_DIM + 1),
-        np.linspace(bounds[3, 0], bounds[3, 1], GRID_PER_DIM + 1),
     ]
     grid_shape = (GRID_PER_DIM + 1, GRID_PER_DIM + 1)
 
@@ -469,27 +472,24 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             show_scatter=(proj_idx == 0),
         )
 
-        # ----- right panel: projection 2 (x2, x3) -----
+        # ----- right panel: projection 2 (x0, x2) -----
         if proj_idx == 0:
-            # Show samples projected onto (x2, x3): no grid yet.
+            # Projection 2 has not started yet -- show an inert "queued"
+            # panel with no markers or sample overlay so the viewer can
+            # focus on projection 1 on the left.
             empty_img = np.full(grid_shape, -np.inf)
             empty_mask = np.zeros(grid_shape, dtype=bool)
-            samples_recent, samples_old = _select_recent_samples(
-                snap["recent_samples"], n_recent=90,
-            )
-            recent_xy = samples_recent[:, [2, 3]] if samples_recent is not None else None
-            old_xy = samples_old[:, [2, 3]] if samples_old is not None else None
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 empty_img, empty_mask, set(), None,
-                recent_xy, old_xy,
+                None, None,
                 title={
-                    "xlabel": "$x_2$", "ylabel": "$x_3$",
-                    "panel_title": "Projection 2 — (x₂, x₃) (queued)",
+                    "xlabel": "$x_0$", "ylabel": "$x_2$",
+                    "panel_title": "Projection 2 — (x₀, x₂) (queued)",
                     "title_color": "#a0a0a0",
                 },
                 cmap=cmap,
-                show_scatter=True,
+                show_scatter=False,
             )
         else:
             grid_img2, mask2 = _build_grid_image(
@@ -497,18 +497,13 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             )
             active2 = snap["active_cells"]
             best_idx2 = snap["best_fit_idx"]
-            samples_recent, samples_old = _select_recent_samples(
-                snap["recent_samples"], n_recent=90,
-            )
-            recent_xy = samples_recent[:, [2, 3]] if samples_recent is not None else None
-            old_xy = samples_old[:, [2, 3]] if samples_old is not None else None
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 grid_img2, mask2, active2, best_idx2,
-                recent_xy, old_xy,
+                None, None,
                 title={
-                    "xlabel": "$x_2$", "ylabel": "$x_3$",
-                    "panel_title": "Projection 2 — (x₂, x₃) warm-started",
+                    "xlabel": "$x_0$", "ylabel": "$x_2$",
+                    "panel_title": "Projection 2 — (x₀, x₂) warm-started",
                     "title_color": "#222",
                 },
                 cmap=cmap,
@@ -546,7 +541,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     plt.close(fig)
 
     print(f"Encoding GIF ({len(images)} frames) -> {gif_path}", flush=True)
-    imageio.mimsave(gif_path, images, format="GIF", fps=18, loop=0)
+    imageio.mimsave(gif_path, images, format="GIF", fps=9, loop=0)
     print(f"Wrote {gif_path} ({os.path.getsize(gif_path) / 1e6:.2f} MB)")
 
 
