@@ -59,8 +59,13 @@ def setup_matplotlib():
     return plt
 
 
-def plot_1d(plt, axis, logL, proj_dim, title_name, out_path, dpi):
-    """Render a single 1D profile-likelihood plot."""
+def plot_1d(plt, axis, logL, proj_dim, title_name, out_path, dpi,
+            roi_threshold):
+    """Render a single 1D profile-likelihood plot.
+
+    The y-axis lower bound is fixed at ``-roi_threshold`` so the visible
+    region matches the ROI used by the scan.
+    """
     axis = np.asarray(axis)
     logL = np.asarray(logL)
 
@@ -91,10 +96,10 @@ def plot_1d(plt, axis, logL, proj_dim, title_name, out_path, dpi):
     ax.set_ylabel(r'$\Delta \log L = \log L - \log L_{\max}$')
     ax.set_title(f'{title_name}: 1D profile for $x_{{{proj_dim}}}$')
 
-    # Sensible y-range that emphasises the high-likelihood region without
-    # squashing the structure to a single pixel.
-    y_min = max(-6.0, float(np.nanmin(delta_logL[valid]) - 0.2))
-    ax.set_ylim(y_min, 0.4)
+    # Pin the y-axis lower bound to the ROI threshold (in delta-logL units).
+    y_min = -float(roi_threshold)
+    y_max = max(0.1 * float(roi_threshold), 0.4)
+    ax.set_ylim(y_min, y_max)
     ax.set_xlim(axis[0], axis[-1])
     ax.grid(True, linestyle='--', alpha=0.35, linewidth=0.6)
     ax.legend(loc='lower right', frameon=True, framealpha=0.95,
@@ -105,8 +110,13 @@ def plot_1d(plt, axis, logL, proj_dim, title_name, out_path, dpi):
     plt.close(fig)
 
 
-def plot_2d(plt, axis_x, axis_y, logL, dims, title_name, out_path, dpi):
-    """Render a single 2D profile-likelihood heat-map with CL contours."""
+def plot_2d(plt, axis_x, axis_y, logL, dims, title_name, out_path, dpi,
+            roi_threshold):
+    """Render a single 2D profile-likelihood heat-map with CL contours.
+
+    The colorbar lower bound is fixed at ``-roi_threshold`` so the visible
+    dynamic range matches the ROI used by the scan.
+    """
     axis_x = np.asarray(axis_x)
     axis_y = np.asarray(axis_y)
     logL = np.asarray(logL)
@@ -129,7 +139,7 @@ def plot_2d(plt, axis_x, axis_y, logL, dims, title_name, out_path, dpi):
     cmap.set_bad('0.85')
     masked = np.ma.masked_invalid(delta)
 
-    vmin, vmax = -8.0, 0.0
+    vmin, vmax = -float(roi_threshold), 0.0
     extent = [axis_x[0], axis_x[-1], axis_y[0], axis_y[-1]]
     im = ax.imshow(masked.T, extent=extent, origin='lower', aspect='auto',
                    cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
@@ -187,6 +197,7 @@ def main():
             continue
 
         data = np.load(npz_path, allow_pickle=False)
+        roi_threshold = float(data['roi_threshold'])
 
         out_1d = os.path.join(args.out_dir, f'{name}_1d.png')
         out_2d_a = os.path.join(args.out_dir, f'{name}_2d_a.png')
@@ -198,7 +209,8 @@ def main():
                 proj_dim=int(data['proj_dim_1d']),
                 title_name=display,
                 out_path=out_1d,
-                dpi=args.dpi)
+                dpi=args.dpi,
+                roi_threshold=roi_threshold)
         plot_2d(plt,
                 axis_x=data['axis_2d_a_x'],
                 axis_y=data['axis_2d_a_y'],
@@ -206,7 +218,8 @@ def main():
                 dims=np.asarray(data['proj_dims_2d_a']).tolist(),
                 title_name=display,
                 out_path=out_2d_a,
-                dpi=args.dpi)
+                dpi=args.dpi,
+                roi_threshold=roi_threshold)
         plot_2d(plt,
                 axis_x=data['axis_2d_b_x'],
                 axis_y=data['axis_2d_b_y'],
@@ -214,7 +227,8 @@ def main():
                 dims=np.asarray(data['proj_dims_2d_b']).tolist(),
                 title_name=display,
                 out_path=out_2d_b,
-                dpi=args.dpi)
+                dpi=args.dpi,
+                roi_threshold=roi_threshold)
 
         with open(json_path) as f:
             scan_summary = json.load(f)

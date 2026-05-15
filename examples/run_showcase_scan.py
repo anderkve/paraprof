@@ -43,7 +43,7 @@ SHOWCASE_FUNCTIONS = {
     'rosenbrock_4d': {
         'dim_1d': 0,
         'dims_2d_a': [0, 1],
-        'dims_2d_b': [1, 2],
+        'dims_2d_b': [1, 3],
         'grid_1d': 120,
         'grid_2d': 60,
         'roi_threshold': 10.0,
@@ -166,6 +166,7 @@ def main():
         out_npz,
         function=args.function,
         total_target_calls=total_target_calls,
+        roi_threshold=float(cfg['roi_threshold']),
         # 1D
         proj_dim_1d=cfg['dim_1d'],
         axis_1d=sol_1d['grid_axes'][0],

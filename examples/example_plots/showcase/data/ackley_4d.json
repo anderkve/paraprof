@@ -1,6 +1,6 @@
 {
   "function": "ackley_4d",
-  "total_target_calls": 108786,
+  "total_target_calls": 102209,
   "projections": [
     {
       "dims": [
@@ -9,8 +9,8 @@
       "grid_points": [
         120
       ],
-      "coarse_target_calls": 10662,
-      "refined_target_calls": 11597,
+      "coarse_target_calls": 10716,
+      "refined_target_calls": 11354,
       "global_max": -1.1992135684479877e-07
     },
     {
@@ -22,9 +22,9 @@
         60,
         60
       ],
-      "coarse_target_calls": 40472,
-      "refined_target_calls": 62108,
-      "global_max": -6.665250573689718e-10
+      "coarse_target_calls": 35782,
+      "refined_target_calls": 56873,
+      "global_max": -1.641429214771506e-10
     },
     {
       "dims": [
@@ -35,9 +35,9 @@
         60,
         60
       ],
-      "coarse_target_calls": 87251,
-      "refined_target_calls": 108786,
-      "global_max": -6.665250573689718e-10
+      "coarse_target_calls": 81541,
+      "refined_target_calls": 102209,
+      "global_max": -1.641429214771506e-10
     }
   ]
 }
