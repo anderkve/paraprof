@@ -330,7 +330,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
         height_ratios=[0.07, 1.0],
         width_ratios=[1.0, 1.0],
         left=0.07, right=0.92, top=0.96, bottom=0.13,
-        hspace=0.05, wspace=0.36,
+        hspace=0.05, wspace=0.25,
     )
 
     info_ax = fig.add_subplot(gs[0, :])
@@ -341,8 +341,17 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     # Attach a colour-bar axes to the right panel that matches its data-area
     # height (handled internally by axes_grid1), with a small fixed gap.
-    divider = make_axes_locatable(ax_right)
-    cax = divider.append_axes("right", size="4.6%", pad=0.10)
+    divider_right = make_axes_locatable(ax_right)
+    cax = divider_right.append_axes("right", size="4.6%", pad=0.10)
+
+    # Append an identically-sized invisible axes to the LEFT panel so both
+    # panels lose the same amount of width to their right-hand sibling.
+    # Without this, axes_grid1 only steals width from ax_right, and under
+    # aspect='equal' that makes the right panel visibly shorter than the
+    # left one.
+    divider_left = make_axes_locatable(ax_left)
+    ghost_cax = divider_left.append_axes("right", size="4.6%", pad=0.10)
+    ghost_cax.set_visible(False)
 
     # Build the colour bar ONCE from a fixed mappable so we don't accumulate
     # locator references on every frame (which caused a recursion blow-up).
