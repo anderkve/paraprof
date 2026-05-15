@@ -61,7 +61,7 @@ from paraprof import (
 # ---------------------------------------------------------------------------
 
 FUNC_NAME = "himmelblau_4d"
-GRID_PER_DIM = 60
+GRID_PER_DIM = 40
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 5.0
 POP_PER_CELL = 3
@@ -69,7 +69,7 @@ LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 2
 
 SNAPSHOT_INTERVAL_PROJ1 = 25  # target-function calls between snapshots in proj 1
-SNAPSHOT_INTERVAL_PROJ2 = 4   # finer sampling for the (fast) warm-started proj 2
+SNAPSHOT_INTERVAL_PROJ2 = 2   # finer sampling for the (fast) warm-started proj 2
 SCATTER_HISTORY = 300         # rolling raw-sample buffer, identical for both projections
 
 PROJECTIONS = [
