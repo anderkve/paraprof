@@ -42,6 +42,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpi4py import MPI
 
 import imageio.v2 as imageio
@@ -316,15 +317,19 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     # Pre-allocate the figure -- we reuse a single figure across frames to keep
     # rendering fast and consistent.
-    # Wider figure + larger inter-panel gap so the right panel's $x_2$ label
-    # is well clear of the left panel's colour-bar/heat-map. Slightly thicker
-    # colour-bar matches the showcase 2D plot styling.
+    # Use a 2x2 gridspec with just the info row + the two heat-map panels;
+    # the colour bar is then attached to the right panel via
+    # make_axes_locatable, which auto-sizes it to the same data-area height
+    # as its parent panel (so it tracks the heat-map exactly under
+    # aspect='equal'), and places it tight against the panel's right edge.
+    # This matches the showcase 2D plots, which use the equivalent
+    # ``fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)`` shortcut.
     fig = plt.figure(figsize=(8.2, 4.0), dpi=110, facecolor="white")
     gs = fig.add_gridspec(
-        nrows=2, ncols=3,
+        nrows=2, ncols=2,
         height_ratios=[0.07, 1.0],
-        width_ratios=[1.0, 1.0, 0.06],
-        left=0.07, right=0.93, top=0.96, bottom=0.13,
+        width_ratios=[1.0, 1.0],
+        left=0.07, right=0.92, top=0.96, bottom=0.13,
         hspace=0.05, wspace=0.36,
     )
 
@@ -333,7 +338,11 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     ax_left = fig.add_subplot(gs[1, 0])
     ax_right = fig.add_subplot(gs[1, 1])
-    cax = fig.add_subplot(gs[1, 2])
+
+    # Attach a colour-bar axes to the right panel that matches its data-area
+    # height (handled internally by axes_grid1), with a small fixed gap.
+    divider = make_axes_locatable(ax_right)
+    cax = divider.append_axes("right", size="4.6%", pad=0.10)
 
     # Build the colour bar ONCE from a fixed mappable so we don't accumulate
     # locator references on every frame (which caused a recursion blow-up).
@@ -481,7 +490,6 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
                 show_scatter=True,
             )
 
-        global_max = snap["global_max"]
         # Single-line counter, vertically centred in the info row.
         info_ax.text(
             0.0, 0.5,
@@ -489,13 +497,6 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             transform=info_ax.transAxes, ha="left", va="center",
             fontsize=12, color="#222",
         )
-        if np.isfinite(global_max):
-            info_ax.text(
-                1.0, 0.5,
-                rf"Best $\log L$: {global_max:+.3e}",
-                transform=info_ax.transAxes, ha="right", va="center",
-                fontsize=11, color="#666",
-            )
 
         fig.canvas.draw()
         rgba = np.asarray(fig.canvas.buffer_rgba())
