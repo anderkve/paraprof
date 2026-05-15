@@ -2,21 +2,21 @@
 Render a README GIF that visualizes how ParaProf explores the 4D Himmelblau
 log-likelihood. Two 2D projections are scanned in sequence:
 
-    1. (x0, x1), profiling over (x2, x3)
-    2. (x2, x3), profiling over (x0, x1)
+    1. (x0, x1), profiling over (x2, x3) -- yields the 2D Himmelblau shape
+    2. (x0, x2), profiling over (x1, x3) -- yields a sum of two 1D
+       Himmelblau profiles, with peaks on the cartesian product of the four
+       1D-Himmelblau-peak coordinates
 
 The animation is built from snapshots of the live ProfileProjector state,
 captured every ``SNAPSHOT_INTERVAL`` target-function evaluations. Each frame
-shows both panels side by side:
+shows both panels side by side; only the panel for the projection currently
+being scanned shows live activity.
 
-    - During projection 1, the left panel updates live while the right panel
-      shows raw 4D samples projected onto (x2, x3) -- evidence that ParaProf
-      is already mapping the second projection's landscape "for free".
-    - During projection 2, the left panel is frozen at projection 1's final
-      grid and the right panel updates live. Because projection 2 inherits
-      the global solution pool from projection 1 (warm-start), the initial
-      L-BFGS-B sweep is skipped and dynamic activation immediately starts
-      growing outward from the four Himmelblau peaks.
+Cross-projection pool-seeding of ``initial_maxima`` is disabled here so that
+projection 2 runs its own initial global L-BFGS-B sweep and discovers all
+the (x0, x2) peaks -- otherwise the seed points would all land on the
+diagonal of the (x0, x2) grid and the ROI-limited activation would never
+bridge to the off-diagonal cartesian-product peaks.
 
 Run with MPI:
 
@@ -68,7 +68,7 @@ LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 2
 
 SNAPSHOT_INTERVAL_PROJ1 = 50  # target-function calls between snapshots in proj 1
-SNAPSHOT_INTERVAL_PROJ2 = 3   # very fine sampling for the (fast) warm-started proj 2
+SNAPSHOT_INTERVAL_PROJ2 = 50  # projection 2 also runs the full pipeline, same cadence
 SCATTER_HISTORY = 220         # most-recent raw samples kept for overlay scatter
 SCATTER_HISTORY_INIT = 600    # larger buffer during initial L-BFGS-B phase
 
@@ -353,7 +353,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
                   fontsize=13.5, fontweight="bold", color="#222",
                   transform=title_ax.transAxes, ha="left", va="center")
     title_ax.text(0.0, 0.20,
-                  "Two 2D projections scanned sequentially; the second is warm-started from the first.",
+                  "Two 2D projections scanned sequentially. Each panel updates only while its projection is the one running.",
                   fontsize=9.5, color="#666",
                   transform=title_ax.transAxes, ha="left", va="center")
 
@@ -387,12 +387,13 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     ]
     grid_shape = (GRID_PER_DIM + 1, GRID_PER_DIM + 1)
 
-    # Frame budget: target ~220 final frames so the GIF stays under ~6 MB and
-    # plays in 12-15 seconds at 18 FPS.
+    # Frame budget. Both projections now run the full pipeline, so we keep
+    # the per-projection cap roughly balanced. Cap total around ~260 frames
+    # at 9 FPS -> ~29 s.
     proj1_frames = [f for f in frames if f["proj_idx"] == 0]
     proj2_frames = [f for f in frames if f["proj_idx"] == 1]
 
-    max_p1 = 130
+    max_p1 = 95
     stride_p1 = max(1, len(proj1_frames) // max_p1)
     chosen_p1 = proj1_frames[::stride_p1]
     if chosen_p1 and chosen_p1[-1] is not proj1_frames[-1]:
@@ -400,14 +401,10 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     # Hold on the final projection-1 state for ~0.7 s so the viewer
     # registers "first projection done" before the second one starts.
-    transition_hold = 13
+    transition_hold = 6
     chosen_p1 = list(chosen_p1) + [chosen_p1[-1]] * transition_hold
 
-    # For projection 2 we want every captured snapshot in the output:
-    # warm-starting collapses the entire run, so any sub-sampling loses the
-    # short activation/DE phases entirely. Cap the total proj-2 frame count
-    # to keep the GIF size sane.
-    max_p2 = 80
+    max_p2 = 95
     stride_p2 = max(1, len(proj2_frames) // max_p2)
     chosen_p2 = proj2_frames[::stride_p2]
     if chosen_p2 and chosen_p2[-1] is not proj2_frames[-1]:
@@ -417,8 +414,8 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     if not chosen:
         chosen = list(frames)
 
-    # Pad with trailing repeats so the final state holds for ~1.4 s.
-    final_hold = 25
+    # Pad with trailing repeats so the final state holds for ~1.5 s.
+    final_hold = 14
     chosen = chosen + [chosen[-1]] * final_hold
 
     images = []
@@ -497,17 +494,27 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             )
             active2 = snap["active_cells"]
             best_idx2 = snap["best_fit_idx"]
+            samples_recent_p2, samples_old_p2 = _select_recent_samples(
+                snap["recent_samples"], n_recent=90,
+            )
+            recent_xy_p2 = (samples_recent_p2[:, [0, 2]]
+                            if samples_recent_p2 is not None else None)
+            old_xy_p2 = (samples_old_p2[:, [0, 2]]
+                         if samples_old_p2 is not None else None)
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 grid_img2, mask2, active2, best_idx2,
-                None, None,
+                recent_xy_p2, old_xy_p2,
                 title={
                     "xlabel": "$x_0$", "ylabel": "$x_2$",
-                    "panel_title": "Projection 2 — (x₀, x₂) warm-started",
+                    "panel_title": "Projection 2 — (x₀, x₂) profile",
                     "title_color": "#222",
                 },
                 cmap=cmap,
-                show_scatter=False,
+                # Show the initial L-BFGS-B sample dots only while the grid
+                # itself is still empty/sparse -- once dynamic activation
+                # has taken over, the cyan active markers carry the story.
+                show_scatter=(snap["phase"] == "initial_global_search"),
             )
 
         # ----- phase indicator pill + info text -----
@@ -557,6 +564,23 @@ def run_master(comm):
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    # Disable the in-memory pool-seeding of `initial_maxima` between
+    # projections. Projection 2's profile, profile(x0, x2) = -0.05 * (h(x0)
+    # + h(x2)), has its maxima on the *cartesian product* of the four
+    # Himmelblau peak coordinates -- 16 peaks in total. Projection 1's
+    # solution pool only stores points with each (x_i, x_{i+1}) pair sitting
+    # at one of the four 2D Himmelblau peaks, so projecting that pool onto
+    # (x0, x2) puts every seed on the diagonal; the 12 off-diagonal peaks
+    # would never be discovered because the ROI threshold cuts dynamic
+    # activation off in the high-cost region between them. Forcing the full
+    # global L-BFGS-B sweep at the start of projection 2 lets paraprof find
+    # all the (x0, x2) peaks. Per-cell proximity warm-starting is left
+    # enabled, so paraprof still reuses the per-evaluation profiled-parameter
+    # information accumulated during projection 1.
+    advanced_config = {
+        "cross_projection": {"pool_seeded_initial_maxima": False},
+    }
+
     with ProfileProjector(
         target_func=target_func,
         bounds=bounds,
@@ -566,6 +590,7 @@ def run_master(comm):
         n_initial_optimizations=N_INITIAL_OPT,
         lbfgsb_max_iter=LBFGSB_ITER,
         max_patching_waves=MAX_PATCHING_WAVES,
+        advanced_config=advanced_config,
     ) as sampler:
 
         cap = SnapshotCapturer(sampler, SNAPSHOT_INTERVAL_PROJ1, SCATTER_HISTORY_INIT)
@@ -584,18 +609,31 @@ def run_master(comm):
             cap.scatter_buf = collections.deque(
                 maxlen=SCATTER_HISTORY_INIT if proj_idx == 0 else SCATTER_HISTORY,
             )
-            if proj_idx == 0:
-                # Only snapshot at the start of projection 1 -- the sampler
-                # has not yet been reset for projection 2 at the equivalent
-                # point in the loop, so an early forced capture there would
-                # stamp projection 1's grid onto a projection-2 frame.
-                cap.capture(forced_phase="initial_global_search")
+
+            # Reset the sampler's per-projection state for projections after
+            # the first. ``run_all_projections`` does this internally, but
+            # we drive ``run_projection`` directly so we have to do it here
+            # -- without it, projection 2 would inherit projection 1's
+            # ``initial_maxima``, ``population`` and grid, and would never
+            # run its own initial L-BFGS-B sweep.
+            if proj_idx > 0:
+                sampler._reset_for_new_projection(proj)
+
+            # Snapshot the empty initial state at the very start of each
+            # projection so the GIF begins (and the proj-1 -> proj-2
+            # handover begins) from a clean panel.
+            cap.capture(forced_phase="initial_global_search")
 
             run_projection(
                 comm=comm,
                 sampler=sampler,
                 projection_config=proj,
                 save_plots=False,
+                # Allow projection 2 to fall through to a fresh global
+                # L-BFGS-B sweep when neither warm-start sources populate
+                # ``initial_maxima`` -- without this, the master loop would
+                # skip the sweep on every projection after the first.
+                skip_init_opt_on_warm_start=(proj_idx == 0),
                 myrank=0,
             )
 
