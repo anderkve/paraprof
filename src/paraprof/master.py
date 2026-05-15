@@ -523,7 +523,7 @@ def master_main(comm, sampler,
                 # projection) or the feature is disabled.
                 if (skip_init_opt_on_warm_start
                         and not sampler.initial_maxima
-                        and getattr(sampler, '_pool_seeded_initial_maxima', True)
+                        and sampler.pool_seeded_initial_maxima
                         and len(sampler.global_solution_pool) > 0):
                     sampler._initialize_from_global_pool()
 

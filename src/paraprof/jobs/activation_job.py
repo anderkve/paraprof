@@ -96,7 +96,7 @@ class ActivationJob(Job):
             # This is the cross-projection knowledge-transfer step; it falls
             # back silently when the pool is empty or the sampler has disabled
             # it (e.g. for A/B benchmarking).
-            if (getattr(self.sampler, '_proximity_warm_start', True)
+            if (self.sampler.proximity_warm_start
                     and not self.sampler.is_refinement_run
                     and n_from_random > 0
                     and len(self.sampler.global_solution_pool) > 0):

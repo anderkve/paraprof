@@ -233,7 +233,17 @@ class ProfileProjector:
                     'eps_multiplier': float,       # Default: 3.0
                     'projection_weight': float,    # Default: 1.0
                 },
+
+                'cross_projection': {
+                    'proximity_warm_start': bool,        # Default: True
+                    'pool_seeded_initial_maxima': bool,  # Default: True
+                },
             }
+
+        The ``cross_projection`` sub-dict toggles the two cross-projection
+        knowledge-transfer hooks. Both default to enabled; set either to
+        ``False`` to disable that hook (useful for A/B benchmarking or as a
+        safety valve if a target pathology surfaces).
 
         Several DE knobs that did not show measurable effect on grid quality
         in benchmarking (mutation_strategy, pbest_fraction,
@@ -407,6 +417,11 @@ class ProfileProjector:
                 'eps_multiplier': DEFAULT_CLUSTERING_EPS_MULTIPLIER,
                 'projection_weight': DEFAULT_CLUSTERING_PROJECTION_WEIGHT,
             },
+
+            'cross_projection': {
+                'proximity_warm_start': True,
+                'pool_seeded_initial_maxima': True,
+            },
         }
 
         # Merge with advanced_config if provided
@@ -482,20 +497,21 @@ class ProfileProjector:
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
 
-        # Cross-projection knowledge transfer (private flags; default on).
+        # Cross-projection knowledge transfer (configurable via
+        # advanced_config['cross_projection']; default on for both).
         # Both reuse the existing in-memory global_solution_pool, which
         # already accumulates across projections, so no new persistent
-        # state is introduced. Tests/benchmarks toggle them to A/B.
+        # state is introduced.
         #
-        # 1. _proximity_warm_start: per-cell activation pop swaps one
+        # 1. proximity_warm_start: per-cell activation pop swaps one
         #    random LHS seed for the highest-fitness past evaluation whose
         #    projection-dim coords are closest to the cell.
-        # 2. _pool_seeded_initial_maxima: at the start of every projection
+        # 2. pool_seeded_initial_maxima: at the start of every projection
         #    after the first, seed `initial_maxima` from the pool and skip
         #    the n_initial_optimizations global L-BFGS-B starts that would
         #    otherwise rediscover known maxima.
-        self._proximity_warm_start = True
-        self._pool_seeded_initial_maxima = True
+        self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
+        self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
         # Lazy snapshot of (proj_coords, profiled_coords, extent) for the
         # global pool, rebuilt at most once per projection. See
         # _sample_proximity_from_global_pool for the invalidation rule.

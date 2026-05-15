@@ -21,9 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     is replaced with the highest-fitness past evaluation whose
     projection-dim coordinates are closest to the cell.
   Both hooks are no-ops on the first projection and when the pool is
-  empty. They can be disabled per-sampler with the private flags
-  `sampler._pool_seeded_initial_maxima = False` and
-  `sampler._proximity_warm_start = False` for A/B benchmarking.
+  empty. They are toggleable via the new ``cross_projection`` sub-dict
+  of ``advanced_config``::
+
+      ProfileProjector(..., advanced_config={
+          'cross_projection': {
+              'proximity_warm_start': False,        # disable per-cell hook
+              'pool_seeded_initial_maxima': False,  # disable initial_maxima seeding
+          },
+      })
+
+  and surface as ``sampler.proximity_warm_start`` /
+  ``sampler.pool_seeded_initial_maxima`` instance attributes after
+  construction (used by the benchmark for A/B testing).
   Benchmarks (`examples/run_proximity_warm_start_benchmark*.py`) on the
   full 6-projection 50x50 scans of Himmelblau-4D and Rosenbrock-4D show
   ~10% and ~50% reductions in target-function calls, respectively;
