@@ -62,8 +62,8 @@ from paraprof import (
 
 FUNC_NAME = "himmelblau_4d"
 GRID_PER_DIM = 40
-N_INITIAL_OPT = 50
-ROI_THRESHOLD = 6.0
+N_INITIAL_OPT = 20
+ROI_THRESHOLD = 5.0
 POP_PER_CELL = 3
 LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 2
@@ -80,9 +80,14 @@ PROJECTIONS = [
 OUT_DIR = os.path.join(os.path.dirname(__file__), "example_plots", "animation")
 GIF_PATH = os.path.join(OUT_DIR, "paraprof_dynamic_scan.gif")
 
-VMIN = -6.0
+VMIN = -5.0
 VMAX = 0.0
-CONTOUR_LEVELS = [-6.18, -2.30]   # 95%, 68% Wilks-Δχ² for 2D
+# Δlog L contour levels (the maps below show log L − log L_best, so non-positive).
+# Outer level (−3) is dashed/thin, inner level (−1) is solid/thicker -- matches
+# the showcase plot styling in the "Example output" section of the README.
+CONTOUR_LEVELS = [-3.0, -1.0]
+CONTOUR_LINESTYLES = ['--', '-']
+CONTOUR_LINEWIDTHS = [1.0, 1.6]
 
 # ---------------------------------------------------------------------------
 # Snapshot capture
@@ -234,9 +239,14 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
     if mask.any():
         X, Y = np.meshgrid(axes_x, axes_y)
         try:
+            # Sort levels ascending; matplotlib then applies linestyles and
+            # linewidths in the same ascending order (most-negative first).
             ax.contour(X, Y, np.where(mask, grid_img, np.nan).T,
-                       levels=CONTOUR_LEVELS,
-                       colors="white", linewidths=0.9, alpha=0.95)
+                       levels=sorted(CONTOUR_LEVELS),
+                       colors="white",
+                       linestyles=CONTOUR_LINESTYLES,
+                       linewidths=CONTOUR_LINEWIDTHS,
+                       alpha=0.95)
         except Exception:
             pass
 
