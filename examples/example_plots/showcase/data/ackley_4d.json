@@ -1,0 +1,30 @@
+{
+  "function": "ackley_4d",
+  "total_target_calls": 207585,
+  "projections": [
+    {
+      "dims": [
+        0
+      ],
+      "grid_points": [
+        120
+      ],
+      "coarse_target_calls": 12810,
+      "refined_target_calls": 14578,
+      "global_max": -1.1992135684479877e-07
+    },
+    {
+      "dims": [
+        0,
+        1
+      ],
+      "grid_points": [
+        60,
+        60
+      ],
+      "coarse_target_calls": 106188,
+      "refined_target_calls": 207585,
+      "global_max": -8.860294720136608e-10
+    }
+  ]
+}

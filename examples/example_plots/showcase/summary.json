@@ -1,0 +1,23 @@
+[
+  {
+    "function": "himmelblau_4d",
+    "display_name": "Himmelblau 4D",
+    "total_target_calls": 98867,
+    "plot_1d": "examples/example_plots/showcase/himmelblau_4d_1d.png",
+    "plot_2d": "examples/example_plots/showcase/himmelblau_4d_2d.png"
+  },
+  {
+    "function": "rosenbrock_4d",
+    "display_name": "Rosenbrock 4D",
+    "total_target_calls": 33362,
+    "plot_1d": "examples/example_plots/showcase/rosenbrock_4d_1d.png",
+    "plot_2d": "examples/example_plots/showcase/rosenbrock_4d_2d.png"
+  },
+  {
+    "function": "ackley_4d",
+    "display_name": "Ackley 4D",
+    "total_target_calls": 207585,
+    "plot_1d": "examples/example_plots/showcase/ackley_4d_1d.png",
+    "plot_2d": "examples/example_plots/showcase/ackley_4d_2d.png"
+  }
+]
