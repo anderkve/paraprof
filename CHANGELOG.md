@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cross-projection knowledge transfer** for multi-projection scans, on by
+  default. When `run_all_projections` runs more than one projection, the
+  later projections automatically reuse evaluations from the earlier ones
+  via two surgical hooks on the existing in-memory `global_solution_pool`:
+  - On every projection after the first, `initial_maxima` are seeded from
+    the pool (mapped onto the new projection's grid, best per cell, ROI
+    filtered); when this fires the master skips the
+    `n_initial_optimizations` global L-BFGS-B starts that would otherwise
+    rediscover known maxima.
+  - At every grid-cell activation, one random LHS slot in the population
+    is replaced with the highest-fitness past evaluation whose
+    projection-dim coordinates are closest to the cell.
+  Both hooks are no-ops on the first projection and when the pool is
+  empty. They can be disabled per-sampler with the private flags
+  `sampler._pool_seeded_initial_maxima = False` and
+  `sampler._proximity_warm_start = False` for A/B benchmarking.
+  Benchmarks (`examples/run_proximity_warm_start_benchmark*.py`) on the
+  full 6-projection 50x50 scans of Himmelblau-4D and Rosenbrock-4D show
+  ~10% and ~50% reductions in target-function calls, respectively.
 - `ProfileProjector(warm_start_file=...)` — dedicated path for reading
   warm-start samples, separate from `samples_output_file`. Previously, the
   master would implicitly warm-start from `samples_output_file`; that
