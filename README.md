@@ -176,6 +176,32 @@ These are the user-facing constructor arguments most scans actually need:
 - `refinement_direct_eval`: Skip optimization in the refinement run; just evaluate the interpolated point at each fine grid cell (default: False)
 - `samples_output_file`: CSV path to log every evaluation (default: None)
 - `warm_start_file`: CSV path read at the start of each projection to pre-populate `initial_maxima`, skipping the global L-BFGS-B seeding step (default: None). Set this equal to `samples_output_file` to round-trip the current run's samples into the next one.
+- `grad_func`: Optional callable returning the gradient of `target_func` (default: None). See [User-supplied gradients](#user-supplied-gradients) below.
+
+### User-supplied gradients
+
+ParaProf normally estimates gradients via finite differences inside the L-BFGS-B paths, which costs N (forward) or 2N (central) extra target-function calls per gradient. If you have an analytic or otherwise cheap gradient — either fully or for some subset of dimensions — pass it via `grad_func` and ParaProf will skip the corresponding finite-difference evaluations:
+
+```python
+def target(p):
+    return -float(np.sum(p**2))         # log-likelihood, maximized
+
+def grad(p):
+    return -2.0 * np.asarray(p)         # ∇target_func (NOT ∇objective)
+
+sampler = ProfileProjector(target_func=target, grad_func=grad, ...)
+```
+
+**Sign convention.** `grad_func` returns the gradient of the function being **maximized** (i.e. `∇target_func`); ParaProf negates internally for the minimization objective. Getting this wrong sends L-BFGS-B uphill.
+
+**Return formats.** Both are accepted:
+
+- Length-`n_dims` array. Entries that are `NaN`, `+inf` or `-inf` are treated as "not provided" and filled in by finite differences using the configured `lbfgsb.gradient_method`.
+- `{dim_index: value}` dict for partial gradients — dims not in the dict are filled in by finite differences.
+
+**Scope.** Only L-BFGS-B paths use the gradient (initial global optimization, per-grid-point optimization, neighbour-curvature seeding, line-search backtracking, refinement, patching). Differential Evolution is gradient-free and is unaffected.
+
+**Counters.** `sampler.target_calls_saved_by_user_gradient` tracks the FD target evaluations skipped because the user supplied that component. `sampler.user_gradient_errors` counts grad_func failures or shape mismatches that triggered FD fallback. Both are surfaced in the end-of-run summary log.
 
 ### Advanced configuration
 

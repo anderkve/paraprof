@@ -24,6 +24,10 @@ class LBFGSBJob(Job):
         self.lbfgsb_ftol = sampler.lbfgsb_ftol
         self.lbfgsb_max_iter = sampler.lbfgsb_max_iter
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
+        # When True, piggyback compute_gradient=True on initial-f, neighbor-test,
+        # and first-attempt line-search tasks so the worker also returns
+        # grad_func(params) and we can skip FD for the dims the user provided.
+        self.has_user_grad = sampler.grad_func is not None
 
         # Job-specific state
         self.grid_idx = grid_idx
@@ -50,6 +54,11 @@ class LBFGSBJob(Job):
         self.gradient_components = {}
         self.pending_grad_evals = 0
         self.current_gradient = None
+        # Sign-flipped user gradient (∇objective = -∇target_func) at
+        # ``current_params``, sliced to opt_dims. NaN entries signal "use
+        # finite differences for this dim". Set by ``_seed_user_gradient``
+        # when a value+grad result for the current x is received.
+        self._user_grad_opt = None
 
         self.s_hist = collections.deque(maxlen=10)
         self.y_hist = collections.deque(maxlen=10)
@@ -150,7 +159,8 @@ class LBFGSBJob(Job):
                 context = {
                     'type': self.type,
                     'job_id': self.id,
-                    'sub_type': 'LBFGS_NEIGHBOR_TEST'
+                    'sub_type': 'LBFGS_NEIGHBOR_TEST',
+                    'compute_gradient': self.has_user_grad,
                 }
                 return [{'params': full_params_test, 'context': context}]
 
@@ -165,7 +175,8 @@ class LBFGSBJob(Job):
             context = {
                 'type': self.type,
                 'job_id': self.id,
-                'sub_type': 'LBFGS_INITIAL_F'
+                'sub_type': 'LBFGS_INITIAL_F',
+                'compute_gradient': self.has_user_grad,
             }
             return [{'params': self.start_params_full, 'context': context}]
 
@@ -186,14 +197,20 @@ class LBFGSBJob(Job):
                 self.current_params = self.neighbor_params_to_test
                 self.current_fitness = neighbor_fitness
                 self.current_objective = -neighbor_fitness
+                user_grad_for_current = result.get('user_gradient')
             else:
-                # Our original params are better
+                # Our original params are better — the gradient that came
+                # back with the neighbor test was at the neighbor's params,
+                # not ours, so discard it.
                 self.current_params = self.fallback_params
                 self.current_fitness = self.start_fitness
                 self.current_objective = -self.start_fitness
+                user_grad_for_current = None
 
             self.status = 'NEEDS_GRADIENT'
-            new_tasks = self._calculate_gradient_tasks()
+            new_tasks = self._calculate_gradient_tasks(
+                user_grad_full=user_grad_for_current
+            )
 
         elif self.status == 'NEEDS_INITIAL_F' and sub_type == 'LBFGS_INITIAL_F':
             # Came here from global opt or optimization with no neighbors
@@ -202,7 +219,9 @@ class LBFGSBJob(Job):
             self.current_params = self._get_partial_params_from_full(result['params'])
 
             self.status = 'NEEDS_GRADIENT'
-            new_tasks = self._calculate_gradient_tasks()
+            new_tasks = self._calculate_gradient_tasks(
+                user_grad_full=result.get('user_gradient')
+            )
 
         elif self.status == 'NEEDS_GRADIENT' and sub_type == 'LBFGS_GRADIENT':
             # This method will collect gradient components and,
@@ -218,8 +237,39 @@ class LBFGSBJob(Job):
 
         return new_tasks
 
-    def _calculate_gradient_tasks(self, base_eps=1e-8):
-        """Generates tasks needed to numerically calculate the gradient."""
+    def _seed_user_grad_opt(self, user_grad_full):
+        """Slice a full-dim user gradient (``∇target_func``) to opt_dims and
+        flip to the objective frame (``∇objective = -∇target``). Missing
+        entries (NaN) stay NaN — those dims still need FD.
+
+        Returns a length-``n_opt_dims`` array. If ``user_grad_full`` is
+        None or unusable, returns an all-NaN array (FD for all dims).
+        """
+        out = np.full(self.n_opt_dims, np.nan)
+        if user_grad_full is None:
+            return out
+        try:
+            arr = np.asarray(user_grad_full, dtype=float)
+        except (TypeError, ValueError):
+            return out
+        if arr.size < (max(self.opt_dims) + 1 if self.n_opt_dims else 0):
+            return out
+        sliced = arr[list(self.opt_dims)]
+        # Negate to convert ∇target → ∇objective. NaN stays NaN.
+        with np.errstate(invalid='ignore'):
+            out = np.where(np.isfinite(sliced), -sliced, np.nan)
+        return out
+
+    def _calculate_gradient_tasks(self, base_eps=1e-8, user_grad_full=None):
+        """Generates tasks needed to compute the gradient at ``current_params``.
+
+        When ``user_grad_full`` is provided (a full-dim user gradient already
+        evaluated at this x), FD tasks are issued only for the dimensions
+        the user did not supply. Each skipped FD task is counted in
+        ``sampler.target_calls_saved_by_user_gradient``. If the user covered
+        every opt dim, no FD tasks are issued and the gradient is finalized
+        immediately (the job transitions directly to the line-search task).
+        """
         tasks = []
         x = self.current_params
         self.gradient_components = {}
@@ -233,33 +283,47 @@ class LBFGSBJob(Job):
         # Store eps array for later use in gradient reconstruction
         self.current_eps = eps
 
-        if self.lbfgsb_gradient_method == "central":
-            self.pending_grad_evals = 2 * self.n_opt_dims
-            for i in range(self.n_opt_dims):
-                # Positive step
-                x_plus = x.copy()
-                x_plus[i] += eps[i]
-                full_params_plus = self._construct_full_params_for_task(x_plus)
-                context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
-                tasks.append({'params': full_params_plus, 'context': context})
+        self._user_grad_opt = self._seed_user_grad_opt(user_grad_full)
 
-                # Negative step
+        # Per-dim FD cost in the active method, used to count savings.
+        per_dim_fd_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
+        if self.lbfgsb_gradient_method not in ("central", "forward"):
+            raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
+
+        self.pending_grad_evals = 0
+        for i in range(self.n_opt_dims):
+            if np.isfinite(self._user_grad_opt[i]):
+                # User supplied this component; skip FD entirely.
+                self.sampler.target_calls_saved_by_user_gradient += per_dim_fd_cost
+                continue
+
+            # FD path for this dim.
+            x_plus = x.copy()
+            x_plus[i] += eps[i]
+            full_params_plus = self._construct_full_params_for_task(x_plus)
+            tasks.append({
+                'params': full_params_plus,
+                'context': {'type': self.type, 'job_id': self.id,
+                            'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1},
+            })
+            self.pending_grad_evals += 1
+
+            if self.lbfgsb_gradient_method == "central":
                 x_minus = x.copy()
                 x_minus[i] -= eps[i]
                 full_params_minus = self._construct_full_params_for_task(x_minus)
-                context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': -1}
-                tasks.append({'params': full_params_minus, 'context': context})
+                tasks.append({
+                    'params': full_params_minus,
+                    'context': {'type': self.type, 'job_id': self.id,
+                                'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': -1},
+                })
+                self.pending_grad_evals += 1
 
-        elif self.lbfgsb_gradient_method == "forward":
-            self.pending_grad_evals = self.n_opt_dims
-            for i in range(self.n_opt_dims):
-                x_plus = x.copy()
-                x_plus[i] += eps[i]
-                full_params_plus = self._construct_full_params_for_task(x_plus)
-                context = {'type': self.type, 'job_id': self.id, 'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': 1}
-                tasks.append({'params': full_params_plus, 'context': context})
-        else:
-            raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
+        # If every dim is covered by the user gradient, there is nothing to
+        # wait for — finalize the gradient now and emit the first line-search
+        # task.
+        if self.pending_grad_evals == 0:
+            return self._finalize_gradient_and_line_search()
 
         return tasks
 
@@ -273,81 +337,92 @@ class LBFGSBJob(Job):
 
         # Check if all components for the gradient have been computed
         if self.pending_grad_evals == 0:
-            grad = np.zeros(self.n_opt_dims)
-            f = self.current_objective
-
-            if self.lbfgsb_gradient_method == "central":
-                for i in range(self.n_opt_dims):
-                    f_plus = self.gradient_components[(i, 1)]
-                    f_minus = self.gradient_components[(i, -1)]
-                    grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
-            elif self.lbfgsb_gradient_method == "forward":
-                 for i in range(self.n_opt_dims):
-                    f_plus = self.gradient_components[(i, 1)]
-                    grad[i] = (f_plus - f) / self.current_eps[i]
-
-            self.current_gradient = grad
-
-            # --- History update (if pending from line search) ---
-            if self.pending_s_k is not None:
-                s_k = self.pending_s_k
-                g_old = self.pending_g_old
-                g_new = self.current_gradient
-                y_k = g_new - g_old
-                # Wolfe/relative curvature condition: require y·s to be a
-                # meaningful fraction of ||y||*||s||, not just > tiny absolute.
-                ys = float(np.dot(y_k, s_k))
-                yn = float(np.linalg.norm(y_k))
-                sn = float(np.linalg.norm(s_k))
-                if ys > 1e-10 * max(yn * sn, 1e-30):
-                    self.s_hist.append(s_k)
-                    self.y_hist.append(y_k)
-                # Clear pending
-                self.pending_s_k = None
-                self.pending_g_old = None
-            # --- End History update ---
-
-            # --- L-BFGS two-loop recursion to find search direction ---
-            # Pairs that fail the curvature condition are skipped defensively
-            # so that a degenerate dot product can never produce inf/nan rho.
-            q = grad
-            a = []
-            usable_pairs = []
-            for s, y in zip(self.s_hist, self.y_hist):
-                ys = float(np.dot(y, s))
-                if ys > 1e-30:
-                    usable_pairs.append((s, y, ys))
-
-            for s, y, ys in reversed(usable_pairs):
-                rho = 1.0 / ys
-                alpha = rho * np.dot(s, q)
-                q = q - alpha * y
-                a.append(alpha)
-
-            if usable_pairs:
-                s_last, y_last, _ = usable_pairs[-1]
-                yy = float(np.dot(y_last, y_last))
-                if yy > 1e-30:
-                    gamma = float(np.dot(s_last, y_last)) / yy
-                else:
-                    gamma = 1.0
-                z = gamma * q
-            else:
-                z = q
-
-            for (s, y, ys), alpha in zip(usable_pairs, reversed(a)):
-                rho = 1.0 / ys
-                beta = rho * np.dot(y, z)
-                z = z + s * (alpha - beta)
-
-            self.search_direction = -z
-            self.status = 'NEEDS_LINE_SEARCH'
-            self.line_search_alpha = 1.0 # Reset for new line search
-
-            # Return a new task for the first step of the line search
-            return [self._calculate_line_search_task()]
+            return self._finalize_gradient_and_line_search()
 
         return [] # Not ready yet, no new task
+
+    def _finalize_gradient_and_line_search(self):
+        """Assemble the full gradient (mixing user-supplied components with FD
+        components), update the L-BFGS history, compute the search direction,
+        and return the first line-search task. Shared by the all-FD,
+        partial-user-grad, and full-user-grad paths.
+        """
+        grad = np.zeros(self.n_opt_dims)
+        f = self.current_objective
+
+        for i in range(self.n_opt_dims):
+            if self._user_grad_opt is not None and np.isfinite(self._user_grad_opt[i]):
+                # Already in the objective frame (negated when seeded).
+                grad[i] = self._user_grad_opt[i]
+                continue
+            if self.lbfgsb_gradient_method == "central":
+                f_plus = self.gradient_components[(i, 1)]
+                f_minus = self.gradient_components[(i, -1)]
+                grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
+            else:  # "forward"
+                f_plus = self.gradient_components[(i, 1)]
+                grad[i] = (f_plus - f) / self.current_eps[i]
+
+        self.current_gradient = grad
+
+        # --- History update (if pending from line search) ---
+        if self.pending_s_k is not None:
+            s_k = self.pending_s_k
+            g_old = self.pending_g_old
+            g_new = self.current_gradient
+            y_k = g_new - g_old
+            # Wolfe/relative curvature condition: require y·s to be a
+            # meaningful fraction of ||y||*||s||, not just > tiny absolute.
+            ys = float(np.dot(y_k, s_k))
+            yn = float(np.linalg.norm(y_k))
+            sn = float(np.linalg.norm(s_k))
+            if ys > 1e-10 * max(yn * sn, 1e-30):
+                self.s_hist.append(s_k)
+                self.y_hist.append(y_k)
+            # Clear pending
+            self.pending_s_k = None
+            self.pending_g_old = None
+        # --- End History update ---
+
+        # --- L-BFGS two-loop recursion to find search direction ---
+        # Pairs that fail the curvature condition are skipped defensively
+        # so that a degenerate dot product can never produce inf/nan rho.
+        q = grad
+        a = []
+        usable_pairs = []
+        for s, y in zip(self.s_hist, self.y_hist):
+            ys = float(np.dot(y, s))
+            if ys > 1e-30:
+                usable_pairs.append((s, y, ys))
+
+        for s, y, ys in reversed(usable_pairs):
+            rho = 1.0 / ys
+            alpha = rho * np.dot(s, q)
+            q = q - alpha * y
+            a.append(alpha)
+
+        if usable_pairs:
+            s_last, y_last, _ = usable_pairs[-1]
+            yy = float(np.dot(y_last, y_last))
+            if yy > 1e-30:
+                gamma = float(np.dot(s_last, y_last)) / yy
+            else:
+                gamma = 1.0
+            z = gamma * q
+        else:
+            z = q
+
+        for (s, y, ys), alpha in zip(usable_pairs, reversed(a)):
+            rho = 1.0 / ys
+            beta = rho * np.dot(y, z)
+            z = z + s * (alpha - beta)
+
+        self.search_direction = -z
+        self.status = 'NEEDS_LINE_SEARCH'
+        self.line_search_alpha = 1.0 # Reset for new line search
+
+        # Return a new task for the first step of the line search
+        return [self._calculate_line_search_task()]
 
     def _calculate_line_search_task(self):
         """Generates the next task for a backtracking line search."""
@@ -359,11 +434,19 @@ class LBFGSBJob(Job):
         # We must construct the *full* params for the task
         full_params_new = self._construct_full_params_for_task(x_new)
 
+        # Piggyback the user gradient request on every line-search attempt.
+        # The whole point of grad_func is to skip an FD round once a step
+        # is accepted, so we want the gradient at WHATEVER alpha the line
+        # search ends up accepting. Asking on every attempt wastes some
+        # grad_func calls on rejected steps, but that cost is bounded
+        # (~ log2(1/alpha) per iteration) and small relative to the FD
+        # round it saves.
         context = {
             'type': self.type,
             'job_id': self.id,
             'sub_type': 'LBFGS_LINE_SEARCH',
-            'alpha': alpha
+            'alpha': alpha,
+            'compute_gradient': self.has_user_grad,
         }
         return {'params': full_params_new, 'context': context}
 
@@ -412,9 +495,14 @@ class LBFGSBJob(Job):
             self.current_fitness = -f_new
             self.current_objective = f_new
 
-            # Generate tasks to calculate the new gradient
+            # Generate tasks to calculate the new gradient. The worker may
+            # already have computed grad_func at x_new (piggybacked on the
+            # first-attempt line-search task); pass it through so FD only
+            # fires for the dims the user did not supply.
             self.status = 'NEEDS_GRADIENT'
-            return self._calculate_gradient_tasks()
+            return self._calculate_gradient_tasks(
+                user_grad_full=result.get('user_gradient')
+            )
 
         else:
             # Step not accepted, reduce alpha and try again
