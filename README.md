@@ -161,6 +161,8 @@ Pass an `advanced_config` dict for expert tuning. Only keys that move solution q
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` (cheap) or `'central'` (more accurate, ~50% more calls) |
 | `clustering.*`                     | (auto-DBSCAN)                  | Mode detection inside refinement runs (only when `use_clustering=True`) |
+| `cross_projection.proximity_warm_start`       | `True`             | Per-cell activation pop swaps one random LHS seed for the highest-fitness past evaluation whose projection-dim coords are closest to the cell. Disable to fall back to pure random LHS seeding. |
+| `cross_projection.pool_seeded_initial_maxima` | `True`             | On every projection after the first, seed `initial_maxima` from the in-memory pool and skip the `n_initial_optimizations` global L-BFGS-B starts. Disable to always re-run global L-BFGS-B at the start of each projection. |
 
 See the constructor docstring of `ProfileProjector` for the full structure. Several DE knobs that did not change ROI grid quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are now module-level constants in `sampler.py` and are intentionally not user-tunable.
 

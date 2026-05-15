@@ -105,17 +105,23 @@ def main():
     projections = _make_projections(cfg['dims'])
 
     if myrank == 0:
+        # Merge any target-specific overrides with the cross-projection toggle
+        # that distinguishes baseline from proximity.
+        on = (args.mode == 'proximity')
+        advanced_config = dict(cfg['advanced_config'] or {})
+        advanced_config['cross_projection'] = {
+            'proximity_warm_start': on,
+            'pool_seeded_initial_maxima': on,
+        }
+
         t0 = time.time()
         with ProfileProjector(
             target_func=log_likelihood,
             bounds=bounds,
             projections=projections,
-            advanced_config=cfg['advanced_config'],
+            advanced_config=advanced_config,
             **cfg['kwargs'],
         ) as sampler:
-            on = (args.mode == 'proximity')
-            sampler._proximity_warm_start = on
-            sampler._pool_seeded_initial_maxima = on
             results = run_scan(
                 comm=comm, sampler=sampler, projections=projections,
                 save_plots=False, myrank=myrank,
