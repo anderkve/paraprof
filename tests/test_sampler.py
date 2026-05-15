@@ -192,11 +192,13 @@ class TestProximityWarmStart:
 
     def test_global_pool_size_scales_with_dimensionality(
             self, simple_2d_function):
-        """``global_pool_size`` floors at ``DEFAULT_GLOBAL_POOL_SIZE`` and
-        otherwise scales linearly with target dimensionality, so high-D
-        scans don't silently evict cross-projection knowledge."""
+        """``global_pool_size`` floors at ``DEFAULT_GLOBAL_POOL_SIZE``,
+        otherwise scales linearly with target dimensionality, and caps at
+        ``DEFAULT_GLOBAL_POOL_MAX`` to bound master memory in very high-D
+        scans."""
         from paraprof.sampler import (
             DEFAULT_GLOBAL_POOL_SIZE, DEFAULT_GLOBAL_POOL_PER_DIM,
+            DEFAULT_GLOBAL_POOL_MAX,
         )
 
         # 4-D target sits at the floor (n_dims * per_dim == default).
@@ -211,7 +213,7 @@ class TestProximityWarmStart:
             4 * DEFAULT_GLOBAL_POOL_PER_DIM,
         )
 
-        # 10-D target lifts the pool above the floor.
+        # 10-D target lifts the pool above the floor but well below the cap.
         sampler_10d = ProfileProjector(
             target_func=simple_2d_function,
             bounds=np.array([[-1.0, 1.0]] * 10),
@@ -220,6 +222,16 @@ class TestProximityWarmStart:
         )
         assert sampler_10d.global_pool_size == 10 * DEFAULT_GLOBAL_POOL_PER_DIM
         assert sampler_10d.global_pool_size > sampler_4d.global_pool_size
+
+        # 80-D target would scale to 200 000 entries; the cap pins it.
+        sampler_80d = ProfileProjector(
+            target_func=simple_2d_function,
+            bounds=np.array([[-1.0, 1.0]] * 80),
+            projections=[{'dims': [0, 1], 'grid_points': [5, 5]}],
+            pop_per_grid_point=2,
+        )
+        assert sampler_80d.global_pool_size == DEFAULT_GLOBAL_POOL_MAX
+        assert 80 * DEFAULT_GLOBAL_POOL_PER_DIM > DEFAULT_GLOBAL_POOL_MAX
 
     def test_proximity_normalises_by_bounds_extent(
             self, simple_2d_function):
