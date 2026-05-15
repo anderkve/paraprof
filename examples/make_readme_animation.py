@@ -243,12 +243,12 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
     if show_scatter:
         if scatter_xy_old is not None and len(scatter_xy_old):
             ax.scatter(scatter_xy_old[:, 0], scatter_xy_old[:, 1],
-                       s=4, c="#ff3a0a", alpha=0.32, linewidths=0,
+                       s=4, c="#ff6420", alpha=0.32, linewidths=0,
                        zorder=4)
         if scatter_xy_recent is not None and len(scatter_xy_recent):
             ax.scatter(scatter_xy_recent[:, 0], scatter_xy_recent[:, 1],
-                       s=10, c="#ff3a0a", alpha=0.90, linewidths=0.3,
-                       edgecolors="#7a1d10", zorder=5)
+                       s=10, c="#ff6420", alpha=0.90, linewidths=0.3,
+                       edgecolors="#8a3010", zorder=5)
 
     if best_fit_idx is not None:
         bx = axes_x[best_fit_idx[0]]
@@ -355,9 +355,21 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     if not chosen:
         chosen = list(frames)
 
-    # Pad with trailing repeats so the final state holds for ~1 s.
-    final_hold = 28
-    chosen = chosen + [chosen[-1]] * final_hold
+    # Build a "clean" copy of the last frame: same grids and best-fit
+    # markers, but with the rolling scatter buffer and active-cell set
+    # emptied. The animation closes on a complete, marker-free view of
+    # both finished projections.
+    last_snap = chosen[-1]
+    last_recent = last_snap["recent_samples"]
+    empty_recent = np.empty((0, last_recent.shape[1] if last_recent.size else 4))
+    clean_last = dict(last_snap)
+    clean_last["recent_samples"] = empty_recent
+    clean_last["active_cells"] = set()
+
+    # Pad with the clean version so the final state holds for ~2.5 s at
+    # 28 FPS.
+    final_hold = 70
+    chosen = chosen + [clean_last] * final_hold
 
     images = []
     final_global_max = max(f["global_max"] for f in frames if np.isfinite(f["global_max"]))
