@@ -427,13 +427,20 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             )
             active2 = snap["active_cells"]
             best_idx2 = snap["best_fit_idx"]
+            samples_recent_p2, samples_old_p2 = _select_recent_samples(
+                snap["recent_samples"], n_recent=90,
+            )
+            recent_xy_p2 = (samples_recent_p2[:, [0, 2]]
+                            if samples_recent_p2 is not None else None)
+            old_xy_p2 = (samples_old_p2[:, [0, 2]]
+                         if samples_old_p2 is not None else None)
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 grid_img2, mask2, active2, best_idx2,
-                None, None,
+                recent_xy_p2, old_xy_p2,
                 title={"xlabel": "$x_0$", "ylabel": "$x_2$"},
                 cmap=cmap,
-                show_scatter=False,
+                show_scatter=True,
             )
 
         global_max = snap["global_max"]
