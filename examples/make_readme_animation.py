@@ -12,11 +12,13 @@ captured every ``SNAPSHOT_INTERVAL`` target-function evaluations. Each frame
 shows both panels side by side; only the panel for the projection currently
 being scanned shows live activity.
 
-Cross-projection pool-seeding of ``initial_maxima`` is disabled here so that
-projection 2 runs its own initial global L-BFGS-B sweep and discovers all
-the (x0, x2) peaks -- otherwise the seed points would all land on the
-diagonal of the (x0, x2) grid and the ROI-limited activation would never
-bridge to the off-diagonal cartesian-product peaks.
+Projection 2 is warm-started from projection 1 in the same way as
+``run_all_projections`` does it: ``initial_maxima`` is seeded from the
+accumulated global solution pool (skipping the initial global L-BFGS-B
+sweep) and per-cell DE populations get one proximity warm-start from the
+pool. The pool already contains points whose ``(x0, x2)`` projections
+cover the full 4x4 cartesian product of 1D-Himmelblau peak coordinates,
+so projection 2 quickly recovers all 16 peaks.
 
 Run with MPI:
 
@@ -68,7 +70,7 @@ LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 2
 
 SNAPSHOT_INTERVAL_PROJ1 = 50  # target-function calls between snapshots in proj 1
-SNAPSHOT_INTERVAL_PROJ2 = 50  # projection 2 also runs the full pipeline, same cadence
+SNAPSHOT_INTERVAL_PROJ2 = 4   # finer sampling for the (fast) warm-started proj 2
 SCATTER_HISTORY = 220         # most-recent raw samples kept for overlay scatter
 SCATTER_HISTORY_INIT = 600    # larger buffer during initial L-BFGS-B phase
 
@@ -353,7 +355,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
                   fontsize=13.5, fontweight="bold", color="#222",
                   transform=title_ax.transAxes, ha="left", va="center")
     title_ax.text(0.0, 0.20,
-                  "Two 2D projections scanned sequentially. Each panel updates only while its projection is the one running.",
+                  "Two 2D projections scanned sequentially; the second is warm-started from the first.",
                   fontsize=9.5, color="#666",
                   transform=title_ax.transAxes, ha="left", va="center")
 
@@ -399,12 +401,15 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     if chosen_p1 and chosen_p1[-1] is not proj1_frames[-1]:
         chosen_p1.append(proj1_frames[-1])
 
-    # Hold on the final projection-1 state for ~0.7 s so the viewer
+    # Hold on the final projection-1 state for ~0.8 s so the viewer
     # registers "first projection done" before the second one starts.
-    transition_hold = 6
+    transition_hold = 7
     chosen_p1 = list(chosen_p1) + [chosen_p1[-1]] * transition_hold
 
-    max_p2 = 95
+    # Projection 2 is warm-started so initial L-BFGS-B is skipped, but the
+    # subsequent dynamic activation / DE / patching still spans a sizeable
+    # number of evaluations; subsample to keep the GIF compact.
+    max_p2 = 75
     stride_p2 = max(1, len(proj2_frames) // max_p2)
     chosen_p2 = proj2_frames[::stride_p2]
     if chosen_p2 and chosen_p2[-1] is not proj2_frames[-1]:
@@ -504,17 +509,14 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
             im_right = _draw_panel(
                 ax_right, proj_axes_p2[0], proj_axes_p2[1],
                 grid_img2, mask2, active2, best_idx2,
-                recent_xy_p2, old_xy_p2,
+                None, None,
                 title={
                     "xlabel": "$x_0$", "ylabel": "$x_2$",
-                    "panel_title": "Projection 2 — (x₀, x₂) profile",
+                    "panel_title": "Projection 2 — (x₀, x₂) warm-started",
                     "title_color": "#222",
                 },
                 cmap=cmap,
-                # Show the initial L-BFGS-B sample dots only while the grid
-                # itself is still empty/sparse -- once dynamic activation
-                # has taken over, the cyan active markers carry the story.
-                show_scatter=(snap["phase"] == "initial_global_search"),
+                show_scatter=False,
             )
 
         # ----- phase indicator pill + info text -----
@@ -564,23 +566,6 @@ def run_master(comm):
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Disable the in-memory pool-seeding of `initial_maxima` between
-    # projections. Projection 2's profile, profile(x0, x2) = -0.05 * (h(x0)
-    # + h(x2)), has its maxima on the *cartesian product* of the four
-    # Himmelblau peak coordinates -- 16 peaks in total. Projection 1's
-    # solution pool only stores points with each (x_i, x_{i+1}) pair sitting
-    # at one of the four 2D Himmelblau peaks, so projecting that pool onto
-    # (x0, x2) puts every seed on the diagonal; the 12 off-diagonal peaks
-    # would never be discovered because the ROI threshold cuts dynamic
-    # activation off in the high-cost region between them. Forcing the full
-    # global L-BFGS-B sweep at the start of projection 2 lets paraprof find
-    # all the (x0, x2) peaks. Per-cell proximity warm-starting is left
-    # enabled, so paraprof still reuses the per-evaluation profiled-parameter
-    # information accumulated during projection 1.
-    advanced_config = {
-        "cross_projection": {"pool_seeded_initial_maxima": False},
-    }
-
     with ProfileProjector(
         target_func=target_func,
         bounds=bounds,
@@ -590,7 +575,6 @@ def run_master(comm):
         n_initial_optimizations=N_INITIAL_OPT,
         lbfgsb_max_iter=LBFGSB_ITER,
         max_patching_waves=MAX_PATCHING_WAVES,
-        advanced_config=advanced_config,
     ) as sampler:
 
         cap = SnapshotCapturer(sampler, SNAPSHOT_INTERVAL_PROJ1, SCATTER_HISTORY_INIT)
@@ -629,11 +613,11 @@ def run_master(comm):
                 sampler=sampler,
                 projection_config=proj,
                 save_plots=False,
-                # Allow projection 2 to fall through to a fresh global
-                # L-BFGS-B sweep when neither warm-start sources populate
-                # ``initial_maxima`` -- without this, the master loop would
-                # skip the sweep on every projection after the first.
-                skip_init_opt_on_warm_start=(proj_idx == 0),
+                # Same setting that ``run_all_projections`` uses: enable
+                # warm-starting (skip initial L-BFGS-B in favour of pool-
+                # seeded initial_maxima) for every projection after the
+                # first.
+                skip_init_opt_on_warm_start=(proj_idx > 0),
                 myrank=0,
             )
 
