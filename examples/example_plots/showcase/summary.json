@@ -16,11 +16,11 @@
     "plot_2d_b": "examples/example_plots/showcase/rosenbrock_4d_2d_b.png"
   },
   {
-    "function": "ackley_4d",
-    "display_name": "Ackley 4D",
-    "total_target_calls": 102209,
-    "plot_1d": "examples/example_plots/showcase/ackley_4d_1d.png",
-    "plot_2d_a": "examples/example_plots/showcase/ackley_4d_2d_a.png",
-    "plot_2d_b": "examples/example_plots/showcase/ackley_4d_2d_b.png"
+    "function": "griewank_4d",
+    "display_name": "Griewank 4D",
+    "total_target_calls": 947119,
+    "plot_1d": "examples/example_plots/showcase/griewank_4d_1d.png",
+    "plot_2d_a": "examples/example_plots/showcase/griewank_4d_2d_a.png",
+    "plot_2d_b": "examples/example_plots/showcase/griewank_4d_2d_b.png"
   }
 ]

@@ -23,7 +23,7 @@ import numpy as np
 SHOWCASE_ORDER = [
     ('himmelblau_4d', 'Himmelblau 4D'),
     ('rosenbrock_4d', 'Rosenbrock 4D'),
-    ('ackley_4d',     'Ackley 4D'),
+    ('griewank_4d',   'Griewank 4D'),
 ]
 
 

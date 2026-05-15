@@ -68,6 +68,28 @@ SHOWCASE_FUNCTIONS = {
             'convergence_threshold': 1e-7,
         },
     },
+    # Griewank is in the same "smooth multimodal with ripples" family as
+    # Ackley but its cos(x_i / sqrt(i+1)) factors give a different ripple
+    # period in every dimension, so different 2D projections look visibly
+    # different. The registry's default bounds [-100, 100] are too wide to
+    # resolve the periods at typical grid resolutions, so the showcase uses
+    # a tighter bounds override that exposes the dimension-dependent ripple
+    # structure.
+    'griewank_4d': {
+        'dim_1d': 0,
+        'dims_2d_a': [0, 1],
+        'dims_2d_b': [1, 3],
+        'grid_1d': 120,
+        'grid_2d': 60,
+        'roi_threshold': 3.0,
+        'n_initial_optimizations': 120,
+        'max_patching_waves': 25,
+        'lbfgsb_max_iter': 25,
+        'bounds_override': [-20.0, 20.0],
+        'advanced_config': {
+            'convergence_threshold': 1e-7,
+        },
+    },
 }
 
 
@@ -96,6 +118,15 @@ def main():
 
     cfg = SHOWCASE_FUNCTIONS[args.function]
     log_likelihood, param_bounds, _ = get_test_function(args.function)
+
+    # Optional per-function bounds override: a single [min, max] pair that
+    # replaces the registry default in every dimension. Used by Griewank in
+    # the showcase so the dimension-dependent ripple periods are resolved
+    # at the showcase grid resolution.
+    if cfg.get('bounds_override') is not None:
+        lo, hi = cfg['bounds_override']
+        n_dims = len(param_bounds)
+        param_bounds = [[float(lo), float(hi)]] * n_dims
 
     projections = [
         # 1D profile, refined 2x with patching on both grids.
