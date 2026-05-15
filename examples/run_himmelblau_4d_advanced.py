@@ -93,6 +93,30 @@ if myrank == 0:
             'eps_multiplier': 3.0,                     # Default: 3.0
             'projection_weight': 1.0,                  # Default: 1.0
         },
+
+        # Cross-projection knowledge transfer.
+        # Both hooks reuse the in-memory global_solution_pool that already
+        # accumulates across projections; both default to True and are
+        # no-ops on the first projection. Set either to False to disable
+        # (e.g. for A/B benchmarking or as a safety valve on a pathological
+        # target). The 4D Himmelblau scan in this example sees ~10% fewer
+        # target-function calls with both on; Rosenbrock-style narrow-
+        # valley targets see 2-3x reductions.
+        'cross_projection': {
+            'proximity_warm_start': True,              # Default: True. Per-cell
+                                                       # activation pop swaps one
+                                                       # random LHS seed for the
+                                                       # highest-fitness past eval
+                                                       # whose projection-dim
+                                                       # coordinates are nearest
+                                                       # to the cell.
+            'pool_seeded_initial_maxima': True,        # Default: True. On every
+                                                       # projection after the
+                                                       # first, seed initial_maxima
+                                                       # from the in-memory pool
+                                                       # and skip the global
+                                                       # L-BFGS-B starts.
+        },
     }
 
     # === Optional: Provide initial points for targeted exploration ===
