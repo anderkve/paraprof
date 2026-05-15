@@ -1,15 +1,15 @@
 """
 Single-configuration runner for the proximity-warm-start benchmark.
 
-Runs all six 2D projections of one 4D test target at 50x50 grids, with the
+Runs every 2D projection of one N-D test target at 50x50 grids, with the
 proximity warm-start feature either enabled or disabled, and writes a JSON
 summary (per-projection cumulative target_calls + the final coarse-grid
 profile values per projection) to ``--out``.
 
 Intended to be driven from ``run_proximity_warm_start_benchmark_driver.py``,
-which subprocesses four invocations of this script (himmelblau/rosenbrock x
-baseline/proximity) and prints a single comparison report. You can also run
-this script directly to inspect a single configuration.
+which subprocesses two invocations per target (baseline/proximity) and
+prints a single comparison report. You can also run this script directly
+to inspect a single configuration.
 
 Run with:
     mpiexec -n <ncores> python examples/run_proximity_warm_start_benchmark.py \\
@@ -18,6 +18,7 @@ Run with:
 Required: at least 2 MPI ranks.
 """
 import argparse
+import itertools
 import json
 import time
 import numpy as np
@@ -30,6 +31,7 @@ from paraprof import (
 
 TARGET_KWARGS = {
     'himmelblau_4d': {
+        'dims': 4,
         'kwargs': dict(
             roi_threshold=4.0,
             pop_per_grid_point=3,
@@ -40,6 +42,7 @@ TARGET_KWARGS = {
         'advanced_config': None,
     },
     'rosenbrock_4d': {
+        'dims': 4,
         'kwargs': dict(
             roi_threshold=8.0,
             pop_per_grid_point=3,
@@ -49,11 +52,35 @@ TARGET_KWARGS = {
         ),
         'advanced_config': {'convergence_threshold': 1e-7},
     },
+    'rosenbrock_6d': {
+        'dims': 6,
+        'kwargs': dict(
+            roi_threshold=8.0,
+            pop_per_grid_point=3,
+            n_initial_optimizations=120,
+            max_patching_waves=20,
+            lbfgsb_max_iter=20,
+        ),
+        'advanced_config': {'convergence_threshold': 1e-7},
+    },
+    'rastrigin_4d': {
+        'dims': 4,
+        'kwargs': dict(
+            roi_threshold=8.0,
+            pop_per_grid_point=3,
+            n_initial_optimizations=100,
+            max_patching_waves=20,
+            lbfgsb_max_iter=20,
+        ),
+        'advanced_config': None,
+    },
 }
 
-# All six 2D projections of the four parameters.
-PROJECTIONS = [{'dims': [i, j], 'grid_points': [50, 50]}
-               for i in range(4) for j in range(i + 1, 4)]
+
+def _make_projections(n_dims):
+    """All C(n_dims, 2) 2D projections at a 50x50 grid each."""
+    return [{'dims': [i, j], 'grid_points': [50, 50]}
+            for i, j in itertools.combinations(range(n_dims), 2)]
 
 
 def main():
@@ -75,13 +102,14 @@ def main():
 
     log_likelihood, bounds, _ = get_test_function(args.target)
     cfg = TARGET_KWARGS[args.target]
+    projections = _make_projections(cfg['dims'])
 
     if myrank == 0:
         t0 = time.time()
         with ProfileProjector(
             target_func=log_likelihood,
             bounds=bounds,
-            projections=PROJECTIONS,
+            projections=projections,
             advanced_config=cfg['advanced_config'],
             **cfg['kwargs'],
         ) as sampler:
@@ -89,7 +117,7 @@ def main():
             sampler._proximity_warm_start = on
             sampler._pool_seeded_initial_maxima = on
             results = run_scan(
-                comm=comm, sampler=sampler, projections=PROJECTIONS,
+                comm=comm, sampler=sampler, projections=projections,
                 save_plots=False, myrank=myrank,
             )
         elapsed = time.time() - t0
@@ -102,7 +130,7 @@ def main():
             'projections': [],
         }
         for i, r in enumerate(results):
-            cfg_i = PROJECTIONS[i]
+            cfg_i = projections[i]
             grid_pts = [n + 1 for n in cfg_i['grid_points']]  # +1 for endpoints
             grid = np.full(grid_pts, np.nan)
             for idx, sol in r['coarse_solution'].get('solutions', {}).items():

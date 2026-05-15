@@ -21,7 +21,8 @@ import tempfile
 
 import numpy as np
 
-TARGETS = ['himmelblau_4d', 'rosenbrock_4d']
+DEFAULT_TARGETS = ['himmelblau_4d', 'rosenbrock_4d',
+                   'rosenbrock_6d', 'rastrigin_4d']
 MODES = ['baseline', 'proximity']
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,17 +98,19 @@ def main():
                              '(required when running as root in a container).')
     parser.add_argument('--keep-tmp', action='store_true',
                         help='Do not delete per-run JSON files when done.')
+    parser.add_argument('--targets', nargs='+', default=DEFAULT_TARGETS,
+                        help='Test targets to benchmark (default: %(default)s).')
     args = parser.parse_args()
 
     tmpdir = tempfile.mkdtemp(prefix='paraprof_proxbench_')
     try:
         results = {}
-        for target in TARGETS:
+        for target in args.targets:
             for mode in MODES:
                 results[(target, mode)] = run_one(
                     target, mode, args.ranks, tmpdir, args.allow_root)
 
-        for target in TARGETS:
+        for target in args.targets:
             base = results[(target, 'baseline')]
             prox = results[(target, 'proximity')]
             accs = grid_diffs(base, prox)
