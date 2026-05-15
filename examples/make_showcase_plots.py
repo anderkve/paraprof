@@ -1,11 +1,12 @@
 """
-Generate the publication-quality 1D + 2D profile-likelihood showcase plots
-that the README displays at the top of the page.
+Generate the publication-quality profile-likelihood showcase plots that the
+README displays at the top of the page.
 
 Reads the ``.npz`` grids produced by ``run_showcase_scan.py``, renders one
-high-resolution PNG per (function, projection-type) combination using a
-LaTeX-style serif math font, and writes a JSON table summarising the total
-target-function evaluation count for each test function.
+high-resolution PNG per (function, projection) combination (one 1D
+projection and two 2D projections per function) using a LaTeX-style serif
+math font, and writes a JSON table summarising the total target-function
+evaluation count for each test function.
 
 Usage::
 
@@ -14,7 +15,6 @@ Usage::
 import argparse
 import json
 import os
-from glob import glob
 
 import numpy as np
 
@@ -59,11 +59,10 @@ def setup_matplotlib():
     return plt
 
 
-def plot_1d(plt, data, title_name, out_path, dpi):
+def plot_1d(plt, axis, logL, proj_dim, title_name, out_path, dpi):
     """Render a single 1D profile-likelihood plot."""
-    axis = np.asarray(data['axis_1d'])
-    logL = np.asarray(data['likelihood_1d'])
-    proj_dim = int(data['proj_dim_1d'])
+    axis = np.asarray(axis)
+    logL = np.asarray(logL)
 
     valid = np.isfinite(logL)
     if not valid.any():
@@ -90,7 +89,7 @@ def plot_1d(plt, data, title_name, out_path, dpi):
 
     ax.set_xlabel(rf'$x_{{{proj_dim}}}$')
     ax.set_ylabel(r'$\Delta \log L = \log L - \log L_{\max}$')
-    ax.set_title(f'{title_name}: 1D profile of $x_{{{proj_dim}}}$')
+    ax.set_title(f'{title_name}: 1D profile for $x_{{{proj_dim}}}$')
 
     # Sensible y-range that emphasises the high-likelihood region without
     # squashing the structure to a single pixel.
@@ -106,20 +105,19 @@ def plot_1d(plt, data, title_name, out_path, dpi):
     plt.close(fig)
 
 
-def plot_2d(plt, data, title_name, out_path, dpi):
+def plot_2d(plt, axis_x, axis_y, logL, dims, title_name, out_path, dpi):
     """Render a single 2D profile-likelihood heat-map with CL contours."""
-    axis_x = np.asarray(data['axis_2d_x'])
-    axis_y = np.asarray(data['axis_2d_y'])
-    logL = np.asarray(data['likelihood_2d'])
-    dims = np.asarray(data['proj_dims_2d']).tolist()
+    axis_x = np.asarray(axis_x)
+    axis_y = np.asarray(axis_y)
+    logL = np.asarray(logL)
+    dims = list(dims)
 
     finite = np.isfinite(logL)
     if not finite.any():
-        raise ValueError(f"No valid 2D likelihood values for {title_name}.")
+        raise ValueError(f"No valid 2D likelihood values for {title_name} ({dims}).")
     max_logL = np.max(logL[finite])
     delta = np.where(finite, logL - max_logL, np.nan)
 
-    # Locate best fit
     flat_idx = int(np.nanargmax(np.where(finite, delta, -np.inf)))
     bi, bj = np.unravel_index(flat_idx, delta.shape)
     best_x = axis_x[bi]
@@ -154,7 +152,7 @@ def plot_2d(plt, data, title_name, out_path, dpi):
 
     ax.set_xlabel(rf'$x_{{{dims[0]}}}$')
     ax.set_ylabel(rf'$x_{{{dims[1]}}}$')
-    ax.set_title(f'{title_name}: 2D profile of $(x_{{{dims[0]}}}, x_{{{dims[1]}}})$')
+    ax.set_title(f'{title_name}: 2D profile for $(x_{{{dims[0]}}}, x_{{{dims[1]}}})$')
     ax.set_xlim(axis_x[0], axis_x[-1])
     ax.set_ylim(axis_y[0], axis_y[-1])
 
@@ -191,9 +189,32 @@ def main():
         data = np.load(npz_path, allow_pickle=False)
 
         out_1d = os.path.join(args.out_dir, f'{name}_1d.png')
-        out_2d = os.path.join(args.out_dir, f'{name}_2d.png')
-        plot_1d(plt, data, display, out_1d, args.dpi)
-        plot_2d(plt, data, display, out_2d, args.dpi)
+        out_2d_a = os.path.join(args.out_dir, f'{name}_2d_a.png')
+        out_2d_b = os.path.join(args.out_dir, f'{name}_2d_b.png')
+
+        plot_1d(plt,
+                axis=data['axis_1d'],
+                logL=data['likelihood_1d'],
+                proj_dim=int(data['proj_dim_1d']),
+                title_name=display,
+                out_path=out_1d,
+                dpi=args.dpi)
+        plot_2d(plt,
+                axis_x=data['axis_2d_a_x'],
+                axis_y=data['axis_2d_a_y'],
+                logL=data['likelihood_2d_a'],
+                dims=np.asarray(data['proj_dims_2d_a']).tolist(),
+                title_name=display,
+                out_path=out_2d_a,
+                dpi=args.dpi)
+        plot_2d(plt,
+                axis_x=data['axis_2d_b_x'],
+                axis_y=data['axis_2d_b_y'],
+                logL=data['likelihood_2d_b'],
+                dims=np.asarray(data['proj_dims_2d_b']).tolist(),
+                title_name=display,
+                out_path=out_2d_b,
+                dpi=args.dpi)
 
         with open(json_path) as f:
             scan_summary = json.load(f)
@@ -202,7 +223,8 @@ def main():
             'display_name': display,
             'total_target_calls': scan_summary['total_target_calls'],
             'plot_1d': os.path.relpath(out_1d, '.'),
-            'plot_2d': os.path.relpath(out_2d, '.'),
+            'plot_2d_a': os.path.relpath(out_2d_a, '.'),
+            'plot_2d_b': os.path.relpath(out_2d_b, '.'),
         })
         print(f"[ok]   {display:>14}  total target evaluations: {scan_summary['total_target_calls']:>10,}")
 

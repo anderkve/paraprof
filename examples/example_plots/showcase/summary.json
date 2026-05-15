@@ -2,22 +2,25 @@
   {
     "function": "himmelblau_4d",
     "display_name": "Himmelblau 4D",
-    "total_target_calls": 98867,
+    "total_target_calls": 263118,
     "plot_1d": "examples/example_plots/showcase/himmelblau_4d_1d.png",
-    "plot_2d": "examples/example_plots/showcase/himmelblau_4d_2d.png"
+    "plot_2d_a": "examples/example_plots/showcase/himmelblau_4d_2d_a.png",
+    "plot_2d_b": "examples/example_plots/showcase/himmelblau_4d_2d_b.png"
   },
   {
     "function": "rosenbrock_4d",
     "display_name": "Rosenbrock 4D",
-    "total_target_calls": 33362,
+    "total_target_calls": 49947,
     "plot_1d": "examples/example_plots/showcase/rosenbrock_4d_1d.png",
-    "plot_2d": "examples/example_plots/showcase/rosenbrock_4d_2d.png"
+    "plot_2d_a": "examples/example_plots/showcase/rosenbrock_4d_2d_a.png",
+    "plot_2d_b": "examples/example_plots/showcase/rosenbrock_4d_2d_b.png"
   },
   {
     "function": "ackley_4d",
     "display_name": "Ackley 4D",
-    "total_target_calls": 207585,
+    "total_target_calls": 108786,
     "plot_1d": "examples/example_plots/showcase/ackley_4d_1d.png",
-    "plot_2d": "examples/example_plots/showcase/ackley_4d_2d.png"
+    "plot_2d_a": "examples/example_plots/showcase/ackley_4d_2d_a.png",
+    "plot_2d_b": "examples/example_plots/showcase/ackley_4d_2d_b.png"
   }
 ]
