@@ -1,0 +1,43 @@
+{
+  "function": "rosenbrock_4d",
+  "total_target_calls": 63904,
+  "projections": [
+    {
+      "dims": [
+        0
+      ],
+      "grid_points": [
+        120
+      ],
+      "coarse_target_calls": 16035,
+      "refined_target_calls": 17690,
+      "global_max": -1.3115954931363194e-12
+    },
+    {
+      "dims": [
+        0,
+        1
+      ],
+      "grid_points": [
+        60,
+        60
+      ],
+      "coarse_target_calls": 24767,
+      "refined_target_calls": 35355,
+      "global_max": -1.3115954931363194e-12
+    },
+    {
+      "dims": [
+        1,
+        3
+      ],
+      "grid_points": [
+        60,
+        60
+      ],
+      "coarse_target_calls": 46348,
+      "refined_target_calls": 63904,
+      "global_max": -1.3115954931363194e-12
+    }
+  ]
+}
