@@ -70,8 +70,7 @@ MAX_PATCHING_WAVES = 2
 
 SNAPSHOT_INTERVAL_PROJ1 = 50  # target-function calls between snapshots in proj 1
 SNAPSHOT_INTERVAL_PROJ2 = 4   # finer sampling for the (fast) warm-started proj 2
-SCATTER_HISTORY = 220         # most-recent raw samples kept for overlay scatter
-SCATTER_HISTORY_INIT = 600    # larger buffer during initial L-BFGS-B phase
+SCATTER_HISTORY = 300         # rolling raw-sample buffer, identical for both projections
 
 PROJECTIONS = [
     {"dims": [0, 1], "grid_points": [GRID_PER_DIM, GRID_PER_DIM]},
@@ -498,7 +497,7 @@ def run_master(comm):
         max_patching_waves=MAX_PATCHING_WAVES,
     ) as sampler:
 
-        cap = SnapshotCapturer(sampler, SNAPSHOT_INTERVAL_PROJ1, SCATTER_HISTORY_INIT)
+        cap = SnapshotCapturer(sampler, SNAPSHOT_INTERVAL_PROJ1, SCATTER_HISTORY)
         comm.bcast(sampler.target_func, root=0)
 
         frozen_p1: Optional[dict] = None
@@ -508,12 +507,10 @@ def run_master(comm):
             cap.reset_for_new_projection()
             cap.interval = (SNAPSHOT_INTERVAL_PROJ1 if proj_idx == 0
                             else SNAPSHOT_INTERVAL_PROJ2)
-            # Pre-size the scatter buffer: larger for projection 1 (initial
-            # global L-BFGS-B sweep produces many scattered samples we want
-            # to keep visible).
-            cap.scatter_buf = collections.deque(
-                maxlen=SCATTER_HISTORY_INIT if proj_idx == 0 else SCATTER_HISTORY,
-            )
+            # Reset the rolling scatter buffer for this projection. The
+            # buffer length is the same for both projections so the orange
+            # marker density looks identical between panels.
+            cap.scatter_buf = collections.deque(maxlen=SCATTER_HISTORY)
 
             # Reset the sampler's per-projection state for projections after
             # the first. ``run_all_projections`` does this internally, but
