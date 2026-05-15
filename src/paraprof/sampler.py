@@ -27,7 +27,25 @@ DEFAULT_INITIAL_OPT_MAX = 100
 
 # Global pool and memory defaults
 DEFAULT_GLOBAL_POOL_SIZE = 10000
-"""Maximum number of samples kept in global solution pool"""
+"""Floor for the global solution pool size; the actual default scales with
+the target dimensionality (see ``DEFAULT_GLOBAL_POOL_PER_DIM``)."""
+
+DEFAULT_GLOBAL_POOL_PER_DIM = 2500
+"""Per-dimension contribution to the global solution pool size. The default
+pool size is
+``clip(n_dims * DEFAULT_GLOBAL_POOL_PER_DIM,
+       DEFAULT_GLOBAL_POOL_SIZE, DEFAULT_GLOBAL_POOL_MAX)``.
+This keeps the 4-D default unchanged at 10 000 entries while preventing
+eviction of past-projection knowledge in higher-D scans, where both the
+number of 2-D projections (``C(n_dims, 2)``) and the per-projection eval
+count grow with ``n_dims``."""
+
+DEFAULT_GLOBAL_POOL_MAX = 100000
+"""Hard ceiling on the auto-scaled pool size. Beyond this, additional
+samples give diminishing returns for cross-projection knowledge transfer
+while substantially inflating master-side memory (each entry holds a full
+N-D parameter vector) and the per-projection proximity-cache rebuild cost
+(``O(pool_size * n_dims)`` numpy allocation)."""
 
 MEMORY_SIZE_MULTIPLIER = 25
 """Multiplier for calculating DE memory size (max_grid_size * multiplier)"""
@@ -215,7 +233,17 @@ class ProfileProjector:
                     'eps_multiplier': float,       # Default: 3.0
                     'projection_weight': float,    # Default: 1.0
                 },
+
+                'cross_projection': {
+                    'proximity_warm_start': bool,        # Default: True
+                    'pool_seeded_initial_maxima': bool,  # Default: True
+                },
             }
+
+        The ``cross_projection`` sub-dict toggles the two cross-projection
+        knowledge-transfer hooks. Both default to enabled; set either to
+        ``False`` to disable that hook (useful for A/B benchmarking or as a
+        safety valve if a target pathology surfaces).
 
         Several DE knobs that did not show measurable effect on grid quality
         in benchmarking (mutation_strategy, pbest_fraction,
@@ -389,6 +417,11 @@ class ProfileProjector:
                 'eps_multiplier': DEFAULT_CLUSTERING_EPS_MULTIPLIER,
                 'projection_weight': DEFAULT_CLUSTERING_PROJECTION_WEIGHT,
             },
+
+            'cross_projection': {
+                'proximity_warm_start': True,
+                'pool_seeded_initial_maxima': True,
+            },
         }
 
         # Merge with advanced_config if provided
@@ -421,7 +454,11 @@ class ProfileProjector:
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for
         # rationale)
-        self.global_pool_size = DEFAULT_GLOBAL_POOL_SIZE
+        self.global_pool_size = min(
+            DEFAULT_GLOBAL_POOL_MAX,
+            max(DEFAULT_GLOBAL_POOL_SIZE,
+                self.dims * DEFAULT_GLOBAL_POOL_PER_DIM),
+        )
         self.mutation_strategy = DEFAULT_DE_MUTATION_STRATEGY
         self.pbest_fraction = DEFAULT_DE_PBEST_FRACTION
         self.neighbor_pull_probability = DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY
@@ -459,6 +496,26 @@ class ProfileProjector:
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
+
+        # Cross-projection knowledge transfer (configurable via
+        # advanced_config['cross_projection']; default on for both).
+        # Both reuse the existing in-memory global_solution_pool, which
+        # already accumulates across projections, so no new persistent
+        # state is introduced.
+        #
+        # 1. proximity_warm_start: per-cell activation pop swaps one
+        #    random LHS seed for the highest-fitness past evaluation whose
+        #    projection-dim coords are closest to the cell.
+        # 2. pool_seeded_initial_maxima: at the start of every projection
+        #    after the first, seed `initial_maxima` from the pool and skip
+        #    the n_initial_optimizations global L-BFGS-B starts that would
+        #    otherwise rediscover known maxima.
+        self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
+        self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
+        # Lazy snapshot of (proj_coords, profiled_coords, extent) for the
+        # global pool, rebuilt at most once per projection. See
+        # _sample_proximity_from_global_pool for the invalidation rule.
+        self._proximity_pool_cache = None
 
         # --- Initial points tracking ---
         self._initial_points_evaluated = False
@@ -631,6 +688,9 @@ class ProfileProjector:
 
         # Performance optimizations: caches
         self._neighbor_cache = {}
+        # Invalidate the proximity-pool snapshot: projection_dims and
+        # profiled_dims have changed, so the cached column slices are stale.
+        self._proximity_pool_cache = None
 
         # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
@@ -1231,6 +1291,120 @@ class ProfileProjector:
                            for i in sample_indices])
 
         return samples
+
+
+    def _sample_proximity_from_global_pool(self, n_samples, target_proj_coords):
+        """Profiled-dim seeds from the past evaluations whose projection-dim
+        coordinates are closest to ``target_proj_coords``.
+
+        Uses the existing ``global_solution_pool`` (which already accumulates
+        across projections), so no new persistent state is introduced. Distance
+        is Euclidean in projection-dim space, normalised by the projection-dim
+        bounds extent.
+
+        Caches the snapshot matrices per projection so the per-cell call
+        becomes a vectorised distance + argpartition; the first call after
+        ``_reset_for_new_projection`` rebuilds from the heap, and the cache
+        is also rebuilt when the pool has grown by more than 5% since last
+        snapshot (the heap reorders on push/replace, but stale snapshots
+        are still valid past evaluations).
+
+        Returns ``None`` when the pool is empty, in direct-evaluation mode, or
+        when ``n_samples <= 0``.
+        """
+        if not self.global_solution_pool or n_samples <= 0:
+            return None
+        if self.direct_eval_mode:
+            return None
+
+        cache = self._proximity_pool_cache
+        n_pool = len(self.global_solution_pool)
+        stale = (cache is None
+                 or cache['size'] == 0
+                 or n_pool > cache['size'] * 1.05
+                 or n_pool < cache['size'])
+        if stale:
+            full = np.array([entry['full_params']
+                             for _f, _c, entry in self.global_solution_pool])
+            proj_dims = self.projection_dims
+            profiled_dims = self.profiled_dims
+            extent = self.bounds[proj_dims, 1] - self.bounds[proj_dims, 0]
+            extent = np.where(extent > 0, extent, 1.0)
+            cache = {
+                'size': n_pool,
+                'proj': full[:, proj_dims],
+                'profiled': full[:, profiled_dims],
+                'extent': extent,
+            }
+            self._proximity_pool_cache = cache
+
+        target = np.asarray(target_proj_coords, dtype=float)
+        deltas = (cache['proj'] - target) / cache['extent']
+        dists = np.einsum('ij,ij->i', deltas, deltas)
+
+        n_cached = cache['size']
+        k = min(n_samples, n_cached)
+        if k < n_cached:
+            nearest = np.argpartition(dists, k - 1)[:k]
+        else:
+            nearest = np.arange(n_cached)
+
+        return cache['profiled'][nearest].copy()
+
+
+    def _initialize_from_global_pool(self):
+        """In-memory analogue of ``_initialize_from_warm_start_file``.
+
+        For projections after the first, seed ``initial_maxima`` from the
+        accumulated ``global_solution_pool`` so the master can skip the
+        ``n_initial_optimizations`` global L-BFGS-B starts that would
+        otherwise rediscover known maxima.
+
+        For each pool entry (already a high-fitness full N-D point), map it
+        onto the current projection's grid and keep the highest-fitness
+        entry per cell. Cells whose best known fitness is within
+        ``roi_threshold`` of the running global maximum become candidate
+        ``initial_maxima``.
+        """
+        if not self.global_solution_pool:
+            return
+
+        best_per_cell = {}
+        for _f, _c, entry in self.global_solution_pool:
+            params = entry['full_params']
+            if not np.all((params >= self.bounds[:, 0])
+                          & (params <= self.bounds[:, 1])):
+                continue
+            grid_idx = self._get_grid_indices_from_point(params)
+            cur = best_per_cell.get(grid_idx)
+            if cur is None or entry['fitness'] > cur['fitness']:
+                best_per_cell[grid_idx] = entry
+
+        if not best_per_cell:
+            return
+
+        pool_max = max(e['fitness'] for e in best_per_cell.values())
+        self.global_max_target_val = max(self.global_max_target_val, pool_max)
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+
+        seeded = []
+        for entry in best_per_cell.values():
+            if entry['fitness'] >= roi_cutoff:
+                seeded.append({
+                    'point': entry['full_params'].copy(),
+                    'target_val': entry['fitness'],
+                })
+
+        if not seeded:
+            return
+
+        seeded.sort(key=lambda x: x['target_val'], reverse=True)
+        self.initial_maxima.extend(seeded)
+        self.logger.info(
+            f"--- Seeded {len(seeded)} initial_maxima from in-memory pool "
+            f"(pool size: {len(self.global_solution_pool)}). "
+            f"New global max: {self.global_max_target_val:.4e} ---"
+        )
 
 
     def _initialize_from_warm_start_file(self, warm_start_file):

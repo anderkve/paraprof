@@ -14,7 +14,7 @@
 - **Patching algorithm**: Wave-based refinement to escape local optima
 - **Built-in visualization**: Plotting for 1D, 2D, and N-D projections
 - **Benchmark suite**: Test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
-- **Warm starting**: Reuse results across multiple projections
+- **Warm starting**: Reuse results across multiple projections, including in-memory cross-projection seeding of initial maxima and per-cell proximity warm-starts that inherit informative starting points from prior projections
 
 ## Installation
 
@@ -96,8 +96,8 @@ mpiexec -n 4 python your_script.py
 ParaProf uses a **grid-based optimization** strategy:
 
 1. **Grid setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
-2. **Initial optimization**: Global L-BFGS-B finds starting maxima.
-3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
+2. **Initial optimization**: Global L-BFGS-B finds starting maxima. On projections after the first, `initial_maxima` are seeded from the in-memory `global_solution_pool` accumulated by earlier projections, so the L-BFGS-B starts are skipped when prior coverage is sufficient.
+3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point. One slot is filled with the highest-fitness past evaluation whose projection-dim coordinates are closest to the cell ("proximity warm-start"), so cells in later projections inherit informative starting points from the pool.
 4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the profiled parameters at each active grid point.
 5. **Neighbour curvature sharing (L-BFGS-B)**: Warm-starting grid point L-BFGS-B optimization using information from the best already-converged neighbour by seeding the quasi-Newton history (the `(s, y)` pairs that approximate the inverse Hessian) and trialling the neighbour's best profiled parameters as an alternative starting point. This way local curvature information propagates outward across the grid from already converged points.
 6. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
@@ -161,6 +161,8 @@ Pass an `advanced_config` dict for expert tuning. Only keys that move solution q
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` (cheap) or `'central'` (more accurate, ~50% more calls) |
 | `clustering.*`                     | (auto-DBSCAN)                  | Mode detection inside refinement runs (only when `use_clustering=True`) |
+| `cross_projection.proximity_warm_start`       | `True`             | Per-cell activation pop swaps one random LHS seed for the highest-fitness past evaluation whose projection-dim coords are closest to the cell. Disable to fall back to pure random LHS seeding. |
+| `cross_projection.pool_seeded_initial_maxima` | `True`             | On every projection after the first, seed `initial_maxima` from the in-memory pool and skip the `n_initial_optimizations` global L-BFGS-B starts. Disable to always re-run global L-BFGS-B at the start of each projection. |
 
 See the constructor docstring of `ProfileProjector` for the full structure. Several DE knobs that did not change ROI grid quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are now module-level constants in `sampler.py` and are intentionally not user-tunable.
 
