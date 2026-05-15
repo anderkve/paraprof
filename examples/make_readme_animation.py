@@ -68,8 +68,8 @@ POP_PER_CELL = 3
 LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 2
 
-SNAPSHOT_INTERVAL_PROJ1 = 50  # target-function calls between snapshots in proj 1
-SNAPSHOT_INTERVAL_PROJ2 = 4   # finer sampling for the (fast) warm-started proj 2
+SNAPSHOT_INTERVAL_PROJ1 = 25  # target-function calls between snapshots in proj 1
+SNAPSHOT_INTERVAL_PROJ2 = 2   # finer sampling for the (fast) warm-started proj 2
 SCATTER_HISTORY = 300         # rolling raw-sample buffer, identical for both projections
 
 PROJECTIONS = [
@@ -243,17 +243,12 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
     if show_scatter:
         if scatter_xy_old is not None and len(scatter_xy_old):
             ax.scatter(scatter_xy_old[:, 0], scatter_xy_old[:, 1],
-                       s=4, c="#ff5d4f", alpha=0.18, linewidths=0,
+                       s=4, c="#ff3a0a", alpha=0.32, linewidths=0,
                        zorder=4)
         if scatter_xy_recent is not None and len(scatter_xy_recent):
             ax.scatter(scatter_xy_recent[:, 0], scatter_xy_recent[:, 1],
-                       s=10, c="#ff8a4f", alpha=0.65, linewidths=0.3,
+                       s=10, c="#ff3a0a", alpha=0.90, linewidths=0.3,
                        edgecolors="#7a1d10", zorder=5)
-
-    if active_cells:
-        pts = np.array([(axes_x[i], axes_y[j]) for (i, j) in active_cells])
-        ax.scatter(pts[:, 0], pts[:, 1], s=8, c="#22d3ee",
-                   edgecolors="black", linewidths=0.25, zorder=6)
 
     if best_fit_idx is not None:
         bx = axes_x[best_fit_idx[0]]
@@ -336,21 +331,21 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     proj1_frames = [f for f in frames if f["proj_idx"] == 0]
     proj2_frames = [f for f in frames if f["proj_idx"] == 1]
 
-    max_p1 = 95
+    max_p1 = 190
     stride_p1 = max(1, len(proj1_frames) // max_p1)
     chosen_p1 = proj1_frames[::stride_p1]
     if chosen_p1 and chosen_p1[-1] is not proj1_frames[-1]:
         chosen_p1.append(proj1_frames[-1])
 
-    # Hold on the final projection-1 state for ~0.8 s so the viewer
+    # Hold on the final projection-1 state for ~0.5 s so the viewer
     # registers "first projection done" before the second one starts.
-    transition_hold = 7
+    transition_hold = 14
     chosen_p1 = list(chosen_p1) + [chosen_p1[-1]] * transition_hold
 
     # Projection 2 is warm-started so initial L-BFGS-B is skipped, but the
     # subsequent dynamic activation / DE / patching still spans a sizeable
     # number of evaluations; subsample to keep the GIF compact.
-    max_p2 = 75
+    max_p2 = 150
     stride_p2 = max(1, len(proj2_frames) // max_p2)
     chosen_p2 = proj2_frames[::stride_p2]
     if chosen_p2 and chosen_p2[-1] is not proj2_frames[-1]:
@@ -360,8 +355,8 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     if not chosen:
         chosen = list(frames)
 
-    # Pad with trailing repeats so the final state holds for ~1.5 s.
-    final_hold = 14
+    # Pad with trailing repeats so the final state holds for ~1 s.
+    final_hold = 28
     chosen = chosen + [chosen[-1]] * final_hold
 
     images = []
@@ -470,7 +465,7 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
     plt.close(fig)
 
     print(f"Encoding GIF ({len(images)} frames) -> {gif_path}", flush=True)
-    imageio.mimsave(gif_path, images, format="GIF", fps=14, loop=0)
+    imageio.mimsave(gif_path, images, format="GIF", fps=28, loop=0)
     print(f"Wrote {gif_path} ({os.path.getsize(gif_path) / 1e6:.2f} MB)")
 
 
