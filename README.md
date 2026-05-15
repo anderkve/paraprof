@@ -5,15 +5,9 @@
 
 **ParaProf** is a Python package for computing profile likelihood projections using parallelized grid-based optimization. It places populations on grid points and dynamically activates regions of interest, optimizing the remaining parameters at each grid point with differential evolution (DE) or L-BFGS-B.
 
-## Animated overview
-
-The animation below replays a full two-projection scan of the 4D Himmelblau log-likelihood, sampled at regular intervals during a live MPI run. Projection 1 (left, over `x₀, x₁`) runs the full pipeline: an **initial global L-BFGS-B sweep** (scattered red points) that locates promising starting maxima, **dynamic grid activation** that grows the differential-evolution ROI outward cell by cell, and a final **patching wave** that polishes the result. Projection 2 (right, over `x₀, x₂`) is **warm-started** from projection 1: its `initial_maxima` are seeded from the accumulated global solution pool — covering the full cartesian product of 1D-Himmelblau peak coordinates — so the initial sweep is skipped and dynamic activation immediately starts growing 16 outward-expanding peak regions. The two profiles have visibly different structures: `(x₀, x₁)` inherits the four-peak 2D Himmelblau shape, while `(x₀, x₂)` separates into a sum of two 1D Himmelblau profiles and exposes the full 4×4 cartesian-product peak grid.
-
 <p align="center">
   <img src="examples/example_plots/animation/paraprof_dynamic_scan.gif" alt="ParaProf scanning the 4D Himmelblau log-likelihood: two 2D projections side by side" width="780"/>
 </p>
-
-Reproduce with `mpiexec -n <ncores> python examples/make_readme_animation.py` (needs `paraprof[viz]` plus `imageio`).
 
 ## Example output
 
