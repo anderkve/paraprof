@@ -90,6 +90,21 @@ class ActivationJob(Job):
                 random_samples = prof_bounds[:, 0] + unit_samples * (prof_bounds[:, 1] - prof_bounds[:, 0])
                 samples_list.extend(random_samples)
 
+            # 4. Proximity warm-start from prior projections.
+            # Replace the last random LHS slot with the highest-fitness past
+            # evaluation whose projection-dim coords are closest to this cell.
+            # This is the cross-projection knowledge-transfer step; it falls
+            # back silently when the pool is empty or the sampler has disabled
+            # it (e.g. for A/B benchmarking).
+            if (getattr(self.sampler, '_proximity_warm_start', True)
+                    and not self.sampler.is_refinement_run
+                    and n_from_random > 0
+                    and len(self.sampler.global_solution_pool) > 0):
+                cell_coords = self.sampler._get_grid_coords_from_indices(self.grid_idx)
+                prox = self.sampler._sample_proximity_from_global_pool(1, cell_coords)
+                if prox is not None and len(prox) > 0:
+                    samples_list[-1] = prox[0]
+
             # Combine all samples
             self.all_profiled_params = np.array(samples_list)
 

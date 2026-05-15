@@ -516,6 +516,17 @@ def master_main(comm, sampler,
                 if skip_init_opt_on_warm_start and sampler.warm_start_file:
                     sampler._initialize_from_warm_start_file(sampler.warm_start_file)
 
+                # In-memory cross-projection seeding: skip the global L-BFGS-B
+                # starts on projections 2..N when the accumulated pool already
+                # covers the relevant peaks. Falls through to the original
+                # initial-optimization path when the pool is empty (first
+                # projection) or the feature is disabled.
+                if (skip_init_opt_on_warm_start
+                        and not sampler.initial_maxima
+                        and getattr(sampler, '_pool_seeded_initial_maxima', True)
+                        and len(sampler.global_solution_pool) > 0):
+                    sampler._initialize_from_global_pool()
+
                 # If no maxima found from warm start (or warm start disabled), run global optimization
                 if not sampler.initial_maxima:
                     new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)

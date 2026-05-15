@@ -14,7 +14,7 @@
 - **Patching algorithm**: Wave-based refinement to escape local optima
 - **Built-in visualization**: Plotting for 1D, 2D, and N-D projections
 - **Benchmark suite**: Test functions (Himmelblau, Rosenbrock, Rastrigin, etc.)
-- **Warm starting**: Reuse results across multiple projections
+- **Warm starting**: Reuse results across multiple projections, including in-memory cross-projection seeding of initial maxima and per-cell proximity warm-starts that inherit informative starting points from prior projections
 
 ## Installation
 
@@ -96,8 +96,8 @@ mpiexec -n 4 python your_script.py
 ParaProf uses a **grid-based optimization** strategy:
 
 1. **Grid setup**: A regular grid is laid over the user-chosen subset of parameters; the remaining parameters are optimized at each grid point.
-2. **Initial optimization**: Global L-BFGS-B finds starting maxima.
-3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point.
+2. **Initial optimization**: Global L-BFGS-B finds starting maxima. On projections after the first, `initial_maxima` are seeded from the in-memory `global_solution_pool` accumulated by earlier projections, so the L-BFGS-B starts are skipped when prior coverage is sufficient.
+3. **Population initialization**: A DE population (or a single L-BFGS-B start) is anchored at each promising grid point. One slot is filled with the highest-fitness past evaluation whose projection-dim coordinates are closest to the cell ("proximity warm-start"), so cells in later projections inherit informative starting points from the pool.
 4. **Adaptive evolution**: DE (or L-BFGS-B) optimizes the profiled parameters at each active grid point.
 5. **Neighbour curvature sharing (L-BFGS-B)**: Warm-starting grid point L-BFGS-B optimization using information from the best already-converged neighbour by seeding the quasi-Newton history (the `(s, y)` pairs that approximate the inverse Hessian) and trialling the neighbour's best profiled parameters as an alternative starting point. This way local curvature information propagates outward across the grid from already converged points.
 6. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
