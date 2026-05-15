@@ -68,24 +68,24 @@ SHOWCASE_FUNCTIONS = {
             'convergence_threshold': 1e-7,
         },
     },
-    # Griewank is in the same "smooth multimodal with ripples" family as
-    # Ackley but its cos(x_i / sqrt(i+1)) factors give a different ripple
-    # period in every dimension, so different 2D projections look visibly
-    # different. The registry's default bounds [-100, 100] are too wide to
-    # resolve the periods at typical grid resolutions, so the showcase uses
-    # a tighter bounds override that exposes the dimension-dependent ripple
-    # structure.
-    'griewank_4d': {
+    # Levy 4D is in the same family as Ackley (smooth, multimodal with
+    # ridges and a central peak at x = (1, 1, 1, 1)) but its term3 uses
+    # sin(2*pi*w[-1])^2 instead of sin(pi*w[i] + 1)^2 of term2, so the last
+    # dimension has a tighter ridge spacing and a shallower amplitude than
+    # the other three dims. Profiling the remaining dims out of a 2D plot
+    # that involves x_3 therefore exposes asymmetric ridge structure not
+    # visible in a 2D plot of two non-final dims. The (w - 1)^2 prefactor
+    # confines the ROI to a sub-region of the [-10, 10]^4 box.
+    'levy_4d': {
         'dim_1d': 0,
         'dims_2d_a': [0, 1],
-        'dims_2d_b': [1, 3],
+        'dims_2d_b': [0, 3],
         'grid_1d': 120,
         'grid_2d': 60,
-        'roi_threshold': 3.0,
+        'roi_threshold': 5.0,
         'n_initial_optimizations': 120,
         'max_patching_waves': 25,
         'lbfgsb_max_iter': 25,
-        'bounds_override': [-20.0, 20.0],
         'advanced_config': {
             'convergence_threshold': 1e-7,
         },
