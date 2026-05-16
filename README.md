@@ -6,7 +6,7 @@
 **ParaProf** is a Python package for computing profile likelihood projections using parallelized grid-based optimization. It places populations on grid points and dynamically activates regions of interest, optimizing the remaining parameters at each grid point with differential evolution (DE) or L-BFGS-B.
 
 <p align="center">
-  <img src="examples/example_plots/animation/paraprof_dynamic_scan.gif" alt="ParaProf scanning the 4D Himmelblau log-likelihood: two 2D projections side by side" width="780"/>
+  <img src="examples/example_plots/animation/paraprof_rosenbrock_4D.gif" alt="ParaProf scanning the 4D Rosenbrock log-likelihood: all six 2D projections in a 3x2 grid" width="780"/>
 </p>
 
 ## Example output
