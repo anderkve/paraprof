@@ -520,7 +520,28 @@ def render_animation(frames, frozen_p1, bounds, gif_path):
 
     print(f"Encoding GIF ({len(images)} frames) -> {gif_path}", flush=True)
     imageio.mimsave(gif_path, images, format="GIF", fps=28, loop=0)
-    print(f"Wrote {gif_path} ({os.path.getsize(gif_path) / 1e6:.2f} MB)")
+    raw_mb = os.path.getsize(gif_path) / 1e6
+    print(f"Wrote {gif_path} ({raw_mb:.2f} MB, pre-optimisation)")
+
+    # Run `gifsicle -O3 --colors 128` in-place if available. Pillow's GIF
+    # encoder doesn't do proper inter-frame delta encoding; gifsicle does,
+    # and on an animation like this one (lots of unchanged left-panel
+    # pixels) it typically cuts the file size by 60-75 % with no
+    # perceptible quality loss.
+    import shutil, subprocess
+    if shutil.which("gifsicle"):
+        try:
+            subprocess.run(
+                ["gifsicle", "-O3", "--colors", "128", gif_path, "-o", gif_path],
+                check=True,
+            )
+            opt_mb = os.path.getsize(gif_path) / 1e6
+            print(f"gifsicle -O3 --colors 128: {raw_mb:.2f} MB -> {opt_mb:.2f} MB")
+        except subprocess.CalledProcessError as exc:
+            print(f"gifsicle optimisation skipped (exit {exc.returncode})")
+    else:
+        print("gifsicle not on PATH; skipping optimisation. "
+              "Install it (e.g. `apt-get install gifsicle`) to shrink the GIF.")
 
 
 # ---------------------------------------------------------------------------
