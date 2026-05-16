@@ -63,8 +63,15 @@ FUNC_NAME = "rosenbrock_4d"
 GRID_PER_DIM = 100
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 10.0
-POP_PER_CELL = 3
-LBFGSB_ITER = 15
+# Pop_per_grid_point and lbfgsb_max_iter bumped up from the Himmelblau
+# values: Rosenbrock has a narrow curved valley in profiled-parameter
+# space, so a cell's DE can easily get stuck at a sub-optimal local min,
+# and neighbour-based patching can't fix it if a whole column of cells
+# is stuck at the same wrong basin. More DE candidates per cell and a
+# longer L-BFGS-B polish give each cell a better chance of finding the
+# true valley independent of its neighbours.
+POP_PER_CELL = 5
+LBFGSB_ITER = 25
 MAX_PATCHING_WAVES = 10
 
 # Wider snapshot intervals than the 50x50 version: with 4x as many cells
