@@ -60,15 +60,19 @@ from paraprof import (
 # ---------------------------------------------------------------------------
 
 FUNC_NAME = "rosenbrock_4d"
-GRID_PER_DIM = 50
+GRID_PER_DIM = 100
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 10.0
 POP_PER_CELL = 3
 LBFGSB_ITER = 15
 MAX_PATCHING_WAVES = 10
 
-SNAPSHOT_INTERVAL_FIRST = 25  # interval (in target calls) for projection 1
-SNAPSHOT_INTERVAL_OTHER = 4   # finer sampling for the warm-started later projs
+# Wider snapshot intervals than the 50x50 version: with 4x as many cells
+# per projection the run is ~4x longer, and the per-snapshot
+# ``grid_values`` dict is also ~4x larger, so we sample less often to
+# keep peak memory roughly the same.
+SNAPSHOT_INTERVAL_FIRST = 50  # interval (in target calls) for projection 1
+SNAPSHOT_INTERVAL_OTHER = 15  # finer sampling for the warm-started later projs
 SCATTER_HISTORY = 300
 
 # Six 2D projections, in the order asked for in the README animation:
