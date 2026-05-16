@@ -132,7 +132,7 @@ ParaProf uses a **grid-based optimization** strategy:
 5. **Neighbour curvature sharing (L-BFGS-B)**: Warm-starting grid point L-BFGS-B optimization using information from the best already-converged neighbour by seeding the quasi-Newton history (the `(s, y)` pairs that approximate the inverse Hessian) and trialling the neighbour's best profiled parameters as an alternative starting point. This way local curvature information propagates outward across the grid from already converged points.
 6. **Dynamic activation**: Neighbours of high-likelihood grid points are automatically activated, expanding the active set within the region of interest.
 7. **Patching**: Optional wave-based refinement re-tests each grid point with its neighbours' best profiled parameters and locally polishes any improvement found.
-8. **Suspect recheck**: After patching, cells whose profiled parameters are discontinuous with their neighbourhood (or whose logL sits below a local smooth fit) are re-optimized from diverse seeds — non-suspect neighbours, an extended Chebyshev ring, and the cross-projection pool — to crack contiguous wrong-optimum strips that patching's fitness-only filter cannot escape. Successive waves propagate fixes from the strip boundary inward.
+8. **Suspect recheck**: After patching, cells whose profiled parameters are discontinuous with their neighbourhood are re-optimized from diverse seeds — non-suspect neighbours, an extended Chebyshev ring, and the cross-projection pool — to crack contiguous wrong-optimum strips that patching's fitness-only filter cannot escape. Successive waves propagate fixes from the strip boundary inward.
 9. **Refinement**: Optional grid-resolution increase, using interpolation of the coarse grid as warm-starts for the finer grid.
 
 ### Master-worker architecture
@@ -197,7 +197,6 @@ Pass an `advanced_config` dict for expert tuning. Only keys that move solution q
 | `suspect_recheck.enabled`                     | `True`             | Run the suspect-cell recheck pass after patching. Disable to skip entirely. |
 | `suspect_recheck.max_waves`                   | `3`                | Cap on suspect-recheck waves (mirrors `max_patching_waves`). |
 | `suspect_recheck.param_k`                     | `3.0`              | MAD multiplier for the profiled-param discontinuity threshold. Lower = more cells flagged. |
-| `suspect_recheck.likelihood_tol`              | `0.5`              | Min positive logL residual (cell vs. neighbour mean) to flag a cell. |
 | `suspect_recheck.max_fraction`                | `0.25`             | Hard cap on the fraction of ROI cells flagged per wave. |
 | `suspect_recheck.seeds_k_ring`                | `3`                | Max Chebyshev radius for extended-neighbour seed gathering. |
 | `suspect_recheck.seeds_from_pool`             | `3`                | Number of cross-projection global-pool seeds to test per suspect cell. |
