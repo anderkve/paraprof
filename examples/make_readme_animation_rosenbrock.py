@@ -60,7 +60,7 @@ from paraprof import (
 # ---------------------------------------------------------------------------
 
 FUNC_NAME = "rosenbrock_4d"
-GRID_PER_DIM = 100
+GRID_PER_DIM = 150
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 10.0
 # Pop_per_grid_point and lbfgsb_max_iter bumped up from the Himmelblau
@@ -74,11 +74,10 @@ POP_PER_CELL = 5
 LBFGSB_ITER = 25
 MAX_PATCHING_WAVES = 10
 
-# Snapshot intervals scale with the grid resolution (each snapshot's
-# grid_values dict scales as O(cells)). At 100x100 these values keep the
-# peak snapshot storage well under 1 GB.
-SNAPSHOT_INTERVAL_FIRST = 50  # interval (in target calls) for projection 1
-SNAPSHOT_INTERVAL_OTHER = 15  # finer sampling for the warm-started later projs
+# Snapshot intervals scale with the grid resolution. Tuned to keep peak
+# in-memory snapshot storage below ~2 GB at 150x150.
+SNAPSHOT_INTERVAL_FIRST = 80  # interval (in target calls) for projection 1
+SNAPSHOT_INTERVAL_OTHER = 25  # finer sampling for the warm-started later projs
 SCATTER_HISTORY = 300
 
 # Six 2D projections, in the order asked for in the README animation:
@@ -296,40 +295,28 @@ def render_animation(frames, final_states, bounds, gif_path):
     cmap = plt.get_cmap("viridis").copy()
     cmap.set_bad("#dadada")
 
-    # 3 rows x 2 cols of square heat-map panels, plus a header strip on top.
-    # We use the same per-row colour-bar pattern as the 2-panel Himmelblau
-    # animation: right panel gets a real colour-bar appended via
-    # make_axes_locatable, left panel gets an identically-sized invisible
-    # appendage to keep both panels in a row exactly the same width (so
-    # aspect='equal' renders them at the same size).
+    # 3 rows x 2 cols of square heat-map panels. We use the same per-row
+    # colour-bar pattern as the 2-panel Himmelblau animation: right panel
+    # gets a real colour-bar appended via make_axes_locatable, left panel
+    # gets an identically-sized invisible appendage to keep both panels
+    # in a row exactly the same width (so aspect='equal' renders them at
+    # the same size).
     #
-    # The layout uses an OUTER 2-row gridspec (info bar + panel block) and
-    # a 3 x 2 INNER gridspec for the panels themselves. This lets us set
-    # the info -> first-row gap independently of the panel-to-panel gap.
-    fig = plt.figure(figsize=(7.6, 10.4), dpi=110, facecolor="white")
-    outer_gs = fig.add_gridspec(
-        nrows=2, ncols=1,
-        height_ratios=[0.06, float(N_ROWS)],
-        left=0.08, right=0.91, top=0.97, bottom=0.06,
-        # Halve the gap between the info text and the first row of panels.
-        hspace=0.06,
-    )
-    inner_gs = outer_gs[1].subgridspec(
+    # Margins are set so the visible whitespace above the top row roughly
+    # matches the whitespace below the bottom row of x-axis labels.
+    fig = plt.figure(figsize=(7.6, 10.0), dpi=110, facecolor="white")
+    gs = fig.add_gridspec(
         nrows=N_ROWS, ncols=2,
         width_ratios=[1.0, 1.0],
-        # Panel-to-panel gaps stay roughly the same as before; horizontal
-        # gap is reduced by 20% (0.22 -> 0.176).
+        left=0.08, right=0.91, top=0.96, bottom=0.07,
         hspace=0.23, wspace=0.176,
     )
-
-    info_ax = fig.add_subplot(outer_gs[0])
-    info_ax.axis("off")
 
     panel_axes: list = []
     caxes: list = []
     for r in range(N_ROWS):
-        ax_l = fig.add_subplot(inner_gs[r, 0])
-        ax_r = fig.add_subplot(inner_gs[r, 1])
+        ax_l = fig.add_subplot(gs[r, 0])
+        ax_r = fig.add_subplot(gs[r, 1])
         panel_axes.append(ax_l)
         panel_axes.append(ax_r)
         # Phantom on the LEFT panel, real colour-bar on the RIGHT panel.
@@ -401,8 +388,6 @@ def render_animation(frames, final_states, bounds, gif_path):
     )
 
     for i, snap in enumerate(chosen):
-        info_ax.cla()
-        info_ax.axis("off")
         for ax in panel_axes:
             ax.cla()
 
@@ -464,13 +449,6 @@ def render_animation(frames, final_states, bounds, gif_path):
                     title={"xlabel": xlabel, "ylabel": ylabel},
                     cmap=cmap, show_scatter=False,
                 )
-
-        info_ax.text(
-            0.0, 0.5,
-            f"Target-function evaluations: {snap['target_calls']:,}",
-            transform=info_ax.transAxes, ha="left", va="center",
-            fontsize=12, color="#222",
-        )
 
         fig.canvas.draw()
         rgba = np.asarray(fig.canvas.buffer_rgba())
