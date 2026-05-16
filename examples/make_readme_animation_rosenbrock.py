@@ -463,7 +463,7 @@ def render_animation(frames, final_states, bounds, gif_path):
     plt.close(fig)
 
     print(f"Encoding GIF ({len(images)} frames) -> {gif_path}", flush=True)
-    imageio.mimsave(gif_path, images, format="GIF", fps=28, loop=0)
+    imageio.mimsave(gif_path, images, format="GIF", fps=24, loop=0)
     raw_mb = os.path.getsize(gif_path) / 1e6
     print(f"Wrote {gif_path} ({raw_mb:.2f} MB, pre-optimisation)")
 
