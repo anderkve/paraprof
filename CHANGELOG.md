@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     in a different basin, so the extra polishes are mostly redundant
     work.
 
+  A larger secant-only sweep
+  (``examples/run_secant_benchmark_driver.py``, 9 targets × 1-3 grid
+  resolutions × 3 seeds = 19 (target, grid) settings, 114 MPI runs)
+  yields a geometric-mean **cost ratio of 1.001×** (essentially free) and
+  a geometric-mean **mean-deficit ratio of 0.827×** (17% drop in grid
+  error) and **bad-cells ratio of 0.836×** (16% drop in cells with
+  meaningful logL deficit); mean predictor win rate is 48.6%. The
+  predictor benefit grows with grid resolution: for rosenbrock_4d the
+  win rate climbs from 82% → 89% → 93% across grid sizes 15/25/40, and
+  for himmelblau_4d from 78% → 87% → 90%. The predictor mostly fails
+  on highly rugged targets (rastrigin_4d: ~30% win rate, marginal
+  effect; rastrigin_6d / styblinski_tang_4d: predictor rarely fires)
+  and can regress on smooth-but-cuspy ψ\* surfaces (rosenbrock_6d
+  projections involving dim 4, where the profile picks up a sqrt-cusp
+  that the linear extrapolator overshoots). See
+  ``examples/analyze_secant_benchmark.py`` for per-projection drilldown.
+
   Both hooks add per-projection diagnostic counters on the sampler
   (``_secant_predictor_candidates_tested`` / ``_won``,
   ``_online_basin_switch_tests`` / ``_improvements``,
