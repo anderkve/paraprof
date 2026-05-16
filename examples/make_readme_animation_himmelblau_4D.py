@@ -63,7 +63,14 @@ from paraprof import (
 # ---------------------------------------------------------------------------
 
 FUNC_NAME = "himmelblau_4d"
-GRID_PER_DIM = 100
+# Coarser grid than the Rosenbrock animation (60x60 vs 100x100):
+# Himmelblau-4D's cartesian-product projections (e.g. (x0, x2)) have
+# 16 high-likelihood peaks vs 4 for the 2D-only projections, so the
+# ROI cell count and total target-function call count per projection
+# are several times larger than for Rosenbrock at the same grid
+# resolution. 60x60 keeps the total run length, in-memory snapshot
+# accumulation and final GIF size all comfortably bounded.
+GRID_PER_DIM = 60
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 5.0
 # ParaProf library defaults; matches the Rosenbrock animation. The
@@ -74,15 +81,9 @@ POP_PER_CELL = 3
 LBFGSB_ITER = 50
 MAX_PATCHING_WAVES = 10
 
-SNAPSHOT_INTERVAL_FIRST = 250  # interval (in target calls) for projection 1
-SNAPSHOT_INTERVAL_OTHER = 150  # finer sampling for the warm-started later projs
+SNAPSHOT_INTERVAL_FIRST = 50  # interval (in target calls) for projection 1
+SNAPSHOT_INTERVAL_OTHER = 15  # finer sampling for the warm-started later projs
 SCATTER_HISTORY = 300
-# NOTE: Himmelblau-4D's cartesian-product projections (e.g. (x0, x2)) have
-# 16 high-likelihood peaks vs 4 for the 2D Himmelblau projections, so each
-# projection 2-6 takes ~170k calls (vs ~30k for the Rosenbrock equivalent).
-# The snapshot intervals here are ~10x looser than the Rosenbrock-4D
-# settings to keep the in-memory snapshot store from blowing past ~1 GB
-# and OOM-killing the master at the encode step.
 
 # Six 2D projections, in the order asked for in the README animation:
 #     (x0, x1), (x0, x2), (x0, x3), (x1, x2), (x1, x3), (x2, x3)
