@@ -351,8 +351,8 @@ def render_animation(frames, final_states, bounds, gif_path):
     per_proj_frames = [[f for f in frames if f["proj_idx"] == k]
                        for k in range(N_PROJ)]
 
-    max_first = 95
-    max_other = 35
+    max_first = 143
+    max_other = 53
     transition_hold = 8     # frames held at the end of each projection
     final_hold = 56         # clean trailing hold (~2 s at 28 FPS)
 
