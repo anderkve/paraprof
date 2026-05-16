@@ -93,6 +93,12 @@ CONTOUR_LEVELS = [-3.0, -1.0]
 CONTOUR_LINESTYLES = ["--", "-"]
 CONTOUR_LINEWIDTHS = [1.0, 1.6]
 
+# Visible axis range applied to every panel (the data extent is still the
+# full parameter-bounds rectangle; we just crop the view to where the
+# Rosenbrock valley actually lives).
+PANEL_XLIM = (-4.0, 4.0)
+PANEL_YLIM = (-2.0, 6.0)
+
 
 # ---------------------------------------------------------------------------
 # Snapshot capture (identical to make_readme_animation.py)
@@ -242,8 +248,10 @@ def _draw_panel(ax, axes_x, axes_y, grid_img, mask,
         ax.scatter([bx], [by], s=110, marker="*", c="white",
                    edgecolors="black", linewidths=0.9, zorder=10)
 
-    ax.set_xlim(extent[0], extent[1])
-    ax.set_ylim(extent[2], extent[3])
+    # Crop the visible view to where the Rosenbrock valley lives (data
+    # extent stays at the full bounds rectangle).
+    ax.set_xlim(*PANEL_XLIM)
+    ax.set_ylim(*PANEL_YLIM)
     ax.set_facecolor("#dadada")
     ax.tick_params(axis="both", length=3.0, pad=3)
     ax.set_xlabel(title["xlabel"])
@@ -284,23 +292,34 @@ def render_animation(frames, final_states, bounds, gif_path):
     # make_axes_locatable, left panel gets an identically-sized invisible
     # appendage to keep both panels in a row exactly the same width (so
     # aspect='equal' renders them at the same size).
+    #
+    # The layout uses an OUTER 2-row gridspec (info bar + panel block) and
+    # a 3 x 2 INNER gridspec for the panels themselves. This lets us set
+    # the info -> first-row gap independently of the panel-to-panel gap.
     fig = plt.figure(figsize=(7.6, 10.4), dpi=110, facecolor="white")
-    gs = fig.add_gridspec(
-        nrows=1 + N_ROWS, ncols=2,
-        height_ratios=[0.06] + [1.0] * N_ROWS,
-        width_ratios=[1.0, 1.0],
+    outer_gs = fig.add_gridspec(
+        nrows=2, ncols=1,
+        height_ratios=[0.06, float(N_ROWS)],
         left=0.08, right=0.91, top=0.97, bottom=0.06,
-        hspace=0.30, wspace=0.22,
+        # Halve the gap between the info text and the first row of panels.
+        hspace=0.06,
+    )
+    inner_gs = outer_gs[1].subgridspec(
+        nrows=N_ROWS, ncols=2,
+        width_ratios=[1.0, 1.0],
+        # Panel-to-panel gaps stay roughly the same as before; horizontal
+        # gap is reduced by 20% (0.22 -> 0.176).
+        hspace=0.23, wspace=0.176,
     )
 
-    info_ax = fig.add_subplot(gs[0, :])
+    info_ax = fig.add_subplot(outer_gs[0])
     info_ax.axis("off")
 
     panel_axes: list = []
     caxes: list = []
     for r in range(N_ROWS):
-        ax_l = fig.add_subplot(gs[r + 1, 0])
-        ax_r = fig.add_subplot(gs[r + 1, 1])
+        ax_l = fig.add_subplot(inner_gs[r, 0])
+        ax_r = fig.add_subplot(inner_gs[r, 1])
         panel_axes.append(ax_l)
         panel_axes.append(ax_r)
         # Phantom on the LEFT panel, real colour-bar on the RIGHT panel.
