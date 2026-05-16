@@ -60,24 +60,20 @@ from paraprof import (
 # ---------------------------------------------------------------------------
 
 FUNC_NAME = "rosenbrock_4d"
-GRID_PER_DIM = 150
+GRID_PER_DIM = 100
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 10.0
-# Pop_per_grid_point and lbfgsb_max_iter bumped up from the Himmelblau
-# values: Rosenbrock has a narrow curved valley in profiled-parameter
-# space, so a cell's DE can easily get stuck at a sub-optimal local min,
-# and neighbour-based patching can't fix it if a whole column of cells
-# is stuck at the same wrong basin. More DE candidates per cell and a
-# longer L-BFGS-B polish give each cell a better chance of finding the
-# true valley independent of its neighbours.
-POP_PER_CELL = 5
-LBFGSB_ITER = 25
+# ParaProf library defaults. The new suspect-cell recheck pass that
+# landed on main between this version of the animation and the
+# previous one is expected to clean up the contiguous wrong-optimum
+# strips that previously forced us to bump POP_PER_CELL and
+# LBFGSB_ITER above their defaults.
+POP_PER_CELL = 3
+LBFGSB_ITER = 50
 MAX_PATCHING_WAVES = 10
 
-# Snapshot intervals scale with the grid resolution. Tuned to keep peak
-# in-memory snapshot storage below ~2 GB at 150x150.
-SNAPSHOT_INTERVAL_FIRST = 80  # interval (in target calls) for projection 1
-SNAPSHOT_INTERVAL_OTHER = 25  # finer sampling for the warm-started later projs
+SNAPSHOT_INTERVAL_FIRST = 50  # interval (in target calls) for projection 1
+SNAPSHOT_INTERVAL_OTHER = 15  # finer sampling for the warm-started later projs
 SCATTER_HISTORY = 300
 
 # Six 2D projections, in the order asked for in the README animation:
