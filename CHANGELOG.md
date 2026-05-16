@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Suspect-cell recheck** pass, on by default. Runs after standard patching
+  to catch grid cells (including contiguous strips) that converged to a
+  wrong optimum in the profiled dimensions but slipped past the
+  fitness-only patching filter. Uses two complementary detection signals
+  (profiled-parameter discontinuity vs. neighbour median, and likelihood
+  residual against a local mean) with robust MAD-based thresholds. Each
+  flagged cell is re-evaluated against a small, diverse set of seeds
+  (non-suspect neighbours, an extended Chebyshev-radius ring, and
+  proximity samples from the cross-projection global pool); seeds that
+  beat the cell by more than a tolerance trigger an L-BFGS-B polish.
+  Subsequent waves propagate from updated cells the same way patching
+  does, so a fix at the boundary of a stuck strip carries inward.
+  Configurable via the new ``suspect_recheck`` sub-dict of
+  ``advanced_config`` (see ``ProfileProjector`` docstring); also exposed
+  as ``sampler.suspect_recheck_enabled`` etc. The whole pass is a no-op
+  on perfectly-smooth surfaces.
 - **Cross-projection knowledge transfer** for multi-projection scans, on by
   default. When `run_all_projections` runs more than one projection, the
   later projections automatically reuse evaluations from the earlier ones
