@@ -54,8 +54,22 @@ class PatchingTestJob(Job):
         """
         If test found improvement, spawn L-BFGS-B job to optimize from test point.
         """
-        if not self.success or not self.will_update:
+        if not self.success:
             return None
+
+        # Diagnostic: total patching tests run (online + wave-based).
+        self.sampler._patching_tests_total += 1
+
+        if not self.will_update:
+            return None
+
+        # Per-test improvement counter (online + wave-based).
+        self.sampler._patching_improvements_total += 1
+
+        # Diagnostic: count online basin-switch detections that actually
+        # produced a fitness improvement at the test stage (before polish).
+        if getattr(self, 'online_basin_switch_check', False):
+            self.sampler._online_basin_switch_improvements += 1
 
         # Import here to avoid circular dependency
         from .lbfgsb_job import LBFGSBJob

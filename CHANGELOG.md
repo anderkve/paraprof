@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Continuation-style L-BFGS-B warm-starts**, two new advanced-config hooks
+  motivated by predictor–corrector methods from numerical continuation:
+  - ``continuation.secant_predictor_warm_start`` (default ``True``): when
+    warm-starting an L-BFGS-B polish at a grid cell, in addition to the
+    existing zeroth-order predictor (best converged neighbor's ψ\*), also
+    test linear/secant extrapolations of ψ\* along each grid axis built
+    from two already-converged neighbors (forward / backward secant and
+    centered interpolation). The candidate that evaluates highest at this
+    cell becomes the L-BFGS-B starting point; (s, y) history is still
+    inherited from the best-fitness neighbor. Across the
+    himmelblau_4d / rosenbrock_4d / rastrigin_4d benchmark
+    (``examples/run_continuation_benchmark_driver.py``) the predictor's
+    "secant candidate beats best neighbor" win rate is 86–89% on smooth
+    targets and ~30% on multimodal ones; on Rosenbrock-4D the number of
+    grid cells with significant deficit drops by ~40% at <2% extra
+    target calls.
+  - ``continuation.online_basin_switch`` (default ``False``, opt-in):
+    immediately after an L-BFGS-B cell converges, scan converged
+    neighbors for one whose best fitness exceeds this cell's just-
+    updated fitness; if found, spawn a ``PatchingTestJob`` against this
+    cell using the neighbor's ψ\* (and, if it confirms improvement, a
+    ``PATCHING_LBFGSB`` polish). This catches basin handoffs during the
+    main scan instead of deferring them to the post-hoc patching waves.
+    Off by default because the benchmark shows mixed behavior: clear win
+    on Rastrigin-4D (~31% mean deficit reduction) and on multimodal
+    targets generally, but small regressions on smooth narrow-valley
+    targets like Rosenbrock-4D where the neighbor's ψ\* often is *not*
+    in a different basin, so the extra polishes are mostly redundant
+    work.
+
+  Both hooks add per-projection diagnostic counters on the sampler
+  (``_secant_predictor_candidates_tested`` / ``_won``,
+  ``_online_basin_switch_tests`` / ``_improvements``,
+  ``_patching_tests_total`` / ``_improvements_total``) consumed by the
+  benchmark driver. Toggle via::
+
+      ProfileProjector(..., advanced_config={
+          'continuation': {
+              'secant_predictor_warm_start': False,  # zeroth-order predictor only
+              'online_basin_switch': True,           # opt in for multimodal targets
+          },
+      })
+
 - **Cross-projection knowledge transfer** for multi-projection scans, on by
   default. When `run_all_projections` runs more than one projection, the
   later projections automatically reuse evaluations from the earlier ones

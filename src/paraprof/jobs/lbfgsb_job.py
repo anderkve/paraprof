@@ -67,8 +67,19 @@ class LBFGSBJob(Job):
         self.pending_s_k = None
         self.pending_g_old = None
 
-        # For neighbor test
+        # For neighbor test (legacy, kept for single-candidate fallback).
         self.neighbor_params_to_test = None
+
+        # Multi-candidate predictor test state. When the
+        # secant_predictor_warm_start hook is enabled we evaluate the best
+        # neighbor's ψ* (zeroth-order predictor) plus a set of linear / secant
+        # extrapolation candidates along each grid axis (first-order
+        # predictor) in parallel. The state below tracks which candidates are
+        # outstanding and their fitnesses.
+        self._candidate_params = []          # list[np.ndarray]
+        self._candidate_labels = []          # list[str]
+        self._candidate_fitnesses = {}       # idx -> float
+        self._pending_candidate_tests = 0
 
     def _get_full_params(self, partial_params):
         """Constructs full parameters from partial optimization parameters."""
@@ -134,25 +145,54 @@ class LBFGSBJob(Job):
                             best_neighbor_state = neighbor_state
 
             if best_neighbor_state:
-                # 1. Seed the history
+                # 1. Seed the history from the best neighbor (this is the
+                #    L-BFGS curvature inheritance; it stays at the
+                #    best-fitness neighbor even when the predictor adds extra
+                #    candidate starting points below).
                 self.s_hist.clear()
                 self.y_hist.clear()
                 self.s_hist.extend(best_neighbor_state['optimizer_state']['s'])
                 self.y_hist.extend(best_neighbor_state['optimizer_state']['y'])
 
-                # 2. Get neighbor's best params to test
-                neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
-                self.neighbor_params_to_test = best_neighbor_state['profiled_params'][neighbor_best_idx]
+                # 2. Build the candidate list. Candidate 0 is always the
+                #    best neighbor's profiled params (zeroth-order predictor,
+                #    the legacy behavior). When secant_predictor_warm_start
+                #    is enabled we additionally test linear/secant
+                #    extrapolations along each grid axis from already-
+                #    converged neighbors.
+                neighbor_best_idx = int(np.argmax(best_neighbor_state['fitnesses']))
+                neighbor_best_params = best_neighbor_state['profiled_params'][neighbor_best_idx]
 
-                # 3. Create a task to test these params at *our* grid point
-                full_params_test = self.sampler._construct_params(self.grid_idx, self.neighbor_params_to_test)
+                self._candidate_params = [np.array(neighbor_best_params, copy=True)]
+                self._candidate_labels = ['best-neighbor']
 
-                context = {
-                    'type': self.type,
-                    'job_id': self.id,
-                    'sub_type': 'LBFGS_NEIGHBOR_TEST'
-                }
-                return [{'params': full_params_test, 'context': context}]
+                if getattr(self.sampler, 'secant_predictor_warm_start', False):
+                    secant_candidates = self.sampler._build_secant_predictor_candidates(
+                        self.grid_idx, neighbor_best_params,
+                    )
+                    for label, params in secant_candidates:
+                        self._candidate_params.append(np.array(params, copy=True))
+                        self._candidate_labels.append(label)
+
+                # Legacy alias used by tests / debugging tools.
+                self.neighbor_params_to_test = self._candidate_params[0]
+
+                # 3. Issue test tasks for every candidate in parallel.
+                self._pending_candidate_tests = len(self._candidate_params)
+                self._candidate_fitnesses = {}
+                tasks = []
+                for i, params in enumerate(self._candidate_params):
+                    full_params_test = self.sampler._construct_params(
+                        self.grid_idx, params
+                    )
+                    context = {
+                        'type': self.type,
+                        'job_id': self.id,
+                        'sub_type': 'LBFGS_NEIGHBOR_TEST',
+                        'candidate_idx': i,
+                    }
+                    tasks.append({'params': full_params_test, 'context': context})
+                return tasks
 
             else:
                 # No valid neighbor found, skip test and just evaluate our own params
@@ -179,15 +219,39 @@ class LBFGSBJob(Job):
         new_tasks = []
 
         if self.status == 'NEEDS_NEIGHBOR_TEST' and sub_type == 'LBFGS_NEIGHBOR_TEST':
-            neighbor_fitness = result['target_val']
+            # Multi-candidate predictor test: collect fitnesses across all
+            # candidates, only proceed when the last one comes in.
+            cand_idx = context.get('candidate_idx', 0)
+            self._candidate_fitnesses[cand_idx] = result['target_val']
+            self._pending_candidate_tests -= 1
 
-            if neighbor_fitness > self.start_fitness:
-                # Neighbor's params are a better starting point
-                self.current_params = self.neighbor_params_to_test
-                self.current_fitness = neighbor_fitness
-                self.current_objective = -neighbor_fitness
+            if self._pending_candidate_tests > 0:
+                return []
+
+            # All candidates evaluated: pick the best one.
+            best_cand_idx = max(
+                self._candidate_fitnesses,
+                key=lambda i: self._candidate_fitnesses[i],
+            )
+            best_cand_fitness = self._candidate_fitnesses[best_cand_idx]
+            best_cand_params = self._candidate_params[best_cand_idx]
+
+            # Diagnostics: per-cell + sampler-level counts of how often a
+            # non-legacy predictor candidate (i.e. a secant/interp candidate)
+            # wins the comparison. The legacy "best-neighbor" candidate is
+            # idx 0; anything else is a continuation predictor.
+            if len(self._candidate_params) > 1:
+                self.sampler._secant_predictor_candidates_tested += 1
+                if best_cand_idx != 0:
+                    self.sampler._secant_predictor_candidates_won += 1
+
+            if best_cand_fitness > self.start_fitness:
+                # A predictor candidate beats our own start: use it.
+                self.current_params = best_cand_params
+                self.current_fitness = best_cand_fitness
+                self.current_objective = -best_cand_fitness
             else:
-                # Our original params are better
+                # Our original params are still best.
                 self.current_params = self.fallback_params
                 self.current_fitness = self.start_fitness
                 self.current_objective = -self.start_fitness
@@ -427,6 +491,83 @@ class LBFGSBJob(Job):
 
             return [self._calculate_line_search_task()]
 
+    def _maybe_spawn_basin_switch_check(self, next_job_id):
+        """
+        Online basin-switch detection.
+
+        After this cell's L-BFGS-B optimization completes, scan converged
+        neighbors for one whose best_fitness is strictly higher than this
+        cell's just-updated best_fitness. If found, spawn a
+        :class:`PatchingTestJob` that evaluates the neighbor's profiled
+        params at this cell. If the test confirms improvement, the patching
+        job itself spawns a ``PATCHING_LBFGSB`` polish from there. This
+        catches the basin-handoff case during the main scan instead of
+        deferring it to the post-hoc patching waves.
+
+        Returns
+        -------
+        (job, next_job_id) tuple or None
+            ``None`` if no promising neighbor was found (or the feature is
+            inapplicable at this cell).
+        """
+        # Late import to avoid a circular dependency with patching_test_job,
+        # which itself imports LBFGSBJob.
+        from .patching_test_job import PatchingTestJob
+
+        if self.grid_idx is None or self.grid_idx not in self.sampler.population:
+            return None
+
+        state = self.sampler.population[self.grid_idx]
+        my_best = state['best_fitness']
+        my_best_idx = int(np.argmax(state['fitnesses']))
+        my_params = state['profiled_params'][my_best_idx]
+
+        best_check_neighbor_idx = None
+        best_check_neighbor_fitness = my_best
+        best_check_params = None
+
+        for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
+            if neighbor_idx not in self.sampler.population:
+                continue
+            nstate = self.sampler.population[neighbor_idx]
+            if nstate['status'] not in ('optimized', 'converged'):
+                continue
+            n_fit = nstate['best_fitness']
+            if n_fit <= best_check_neighbor_fitness:
+                continue
+            n_best_idx = int(np.argmax(nstate['fitnesses']))
+            n_params = nstate['profiled_params'][n_best_idx]
+            # Skip neighbors whose ψ* is identical to ours — that test would
+            # carry no information.
+            if np.allclose(n_params, my_params, atol=1e-12):
+                continue
+            best_check_neighbor_fitness = n_fit
+            best_check_neighbor_idx = neighbor_idx
+            best_check_params = n_params
+
+        if best_check_neighbor_idx is None:
+            return None
+
+        # Sampler-level diagnostic counter; the actual improvement check
+        # happens in PatchingTestJob.on_finish, so we track tests issued
+        # here and let the test job update the "improvement" counter when
+        # it spawns the polish.
+        self.sampler._online_basin_switch_tests += 1
+
+        job = PatchingTestJob(
+            job_id=next_job_id,
+            sampler=self.sampler,
+            grid_idx=self.grid_idx,
+            test_profiled_params=np.array(best_check_params, copy=True),
+            wave_number=-1,  # sentinel for "online" test (not part of any wave)
+        )
+        # Tag the job so PatchingTestJob.on_finish can bump the
+        # online-basin-switch improvement counter when it spawns a polish.
+        job.online_basin_switch_check = True
+
+        return (job, next_job_id + 1)
+
+
     def on_finish(self, next_job_id):
         """Finalize a job, updating the sampler state."""
 
@@ -480,6 +621,27 @@ class LBFGSBJob(Job):
                      # Construct full parameter vector for the pool
                      full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
                      self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
+
+                # Online basin-switch detection. As soon as this cell finishes
+                # its L-BFGS-B optimization, check whether any already-
+                # converged neighbor has a profiled-param solution that would
+                # yield a strictly better fitness at this cell, and if so
+                # spawn an immediate PatchingTestJob to verify it (and a
+                # polish if confirmed). The continuation interpretation is:
+                # the local "track" we followed may not be the dominant
+                # branch, and the neighbor lives in a different basin that
+                # now dominates ours.
+                #
+                # Guarded against:
+                #   - PATCHING_LBFGSB jobs (avoid recursion through patching)
+                #   - sampler-level toggle (online_basin_switch=False)
+                #   - direct-eval mode (no profiled params)
+                if (self.type != 'PATCHING_LBFGSB'
+                        and getattr(self.sampler, 'online_basin_switch', False)
+                        and not self.sampler.direct_eval_mode):
+                    spawn = self._maybe_spawn_basin_switch_check(next_job_id)
+                    if spawn is not None:
+                        return spawn
 
         elif self.type == 'REFINEMENT_LBFGSB':
             # For refinement, we create a new population entry directly (no prior DE)
