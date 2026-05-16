@@ -427,6 +427,8 @@ def master_main(comm, sampler,
         # Disable patching in direct evaluation mode (no profiled params to share)
         if sampler.patch_refined_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
+            if sampler.suspect_recheck_enabled:
+                stages.append('SUSPECT_RECHECK_WAVES')
         logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
     else:
         # Normal mode: workflow depends on optimization method
@@ -448,6 +450,8 @@ def master_main(comm, sampler,
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
+            if sampler.suspect_recheck_enabled:
+                stages.append('SUSPECT_RECHECK_WAVES')
 
         if sampler.direct_eval_mode:
             logger.info("--- Direct Evaluation Mode: No profiled parameters ---")
@@ -466,7 +470,7 @@ def master_main(comm, sampler,
     # Helper function to queue tasks
     def _queue_tasks(tasks, job_type):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB']:
+        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -487,6 +491,13 @@ def master_main(comm, sampler,
     patching_wave_baseline_fitness = {}  # grid_idx -> fitness at wave start
     patching_wave_test_jobs = set()  # IDs of test jobs in current wave
     patching_wave_lbfgsb_jobs = set()  # IDs of L-BFGS-B jobs spawned by current wave
+
+    # Wave-based suspect-recheck state (mirrors patching state)
+    suspect_wave_number = 0
+    suspect_updated_last_wave = None
+    suspect_wave_baseline_fitness = {}
+    suspect_wave_test_jobs = set()
+    suspect_wave_lbfgsb_jobs = set()
 
     # --- Main Event Loop ---
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
@@ -667,6 +678,41 @@ def master_main(comm, sampler,
                 # Wave is complete when checked in job completion handling
                 pass
 
+            elif current_stage == 'SUSPECT_RECHECK_WAVES':
+                if not sampler.suspect_recheck_enabled or sampler.direct_eval_mode:
+                    logger.info("--- Master: Suspect recheck disabled. Skipping. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+                if suspect_wave_number >= sampler.max_suspect_waves:
+                    logger.info(f"--- Master: Max suspect waves ({sampler.max_suspect_waves}) reached. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+                logger.info(f"--- Master: Starting Suspect Recheck Wave {suspect_wave_number} ---")
+
+                new_jobs, next_job_id = sampler.create_suspect_recheck_jobs(
+                    wave_number=suspect_wave_number,
+                    updated_points_last_wave=suspect_updated_last_wave,
+                    next_job_id=next_job_id,
+                )
+
+                if not new_jobs:
+                    logger.info("--- Master: No suspect candidates. Ending suspect recheck. ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+                suspect_wave_baseline_fitness = {
+                    idx: state['best_fitness']
+                    for idx, state in sampler.population.items()
+                }
+                suspect_wave_test_jobs = {j.id for j in new_jobs}
+                suspect_wave_lbfgsb_jobs = set()
+                current_stage = 'WAITING_FOR_SUSPECT_WAVE'
+
+            elif current_stage == 'WAITING_FOR_SUSPECT_WAVE':
+                pass
+
             elif current_stage == 'REFINEMENT_LBFGSB':
                 # For refinement runs, directly create LBFGSB jobs from interpolated starts
                 new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
@@ -706,7 +752,9 @@ def master_main(comm, sampler,
 
             # If we just finished a non-looping stage, advance to the next
             # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
-            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP', 'WAITING_FOR_PATCHING_WAVE']:
+            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP',
+                                     'WAITING_FOR_PATCHING_WAVE',
+                                     'WAITING_FOR_SUSPECT_WAVE']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---
@@ -735,14 +783,19 @@ def master_main(comm, sampler,
                 job_id_finished = job.id
 
                 # Track wave-based patching jobs
-                is_wave_test_job = job_id_finished in patching_wave_test_jobs
-                is_wave_lbfgsb_job = job_id_finished in patching_wave_lbfgsb_jobs
+                is_patch_test_job = job_id_finished in patching_wave_test_jobs
+                is_patch_lbfgsb_job = job_id_finished in patching_wave_lbfgsb_jobs
+                is_suspect_test_job = job_id_finished in suspect_wave_test_jobs
+                is_suspect_lbfgsb_job = job_id_finished in suspect_wave_lbfgsb_jobs
 
-                if is_wave_test_job:
+                if is_patch_test_job:
                     patching_wave_test_jobs.remove(job_id_finished)
-
-                if is_wave_lbfgsb_job:
+                if is_patch_lbfgsb_job:
                     patching_wave_lbfgsb_jobs.remove(job_id_finished)
+                if is_suspect_test_job:
+                    suspect_wave_test_jobs.remove(job_id_finished)
+                if is_suspect_lbfgsb_job:
+                    suspect_wave_lbfgsb_jobs.remove(job_id_finished)
 
                 # This updates the sampler state and can spawn a new job
                 spawn_result = job.on_finish(next_job_id)
@@ -753,9 +806,12 @@ def master_main(comm, sampler,
                     active_jobs[new_job.id] = new_job
                     initial_tasks = new_job.start()
 
-                    # Track if this is an L-BFGS-B job spawned by a patching test
-                    if is_wave_test_job and new_job.type == 'PATCHING_LBFGSB':
+                    # Track child jobs spawned within a wave so the wave's
+                    # completion check knows to wait for them.
+                    if is_patch_test_job and new_job.type == 'PATCHING_LBFGSB':
                         patching_wave_lbfgsb_jobs.add(new_job.id)
+                    if is_suspect_test_job and new_job.type == 'SUSPECT_RECHECK_LBFGSB':
+                        suspect_wave_lbfgsb_jobs.add(new_job.id)
 
                     # Add to correct priority queue
                     _queue_tasks(initial_tasks, new_job.type)
@@ -781,6 +837,29 @@ def master_main(comm, sampler,
                     else:
                         # No updates, patching converged
                         logger.info("--- Master: No updates in wave. Patching converged. ---")
+                        current_stage = stages.pop(0) if stages else None
+
+                # Check if the suspect-recheck wave is now complete
+                if current_stage == 'WAITING_FOR_SUSPECT_WAVE' and \
+                   not suspect_wave_test_jobs and not suspect_wave_lbfgsb_jobs:
+
+                    updated_points = []
+                    for idx, state in sampler.population.items():
+                        baseline_fitness = suspect_wave_baseline_fitness.get(idx, -np.inf)
+                        if state['best_fitness'] > baseline_fitness:
+                            updated_points.append(idx)
+
+                    logger.info(
+                        f"--- Master: Suspect Wave {suspect_wave_number} complete. "
+                        f"Updated {len(updated_points)} points ---"
+                    )
+
+                    if updated_points:
+                        suspect_updated_last_wave = updated_points
+                        suspect_wave_number += 1
+                        current_stage = 'SUSPECT_RECHECK_WAVES'
+                    else:
+                        logger.info("--- Master: No updates in wave. Suspect recheck converged. ---")
                         current_stage = stages.pop(0) if stages else None
 
         # --- End of Iprobe receive loop ---

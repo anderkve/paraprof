@@ -132,3 +132,146 @@ def test_end_to_end_scan(method):
         f"calls = {result['calls']} for method={method!r} is out of expected "
         "range [100, 50000]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Suspect-cell recheck — end-to-end regression test
+# ---------------------------------------------------------------------------
+# Rosenbrock-4D on a coarse 80x80 grid reliably produces a small contiguous
+# strip of grid cells stuck on a wrong optimum in the profiled dimensions:
+# DE + L-BFGS-B polish + patching waves all leave the strip in place because
+# its members agree with each other and the standard patching filter only
+# tests neighbours with strictly higher fitness. The suspect-cell recheck
+# pass is designed to catch exactly this. The runner below captures the grid
+# both BEFORE the recheck stage starts and AFTER the full scan completes,
+# then diffs the two so the feature's effect is isolated deterministically
+# within one MPI run (sidestepping cross-run RNG variance from independent
+# worker random states).
+
+SUSPECT_RUNNER = textwrap.dedent("""
+    import json
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        get_test_function, set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    log_likelihood, bounds, _ = get_test_function('rosenbrock_4d')
+    projections = [{'dims': [0, 1], 'grid_points': [80, 80]}]
+    np.random.seed(750123)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=log_likelihood,
+            bounds=bounds,
+            projections=projections,
+            roi_threshold=8.0,
+            pop_per_grid_point=3,
+            n_initial_optimizations=100,
+            max_patching_waves=20,
+            lbfgsb_max_iter=20,
+            advanced_config={'convergence_threshold': 1e-7},
+        ) as sampler:
+            comm.bcast(sampler.target_func, root=0)
+
+            # Snapshot the per-cell best_fitness right before the first
+            # suspect-recheck wave is scheduled.
+            before = {'snapshot': None}
+            orig = sampler.create_suspect_recheck_jobs
+
+            def patched(wave_number, updated_points_last_wave, next_job_id):
+                if wave_number == 0 and before['snapshot'] is None:
+                    snap = np.full(sampler.grid_shape, np.nan)
+                    for idx, st in sampler.population.items():
+                        snap[idx] = st['best_fitness']
+                    before['snapshot'] = snap
+                return orig(wave_number, updated_points_last_wave, next_job_id)
+            sampler.create_suspect_recheck_jobs = patched
+
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+
+            after = np.full(sampler.grid_shape, np.nan)
+            for idx, st in sampler.population.items():
+                after[idx] = st['best_fitness']
+
+            if before['snapshot'] is None:
+                payload = {'fired': False}
+            else:
+                b = before['snapshot']
+                mask = ~(np.isnan(b) | np.isnan(after))
+                diff = np.where(mask, after - b, 0.0)
+                payload = {
+                    'fired': True,
+                    'n_improved': int(np.sum(diff > 1e-6)),
+                    'n_regressed': int(np.sum(diff < -1e-6)),
+                    'max_improvement': float(diff.max()),
+                    'min_change': float(diff.min()),
+                    'total_delta': float(diff.sum()),
+                }
+            print('RESULT', json.dumps(payload), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
+def _run_suspect():
+    """Run SUSPECT_RUNNER under mpiexec -n 4 and parse the RESULT line."""
+    with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as f:
+        f.write(SUSPECT_RUNNER)
+        runner_path = f.name
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(('OMPI_', 'OPAL_', 'PMIX_', 'PMI_'))}
+    try:
+        proc = subprocess.run(
+            ['mpiexec', '--allow-run-as-root', '--oversubscribe',
+             '-n', '4', sys.executable, runner_path],
+            capture_output=True, text=True, timeout=180, env=env,
+        )
+    finally:
+        os.unlink(runner_path)
+    if proc.returncode != 0:
+        raise AssertionError(
+            f"mpiexec runner failed (rc={proc.returncode}):\n"
+            f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+        )
+    for line in proc.stdout.splitlines():
+        if line.startswith('RESULT '):
+            return json.loads(line[len('RESULT '):])
+    raise AssertionError(f"Runner produced no RESULT line.\nSTDOUT:\n{proc.stdout}")
+
+
+def test_suspect_recheck_fixes_rosenbrock_strip():
+    """Rosenbrock-4D 80x80 should produce a wrong-optimum strip that the
+    suspect-recheck pass detects and fixes — with zero regressions."""
+    result = _run_suspect()
+
+    assert result['fired'], "Suspect-recheck stage never ran"
+
+    # The pass must improve at least one cell. Observed on this case: typically
+    # 4-10 cells improved by 4-20 logL each; rare unlucky MPI orderings give
+    # only a sub-logL improvement, so we don't pin a size threshold here.
+    assert result['n_improved'] >= 1, (
+        f"Suspect recheck did not improve any cells: {result}"
+    )
+
+    # Never regress a cell. The LBFGSB polish only writes back when
+    # current_fitness > state['best_fitness'], so this is a structural
+    # guarantee — but the test makes the guarantee visible.
+    assert result['n_regressed'] == 0, (
+        f"Suspect recheck regressed {result['n_regressed']} cell(s): {result}"
+    )
+    assert result['min_change'] >= 0.0, (
+        f"Suspect recheck produced a negative per-cell change "
+        f"({result['min_change']}); the pass must never lower a cell's logL"
+    )
