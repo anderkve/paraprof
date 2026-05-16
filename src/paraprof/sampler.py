@@ -88,7 +88,6 @@ DEFAULT_PATCHING_N_NEIGHBORS = 1
 DEFAULT_SUSPECT_RECHECK_ENABLED = True
 DEFAULT_SUSPECT_MAX_WAVES = 3
 DEFAULT_SUSPECT_PARAM_K = 3.0          # MAD multiplier on profiled-param discontinuity
-DEFAULT_SUSPECT_LIKELIHOOD_TOL = 0.5   # logL units; min residual to flag a cell
 DEFAULT_SUSPECT_MAX_FRACTION = 0.25    # safety cap: max fraction of ROI cells per wave
 DEFAULT_SUSPECT_SEEDS_K_RING = 3       # Chebyshev radius for extended-neighbour seeds
 DEFAULT_SUSPECT_SEEDS_FROM_POOL = 3
@@ -253,7 +252,6 @@ class ProfileProjector:
                     'enabled': bool,                # Default: True
                     'max_waves': int,               # Default: 3
                     'param_k': float,               # Default: 3.0
-                    'likelihood_tol': float,        # Default: 0.5
                     'max_fraction': float,          # Default: 0.25
                     'seeds_k_ring': int,            # Default: 3
                     'seeds_from_pool': int,         # Default: 3
@@ -448,7 +446,6 @@ class ProfileProjector:
                 'enabled': DEFAULT_SUSPECT_RECHECK_ENABLED,
                 'max_waves': DEFAULT_SUSPECT_MAX_WAVES,
                 'param_k': DEFAULT_SUSPECT_PARAM_K,
-                'likelihood_tol': DEFAULT_SUSPECT_LIKELIHOOD_TOL,
                 'max_fraction': DEFAULT_SUSPECT_MAX_FRACTION,
                 'seeds_k_ring': DEFAULT_SUSPECT_SEEDS_K_RING,
                 'seeds_from_pool': DEFAULT_SUSPECT_SEEDS_FROM_POOL,
@@ -552,7 +549,6 @@ class ProfileProjector:
         self.suspect_recheck_enabled = sc['enabled']
         self.max_suspect_waves = sc['max_waves']
         self.suspect_param_k = sc['param_k']
-        self.suspect_likelihood_tol = sc['likelihood_tol']
         self.suspect_max_fraction = sc['max_fraction']
         self.suspect_seeds_k_ring = sc['seeds_k_ring']
         self.suspect_seeds_from_pool = sc['seeds_from_pool']
@@ -2415,32 +2411,11 @@ class ProfileProjector:
         ext = self.bounds[self.profiled_dims, 1] - self.bounds[self.profiled_dims, 0]
         return np.where(ext > 0, ext, 1.0)
 
-    def _suspect_signals(self, roi_cells):
-        """For each ROI cell with >=2 valid neighbours, compute
-        (param_dist, lik_residual) — bounds-normalised L2 distance to the
-        neighbour-median profiled-params vector, and neighbour-mean logL
-        minus own logL. Returns two dicts keyed by grid index.
-        """
-        extent = self._profiled_extent()
-        param_d = {}
-        lik_r = {}
-        for idx in roi_cells:
-            neigh = [n for n in self._get_valid_neighbors(idx) if n in self.population]
-            if len(neigh) < 2:
-                continue
-            neigh_params = np.array([self._best_profiled_params(n) for n in neigh])
-            neigh_fit = np.array([self.population[n]['best_fitness'] for n in neigh])
-            median = np.median(neigh_params, axis=0)
-            param_d[idx] = float(np.linalg.norm(
-                (self._best_profiled_params(idx) - median) / extent
-            ))
-            lik_r[idx] = float(np.mean(neigh_fit) - self.population[idx]['best_fitness'])
-        return param_d, lik_r
-
     def _find_suspect_cells(self, wave_number, updated_points_last_wave):
-        """Suspect grid indices for a wave. Wave 0 scans all ROI cells via
-        robust thresholds on the two signals from ``_suspect_signals``;
-        wave >=1 returns in-population neighbours of last wave's winners.
+        """Suspect grid indices for a wave. Wave 0 scans all ROI cells and
+        flags cells whose profiled-params vector lies far (robust MAD
+        threshold) from its neighbour-median. Wave >=1 returns in-population
+        neighbours of last wave's winners (boundary propagation).
         """
         if self.n_prof_dims == 0 or not self.population:
             return []
@@ -2458,35 +2433,39 @@ class ProfileProjector:
             return out
 
         roi_cutoff = self.global_max_target_val - self.roi_threshold
-        roi_cells = [idx for idx, s in self.population.items()
-                     if s['best_fitness'] >= roi_cutoff]
-        param_d, lik_r = self._suspect_signals(roi_cells)
+        extent = self._profiled_extent()
+        param_d = {}
+        for idx, st in self.population.items():
+            if st['best_fitness'] < roi_cutoff:
+                continue
+            neigh = [n for n in self._get_valid_neighbors(idx) if n in self.population]
+            if len(neigh) < 2:
+                continue
+            neigh_params = np.array([self._best_profiled_params(n) for n in neigh])
+            median = np.median(neigh_params, axis=0)
+            param_d[idx] = float(np.linalg.norm(
+                (self._best_profiled_params(idx) - median) / extent
+            ))
         if not param_d:
             return []
 
-        # Robust MAD threshold on param distance, with a small absolute
-        # floor so a perfectly-smooth surface gives no suspects.
+        # Robust MAD threshold, with a small absolute floor so a
+        # perfectly-smooth surface gives no suspects.
         d_vals = np.array(list(param_d.values()))
         d_med = float(np.median(d_vals))
         d_mad = float(np.median(np.abs(d_vals - d_med))) or 1e-12
         d_thresh = max(d_med + self.suspect_param_k * 1.4826 * d_mad, 1e-3)
-        r_thresh = self.suspect_likelihood_tol
 
-        suspects = [idx for idx in param_d
-                    if param_d[idx] > d_thresh or lik_r[idx] > r_thresh]
+        suspects = [idx for idx, d in param_d.items() if d > d_thresh]
 
-        max_total = max(1, int(self.suspect_max_fraction * len(roi_cells)))
+        max_total = max(1, int(self.suspect_max_fraction * len(param_d)))
         if len(suspects) > max_total:
-            suspects.sort(
-                key=lambda idx: (param_d[idx] / d_thresh
-                                 + max(lik_r[idx], 0.0) / max(r_thresh, 1e-12)),
-                reverse=True,
-            )
+            suspects.sort(key=param_d.__getitem__, reverse=True)
             suspects = suspects[:max_total]
 
         self.logger.info(
-            f"--- Suspect detection: {len(suspects)}/{len(roi_cells)} ROI cells flagged "
-            f"(d_thresh={d_thresh:.3e}, r_thresh={r_thresh:.3e}) ---"
+            f"--- Suspect detection: {len(suspects)}/{len(param_d)} ROI cells flagged "
+            f"(d_thresh={d_thresh:.3e}) ---"
         )
         return suspects
 

@@ -11,10 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Suspect-cell recheck** pass, on by default. Runs after standard patching
   to catch grid cells (including contiguous strips) that converged to a
   wrong optimum in the profiled dimensions but slipped past the
-  fitness-only patching filter. Uses two complementary detection signals
-  (profiled-parameter discontinuity vs. neighbour median, and likelihood
-  residual against a local mean) with robust MAD-based thresholds. Each
-  flagged cell is re-evaluated against a small, diverse set of seeds
+  fitness-only patching filter. Flags cells whose profiled-parameter
+  vector is far (robust MAD threshold) from its neighbour-median, then
+  re-evaluates each flagged cell against a small, diverse set of seeds
   (non-suspect neighbours, an extended Chebyshev-radius ring, and
   proximity samples from the cross-projection global pool); seeds that
   beat the cell by more than a tolerance trigger an L-BFGS-B polish.

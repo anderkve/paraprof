@@ -245,4 +245,4 @@ class TestConfigPlumbing:
         assert sampler.max_suspect_waves == 7
         assert sampler.suspect_param_k == 5.0
         # Untouched keys retain defaults
-        assert sampler.suspect_likelihood_tol == pytest.approx(0.5)
+        assert sampler.suspect_max_fraction == pytest.approx(0.25)
