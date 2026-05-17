@@ -9,7 +9,7 @@ methodological rationale. The short version:
 | What | How |
 |---|---|
 | Primary metric | Target-function evaluations |
-| Secondary metric | Wall-clock time (informational only) |
+| Wall-clock | Not part of the comparison (see below) |
 | Test problems | `rosenbrock_4d`, `himmelblau_4d`, `rastrigin_4d`, `levy_4d` |
 | Projections | Two 2-D projections per problem |
 | Grid | 50 × 50 |
@@ -29,20 +29,18 @@ methodological rationale. The short version:
 | `scipy_lbfgsb`            | Appendix figures (multistart L-BFGS-B with Latin-hypercube starts) |
 | `nlopt_crs2_bobyqa`       | Appendix figures (NLopt CRS2-LM global + BOBYQA local) |
 
-## Wall-clock fairness caveat
+## Why no wall-clock comparison
 
-Only the `paraprof_*` adapters use paraprof's native MPI master/worker pool.
-The per-cell competitor adapters run their inner optimisation on the master
-rank only. This is intentional and acceptable because:
+The paper compares methods on **target-function evaluation count**, which is
+parallelisation-invariant: it doesn't matter whether one method runs in MPI
+and another runs serially. The eval count for `paraprof_default` on a 50×50
+grid is the same number whether the run takes seconds (cheap analytic
+target) or hours (expensive likelihood).
 
-1. The paper's primary metric is **target-function evaluations**, which is
-   parallelisation-invariant.
-2. Each per-cell competitor optimisation is independent and would be trivially
-   parallelisable across grid cells — the wall-clock numbers reported here
-   are upper bounds on what a parallelised port could achieve.
-
-If you need fair wall-clock numbers, extend each non-MPI adapter to run its
-per-cell loop through an MPI worker pool.
+The harness reflects this: only the `paraprof_*` adapters use paraprof's
+native MPI master/worker pool; the per-cell competitor adapters run their
+inner optimisation on the master rank only. Adding MPI to every competitor
+would change nothing about the eval-count comparison and is not done.
 
 ## Files
 
@@ -93,16 +91,17 @@ PNGs (raster).
 ## Smoke test
 
 To check the pipeline end-to-end on a tiny grid without spending the full
-budget. This skips the slow methods (`paraprof_default`, `paraprof_oracle`)
-and just confirms the harness is wired up correctly. Completes in under a
-minute.
+budget. Runs all production methods (everything except `paraprof_oracle`,
+which is a high-budget reference grid and intentionally expensive — the
+smoke synthesizes a stand-in below). Completes in well under a minute.
 
 ```bash
-# 1. Run six fast methods on a single 5x5 projection
+# 1. Run all seven production methods on a single 5x5 projection
 python -m benchmarks.external.run_comparison \
     --problems himmelblau_4d \
-    --methods scipy_de scipy_lbfgsb nlopt_crs2_bobyqa \
-              iminuit_grid iminuit_mncontour paraprof_kernel \
+    --methods paraprof_default paraprof_kernel \
+              scipy_de scipy_lbfgsb nlopt_crs2_bobyqa \
+              iminuit_grid iminuit_mncontour \
     --dims-override 0 1 \
     --grid 5 5 \
     --seeds 1 \
@@ -136,7 +135,14 @@ python -m benchmarks.external.plot_comparison
 
 Generated PDFs and PNGs land in `benchmarks/external/results/figures/`.
 
-For the real paper sweep, `paraprof_default` and `paraprof_oracle` need
-genuine MPI hardware (this harness's master-side coordination overhead is
-amortised over expensive target functions, not microsecond-cheap analytic
-test functions). Plan on overnight wall-clock on a modest cluster.
+For the real paper sweep, run step 1 with the full method list (including
+`paraprof_oracle`) and the full grid/seed settings from the table at the
+top. Replace step 2 with a real oracle build:
+
+```bash
+python -m benchmarks.external.run_comparison --build-oracles-only --mpi-ranks 4
+```
+
+A laptop is fine for analytic targets; only the oracle takes meaningful
+wall-clock time, and only because of how many evaluations it is
+deliberately configured to spend.
