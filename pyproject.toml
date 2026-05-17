@@ -72,6 +72,13 @@ docs = [
     "sphinx-autodoc-typehints>=1.22",
 ]
 
+# External-comparison harness dependencies (benchmarks/external/)
+bench-extras = [
+    "iminuit>=2.25",
+    "nlopt>=2.7",
+    "matplotlib>=3.5",
+]
+
 # All optional dependencies
 all = [
     "paraprof[viz,clustering,dev,docs]",

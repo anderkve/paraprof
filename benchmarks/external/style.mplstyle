@@ -1,0 +1,75 @@
+# ParaProf paper-comparison Matplotlib style.
+# One source of truth for all comparison figures.
+
+# --- Saving (backend is set in code, not here) ---
+savefig.dpi: 600
+savefig.format: pdf
+savefig.bbox: tight
+savefig.pad_inches: 0.02
+pdf.fonttype: 42
+
+# --- Typography ---
+font.family: serif
+font.serif: DejaVu Serif, Computer Modern Roman, Times New Roman
+font.size: 10
+mathtext.fontset: cm
+text.usetex: False
+
+axes.titlesize: 10
+axes.labelsize: 10
+xtick.labelsize: 9
+ytick.labelsize: 9
+legend.fontsize: 9
+legend.title_fontsize: 9
+figure.titlesize: 11
+figure.labelsize: 10
+
+# --- Axes & spines ---
+axes.linewidth: 0.6
+axes.edgecolor: 0.2
+axes.grid: False
+axes.spines.top: True
+axes.spines.right: True
+axes.titleweight: regular
+axes.labelweight: regular
+axes.formatter.use_mathtext: True
+axes.formatter.limits: -4, 4
+
+xtick.direction: in
+ytick.direction: in
+xtick.major.size: 3.0
+xtick.minor.size: 1.5
+ytick.major.size: 3.0
+ytick.minor.size: 1.5
+xtick.major.width: 0.5
+ytick.major.width: 0.5
+xtick.minor.width: 0.4
+ytick.minor.width: 0.4
+xtick.minor.visible: True
+ytick.minor.visible: True
+xtick.top: True
+ytick.right: True
+
+# --- Lines & markers ---
+lines.linewidth: 1.0
+lines.markersize: 4
+lines.markeredgewidth: 0.6
+
+# --- Legend ---
+legend.frameon: False
+legend.framealpha: 0.85
+legend.borderaxespad: 0.4
+legend.handlelength: 2.4
+legend.columnspacing: 1.2
+legend.labelspacing: 0.3
+
+# --- Image / heatmap defaults ---
+image.cmap: viridis
+image.origin: lower
+image.interpolation: nearest
+
+# --- Figure ---
+figure.figsize: 7.0, 4.5
+figure.constrained_layout.use: True
+figure.constrained_layout.h_pad: 0.04
+figure.constrained_layout.w_pad: 0.04

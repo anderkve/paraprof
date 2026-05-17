@@ -234,3 +234,9 @@ results_*/
 # Local sensitivity / scratch scripts (Claude Code agent)
 /_*.py
 /_*.sh
+
+# External-comparison benchmark artefacts
+benchmarks/external/results/runs/
+benchmarks/external/results/oracle/
+benchmarks/external/results/figures/
+benchmarks/benchmark_results/
