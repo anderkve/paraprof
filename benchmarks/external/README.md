@@ -93,16 +93,50 @@ PNGs (raster).
 ## Smoke test
 
 To check the pipeline end-to-end on a tiny grid without spending the full
-budget:
+budget. This skips the slow methods (`paraprof_default`, `paraprof_oracle`)
+and just confirms the harness is wired up correctly. Completes in under a
+minute.
 
 ```bash
+# 1. Run six fast methods on a single 5x5 projection
 python -m benchmarks.external.run_comparison \
     --problems himmelblau_4d \
-    --methods paraprof_oracle paraprof_default iminuit_grid scipy_de \
-              scipy_lbfgsb nlopt_crs2_bobyqa iminuit_mncontour \
-    --grid 10 10 \
+    --methods scipy_de scipy_lbfgsb nlopt_crs2_bobyqa \
+              iminuit_grid iminuit_mncontour paraprof_kernel \
+    --dims-override 0 1 \
+    --grid 5 5 \
     --seeds 1 \
-    --max-evals-per-cell 400 \
+    --max-evals-per-cell 600 \
     --mpi-ranks 4
+
+# 2. Synthesize a stand-in oracle (cell-wise max across the grid-producing
+#    methods) so the metrics + plot pipeline can run without paraprof_oracle.
+python - <<'PY'
+import json, numpy as np
+from pathlib import Path
+runs = Path("benchmarks/external/results/runs")
+arrs, template = [], None
+for p in sorted(runs.glob("*.json")):
+    d = json.load(open(p))
+    if d["method"] == "iminuit_mncontour":
+        continue
+    arrs.append(np.array(d["logL_grid"]))
+    template = d
+template["method"] = "paraprof_oracle"
+template["logL_grid"] = np.nanmax(np.stack(arrs), axis=0).tolist()
+template["extra"] = {"smoke_pseudo_oracle": True}
+out = Path("benchmarks/external/results/oracle")
+out.mkdir(parents=True, exist_ok=True)
+(out / "himmelblau_4d__dims-0_1__grid-5x5.json").write_text(json.dumps(template))
+PY
+
+# 3. Render all figures from the smoke run
 python -m benchmarks.external.plot_comparison
 ```
+
+Generated PDFs and PNGs land in `benchmarks/external/results/figures/`.
+
+For the real paper sweep, `paraprof_default` and `paraprof_oracle` need
+genuine MPI hardware (this harness's master-side coordination overhead is
+amortised over expensive target functions, not microsecond-cheap analytic
+test functions). Plan on overnight wall-clock on a modest cluster.
