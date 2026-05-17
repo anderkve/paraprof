@@ -143,6 +143,16 @@ top. Replace step 2 with a real oracle build:
 python -m benchmarks.external.run_comparison --build-oracles-only --mpi-ranks 4
 ```
 
-A laptop is fine for analytic targets; only the oracle takes meaningful
-wall-clock time, and only because of how many evaluations it is
-deliberately configured to spend.
+`paraprof_oracle` is deliberately heavy (pop=6, refinement, up to 30
+patching waves) so the reference grid is as accurate as possible. For
+smaller machines, the in-container pseudo-oracle (cell-wise max across all
+production grid methods × seeds) is a useable substitute and is exposed as
+a standalone command for the larger smoke / dev-loop sweeps:
+
+```bash
+python -m benchmarks.external.build_pseudo_oracle
+```
+
+It biases solution-quality Δ slightly toward zero for methods that win the
+per-cell max, but evals-to-ε ranking is preserved as long as multiple
+methods contribute to the max.
