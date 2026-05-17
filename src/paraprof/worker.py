@@ -16,18 +16,14 @@ TASK_TERMINATE = -1
 
 
 def _normalize_user_gradient(raw, n_dims):
-    """Normalize a user grad_func return value to a length-``n_dims`` numpy
-    array, with ``np.nan`` for missing or non-finite components.
+    """Normalize a ``grad_func`` return value to a length-``n_dims`` array,
+    with ``np.nan`` for missing or non-finite components.
 
-    Accepts either a length-``n_dims`` array-like (with NaN/inf entries
-    treated as missing) or a ``{dim_index: value}`` dict for partial
-    gradients.
+    Accepts a length-``n_dims`` array-like (NaN/inf treated as missing) or
+    a ``{dim_index: value}`` dict of known components.
 
-    Returns
-    -------
-    (array, error_msg) tuple. ``array`` is None on a hard shape/type error;
-    ``error_msg`` is a string when the worker should report a problem and
-    fall back to FD for all dims.
+    Returns ``(array, error_msg)``. ``array`` is None on a hard
+    shape/type error; the master then falls back to FD for all dims.
     """
     if raw is None:
         return None, "grad_func returned None"
@@ -37,14 +33,11 @@ def _normalize_user_gradient(raw, n_dims):
         for k, v in raw.items():
             try:
                 i = int(k)
-            except (TypeError, ValueError):
-                return None, f"grad_func dict has non-integer key {k!r}"
-            if not (0 <= i < n_dims):
-                return None, f"grad_func dict has out-of-range key {k!r}"
-            try:
                 val = float(v)
             except (TypeError, ValueError):
-                return None, f"grad_func dict has non-numeric value at key {k!r}"
+                return None, f"grad_func dict has bad entry {k!r}: {v!r}"
+            if not (0 <= i < n_dims):
+                return None, f"grad_func dict has out-of-range key {k!r}"
             if np.isfinite(val):
                 out[i] = val
         return out, None
@@ -56,13 +49,10 @@ def _normalize_user_gradient(raw, n_dims):
 
     if arr.size != n_dims:
         return None, (
-            f"grad_func returned array of size {arr.size}, "
-            f"expected {n_dims}"
+            f"grad_func returned array of size {arr.size}, expected {n_dims}"
         )
 
-    # Non-finite entries (NaN/inf) become NaN sentinels for "missing".
-    arr = np.where(np.isfinite(arr), arr, np.nan)
-    return arr, None
+    return np.where(np.isfinite(arr), arr, np.nan), None
 
 
 def worker_main(comm, myrank, target_func=None, grad_func=None):
@@ -82,22 +72,19 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
         function is already available on every rank (e.g. when integrating
         into a host framework whose evaluation entry point cannot be pickled).
     grad_func : callable, optional
-        Pre-supplied user gradient function. If ``None`` and the master's
-        broadcast payload is a ``(target_func, grad_func)`` tuple, the worker
-        picks ``grad_func`` up from the broadcast. Workers only call
-        ``grad_func(params)`` when the master sets ``context['compute_gradient']``
-        on a task. ``grad_func(params)`` must return either a length-``n_dims``
-        array (NaN allowed for unknown components) or a
-        ``{dim_index: value}`` dict of known components. Sign convention:
-        gradient of the function being **maximized** (i.e. ``∇target_func``).
+        User gradient of ``target_func`` (sign: ∇target_func, the function
+        being MAXIMIZED). Only called when the master sets
+        ``context['compute_gradient']`` on a task. Must return either a
+        length-``n_dims`` array (NaN for unknown components) or a
+        ``{dim_index: value}`` dict. If ``None`` and the master broadcasts
+        a ``(target_func, grad_func)`` tuple, the worker picks it up
+        from the broadcast.
     """
     logger = setup_logger(rank=myrank)
 
     if target_func is None:
-        # Receive the target function (and optionally grad_func) from the master.
-        # Two wire formats are accepted for backwards compatibility:
-        #   - bare callable: legacy, no user gradient
-        #   - (target_func, grad_func) tuple: new, grad_func may be None
+        # Accept both the legacy bare-callable broadcast and the new
+        # (target_func, grad_func) tuple form.
         payload = comm.bcast(None, root=0)
         if (isinstance(payload, tuple) and len(payload) == 2
                 and (payload[0] is None or callable(payload[0]))):
@@ -141,21 +128,17 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
                 )
                 target_val = -np.inf
 
-        # Optionally evaluate the user gradient at the same point. Only run
-        # when the master explicitly asks (context['compute_gradient']) and
-        # the target evaluation itself did not fail — a failed target_val
-        # tells us nothing useful about the gradient.
+        # Skip grad_func if the target eval failed — gradient at a bad point
+        # is meaningless.
         user_gradient = None
         user_gradient_error = None
-        compute_gradient = bool(context.get('compute_gradient', False))
-        if compute_gradient and grad_func is not None and error_message is None:
+        if (context.get('compute_gradient') and grad_func is not None
+                and error_message is None):
             try:
-                raw = grad_func(params)
                 user_gradient, user_gradient_error = _normalize_user_gradient(
-                    raw, len(params)
+                    grad_func(params), len(params)
                 )
             except Exception as e:
-                user_gradient = None
                 user_gradient_error = f"{type(e).__name__}: {e}"
             if user_gradient_error:
                 logger.warning(

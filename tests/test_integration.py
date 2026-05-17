@@ -70,10 +70,7 @@ RUNNER = textwrap.dedent("""
 """)
 
 
-# Runner for the user-gradient feature. Uses a sphere objective with an
-# analytic gradient and a 4D parameter space. Runs the same projection
-# twice (with and without grad_func) and compares target-call counts and
-# the savings counter.
+# 4-D sphere runner: with/without grad_func, same projection.
 USER_GRAD_RUNNER = textwrap.dedent("""
     import json
     import sys
@@ -93,8 +90,7 @@ USER_GRAD_RUNNER = textwrap.dedent("""
         return -float(np.sum(np.asarray(p) ** 2))
 
     def grad(p):
-        # Gradient of the function being MAXIMIZED.
-        return -2.0 * np.asarray(p)
+        return -2.0 * np.asarray(p)  # ∇target (function being MAXIMIZED)
 
     use_grad = sys.argv[1] == 'with_grad'
     bounds = np.array([[-5.0, 5.0]] * 4)
@@ -115,21 +111,18 @@ USER_GRAD_RUNNER = textwrap.dedent("""
             max_patching_waves=2,
             lbfgsb_max_iter=15,
         ) as sampler:
-            # New tuple broadcast form, picked up by worker_main on both
-            # backwards-compatible code paths.
             comm.bcast((sampler.target_func, sampler.grad_func), root=0)
             run_all_projections(
                 comm=comm, sampler=sampler, projections=projections,
                 save_plots=False, myrank=rank,
             )
-            payload = {
+            print('RESULT', json.dumps({
                 'use_grad': use_grad,
                 'calls': sampler.target_calls,
                 'saved': sampler.target_calls_saved_by_user_gradient,
                 'grad_errors': sampler.user_gradient_errors,
                 'max_logL': float(sampler.global_max_target_val),
-            }
-            print('RESULT', json.dumps(payload), flush=True)
+            }), flush=True)
         terminate_workers(comm, rank)
     else:
         worker_main(comm, rank)
@@ -205,19 +198,15 @@ def test_end_to_end_scan(method):
 
 
 def test_user_gradient_cuts_target_calls():
-    """User-supplied analytic gradient reduces target-function calls and
-    increments the savings counter, while finding the same maximum."""
+    """grad_func cuts target calls and reaches the same maximum."""
     baseline = _run_runner(USER_GRAD_RUNNER, 'no_grad')
     with_grad = _run_runner(USER_GRAD_RUNNER, 'with_grad')
 
-    # Baseline: no grad_func plumbing was used.
     assert baseline['use_grad'] is False
     assert baseline['saved'] == 0
     assert baseline['grad_errors'] == 0
     assert baseline['calls'] > 0
 
-    # With grad_func: we saved at least some FD calls and ended at the same
-    # maximum (the origin, where the sphere objective is 0).
     assert with_grad['use_grad'] is True
     assert with_grad['saved'] > 0
     assert with_grad['grad_errors'] == 0
