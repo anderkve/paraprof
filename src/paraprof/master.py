@@ -34,21 +34,15 @@ def _log_worker_error(result, sampler, logger):
 
 
 def _log_user_gradient_error(result, sampler, logger):
-    """Log a user-gradient-specific error reported by a worker, if any.
-
-    Returns True if an error was reported. These errors are tracked
-    separately from target-function failures and do NOT abort the job —
-    paraprof falls back to FD for the affected gradient.
-    """
+    """Log a grad_func error; paraprof falls back to FD for the affected dims."""
     err = result.get('user_gradient_error') if isinstance(result, dict) else None
     if not err:
         return False
     sampler.user_gradient_errors += 1
     worker_rank = result.get('context', {}).get('worker_rank', '?')
-    params = result.get('params')
     logger.warning(
-        f"Worker {worker_rank} grad_func failure at params {params}: {err} "
-        f"(falling back to finite differences; total: {sampler.user_gradient_errors})"
+        f"Worker {worker_rank} grad_func failure at params {result.get('params')}: "
+        f"{err} (falling back to FD; total: {sampler.user_gradient_errors})"
     )
     return True
 
@@ -285,10 +279,7 @@ def run_scan(comm, sampler, projections,
         Per-projection results, as returned by :func:`run_all_projections`.
     """
     if broadcast_target_func:
-        # Send target_func and (optional) user grad_func together. The
-        # worker accepts both this tuple form and the legacy bare-callable
-        # form, so manual scripts that broadcast sampler.target_func
-        # directly continue to work.
+        # Tuple form; worker also accepts the legacy bare-callable form.
         comm.bcast((sampler.target_func, sampler.grad_func), root=myrank)
 
     results = run_all_projections(

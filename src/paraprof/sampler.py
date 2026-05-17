@@ -520,12 +520,7 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
-        # Bookkeeping for the user-gradient feature. Both are cumulative
-        # across all projections in a scan. ``target_calls_saved_*`` counts
-        # the FD target evaluations that were skipped because the user
-        # provided that gradient component; ``user_gradient_errors`` counts
-        # worker-side grad_func failures or shape mismatches that caused us
-        # to fall back to FD.
+        # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
         self.global_max_target_val = -np.inf
