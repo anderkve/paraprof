@@ -1,58 +1,52 @@
-"""
-L-BFGS-B optimization job for asynchronous gradient-based optimization.
-"""
+"""L-BFGS-B optimization job for asynchronous gradient-based optimization."""
 import numpy as np
 import collections
 from .base import Job
 
 
 class LBFGSBJob(Job):
-    """
-    A self-contained job for running an asynchronous L-BFGS-B optimization.
-    This single class handles all the logic for initial fitness evaluation,
-    gradient calculation, line searching, and history updates.
+    """Self-contained async L-BFGS-B run (initial eval, gradient, line search, history).
 
-    For LBFGSB jobs, it includes logic to test a neighbor's parameters
-    and seed the Hessian (s_hist, y_hist) from a converged neighbor.
+    For grid-anchored LBFGSB jobs the run starts with a neighbor-test
+    step: if a converged neighbor has better fitness at our cell, we
+    adopt its params and seed the (s, y) history from its optimizer state.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
 
         super().__init__(job_id, job_type, sampler)
 
-        # L-BFGS-B parameters from sampler
         self.lbfgsb_ftol = sampler.lbfgsb_ftol
         self.lbfgsb_max_iter = sampler.lbfgsb_max_iter
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
-        # Piggyback compute_gradient=True on value-evaluating tasks when set.
+        # When True we piggyback compute_gradient=True on value-evaluating tasks.
         self.has_user_grad = sampler.grad_func is not None
 
-        # Job-specific state
         self.grid_idx = grid_idx
-        self.opt_dims = opt_dims # Dimensions to optimize (relative to full params)
+        self.opt_dims = opt_dims
         self.n_opt_dims = len(opt_dims)
 
-        # start_params are the *partial* parameters corresponding to opt_dims
+        # start_params are the partial parameters corresponding to opt_dims;
+        # start_params_full is the full vector for the initial eval.
         self.start_params_partial = start_params
-        self.start_params_full = start_params_full # Full params for *initial* eval
-        self.start_fitness = start_fitness # The fitness of start_params_partial
-        self.improvement = 0.0 # For patching
+        self.start_params_full = start_params_full
+        self.start_fitness = start_fitness
+        self.improvement = 0.0
 
-        # L-BFGS-B internal state
         if self.type == 'LBFGSB':
             self.status = 'NEEDS_NEIGHBOR_TEST'
-            self.fallback_params = self.start_params_partial # Own best params
+            self.fallback_params = self.start_params_partial
         else:
             self.status = 'NEEDS_INITIAL_F'
 
         self.current_params = self.start_params_partial
-        self.current_fitness = -np.inf # Likelihood value (maximization)
-        self.current_objective = np.inf # Objective function value (minimization)
+        self.current_fitness = -np.inf   # likelihood (maximize)
+        self.current_objective = np.inf  # objective = -likelihood (minimize)
 
         self.gradient_components = {}
         self.pending_grad_evals = 0
         self.current_gradient = None
-        # Sliced-to-opt-dims user gradient in objective frame; NaN = "use FD".
+        # User gradient sliced to opt_dims, in the objective frame; NaN = "use FD".
         self._user_grad_opt = None
 
         self.s_hist = collections.deque(maxlen=10)
@@ -62,8 +56,6 @@ class LBFGSBJob(Job):
             self.y_hist.extend(seed_history['y'])
 
         self.iteration = 0
-
-        # Pre-allocate array for epsilon calculations (performance optimization)
         self._eps_array = np.empty(self.n_opt_dims)
 
         self.search_direction = None
@@ -71,46 +63,32 @@ class LBFGSBJob(Job):
         self.pending_s_k = None
         self.pending_g_old = None
 
-        # For neighbor test
         self.neighbor_params_to_test = None
 
     def _get_full_params(self, partial_params):
-        """Constructs full parameters from partial optimization parameters."""
+        """Build full params from the opt-dim slice (passthrough for global opt)."""
         if self.grid_idx is None:
-            # Global optimization: partial_params are already full_params
             return partial_params
-        else:
-            # Grid-anchored optimization
-            return self.sampler._construct_params(self.grid_idx, partial_params)
+        return self.sampler._construct_params(self.grid_idx, partial_params)
 
     def _get_partial_params_from_full(self, full_params):
-        """Extracts optimization parameters from a full parameter vector."""
+        """Slice a full parameter vector down to opt_dims."""
         return full_params[list(self.opt_dims)]
 
     def _construct_full_params_for_task(self, partial_params_to_eval):
-        """
-        Creates the full parameter vector for a task, handling
-        global (grid_idx=None) vs grid-anchored optimization.
-        """
+        """Full bounded parameter vector for a worker task (global or grid-anchored)."""
         if self.grid_idx is None:
-            # Global optimization: partial_params_to_eval is the full vector
-            # We must ensure it's bounded.
             return self.sampler._ensure_bounds(partial_params_to_eval, self.opt_dims)
-        else:
-            # Grid-anchored: partial_params_to_eval is *only* the profiled dims
-            # We must ensure *they* are bounded.
-            bounded_partial = self.sampler._ensure_bounds(
-                partial_params_to_eval,
-                self.sampler.profiled_dims
-            )
-            return self.sampler._construct_params(self.grid_idx, bounded_partial)
+        bounded_partial = self.sampler._ensure_bounds(
+            partial_params_to_eval, self.sampler.profiled_dims,
+        )
+        return self.sampler._construct_params(self.grid_idx, bounded_partial)
 
 
     def start(self):
-        """Returns the first task(s) for the job."""
-        # Safety check: if there are no dimensions to optimize, finish immediately.
-        # The master loop has a defensive cleanup for this case; log a warning so
-        # any future caller that hits this path is visible rather than silent.
+        """Return the first task(s) for this job."""
+        # The master loop also defensively cleans up zero-opt-dim jobs, but
+        # warn here so any future caller hitting this path is visible.
         if self.n_opt_dims == 0:
             self.sampler.logger.warning(
                 f"LBFGSBJob {self.id} ({self.type}) created with zero opt_dims; "
@@ -204,7 +182,6 @@ class LBFGSBJob(Job):
             new_tasks = self._calculate_gradient_tasks(user_grad_full=user_grad_for_current)
 
         elif self.status == 'NEEDS_INITIAL_F' and sub_type == 'LBFGS_INITIAL_F':
-            # Came here from global opt or optimization with no neighbors
             self.current_fitness = result['target_val']
             self.current_objective = -self.current_fitness
             self.current_params = self._get_partial_params_from_full(result['params'])
@@ -213,15 +190,9 @@ class LBFGSBJob(Job):
             new_tasks = self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
 
         elif self.status == 'NEEDS_GRADIENT' and sub_type == 'LBFGS_GRADIENT':
-            # This method will collect gradient components and,
-            # when complete, calculate the search direction and return line search tasks.
             new_tasks = self._process_gradient_result(result)
 
         elif self.status == 'NEEDS_LINE_SEARCH' and sub_type == 'LBFGS_LINE_SEARCH':
-            # This method will check Armijo, and either
-            # 1. Accept step, calc new gradient (returns gradient tasks)
-            # 2. Reject step, reduce alpha (returns new line search task)
-            # 3. Fail (returns no tasks, sets status to FINISHED)
             new_tasks = self._process_line_search_result(result)
 
         return new_tasks
@@ -307,28 +278,24 @@ class LBFGSBJob(Job):
 
         self.current_gradient = grad
 
-        # --- History update (if pending from line search) ---
         if self.pending_s_k is not None:
             s_k = self.pending_s_k
             g_old = self.pending_g_old
             g_new = self.current_gradient
             y_k = g_new - g_old
-            # Wolfe/relative curvature condition: require y·s to be a
-            # meaningful fraction of ||y||*||s||, not just > tiny absolute.
+            # Wolfe/relative curvature: require y·s to be a meaningful fraction
+            # of ||y||*||s||, not just > a tiny absolute threshold.
             ys = float(np.dot(y_k, s_k))
             yn = float(np.linalg.norm(y_k))
             sn = float(np.linalg.norm(s_k))
             if ys > 1e-10 * max(yn * sn, 1e-30):
                 self.s_hist.append(s_k)
                 self.y_hist.append(y_k)
-            # Clear pending
             self.pending_s_k = None
             self.pending_g_old = None
-        # --- End History update ---
 
-        # --- L-BFGS two-loop recursion to find search direction ---
-        # Pairs that fail the curvature condition are skipped defensively
-        # so that a degenerate dot product can never produce inf/nan rho.
+        # L-BFGS two-loop recursion. Pairs failing the curvature condition are
+        # skipped so a degenerate dot product can't produce inf/nan rho.
         q = grad
         a = []
         usable_pairs = []
@@ -361,23 +328,18 @@ class LBFGSBJob(Job):
 
         self.search_direction = -z
         self.status = 'NEEDS_LINE_SEARCH'
-        self.line_search_alpha = 1.0 # Reset for new line search
+        self.line_search_alpha = 1.0
 
-        # Return a new task for the first step of the line search
         return [self._calculate_line_search_task()]
 
     def _calculate_line_search_task(self):
-        """Generates the next task for a backtracking line search."""
+        """Next task for the backtracking line search."""
         alpha = self.line_search_alpha
-        x = self.current_params
-        d = self.search_direction
-        x_new = x + alpha * d
-
-        # We must construct the *full* params for the task
+        x_new = self.current_params + alpha * self.search_direction
         full_params_new = self._construct_full_params_for_task(x_new)
 
-        # Piggyback the gradient request on every attempt; rejected steps
-        # waste a grad_func call but accepted ones save an FD round.
+        # Piggyback grad_func on every attempt; rejected steps waste a
+        # grad call but accepted ones save an FD round.
         context = {
             'type': self.type,
             'job_id': self.id,
@@ -388,8 +350,8 @@ class LBFGSBJob(Job):
         return {'params': full_params_new, 'context': context}
 
     def _process_line_search_result(self, result):
-        """Processes a line search result and determines the next step."""
-        f_new = -result['target_val'] # Objective value
+        """Handle a line-search result; accept, shrink alpha, or fail."""
+        f_new = -result['target_val']
         alpha = result['context']['alpha']
 
         x_old = self.current_params
@@ -398,70 +360,57 @@ class LBFGSBJob(Job):
         d = self.search_direction
         c1 = 1e-4
 
-        # Re-calculate x_new based on alpha
         x_new = x_old + alpha * d
 
-        opt_indices = self.opt_dims
-        if self.grid_idx is not None:
-            opt_indices = self.sampler.profiled_dims
+        opt_indices = self.sampler.profiled_dims if self.grid_idx is not None else self.opt_dims
 
         x_new_bounded = self.sampler._ensure_bounds(x_new, opt_indices)
 
-        # Armijo condition check
+        # Armijo condition
         if f_new <= f_old + c1 * alpha * np.dot(g_old, x_new_bounded - x_old):
-            # Step accepted, move to the next L-BFGS iteration
             self.iteration += 1
 
-            # Check for convergence
             if self.iteration >= self.lbfgsb_max_iter or np.abs(f_old - f_new) < self.lbfgsb_ftol:
                 self.status = 'FINISHED'
                 self._is_finished = True
                 self.success = True
-                self.current_params = x_new_bounded # Save final params
-                self.current_fitness = -f_new       # Save final fitness
-                return [] # Job is done
+                self.current_params = x_new_bounded
+                self.current_fitness = -f_new
+                return []
 
-            # --- Not converged, prepare for next iteration ---
-
-            # Store s_k and g_old so we can update history *after* new gradient is computed
+            # Stash s_k and g_old so history is updated only after the next
+            # gradient eval lands.
             self.pending_s_k = x_new_bounded - x_old
             self.pending_g_old = g_old
 
-            # Update state for next iteration
             self.current_params = x_new_bounded
             self.current_fitness = -f_new
             self.current_objective = f_new
 
-            # The accepted line-search step may already carry grad_func at
-            # x_new (piggybacked on the task); FD then runs only for dims
-            # the user did not supply.
             self.status = 'NEEDS_GRADIENT'
             return self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
 
-        else:
-            # Step not accepted, reduce alpha and try again
-            self.line_search_alpha *= 0.5
-            if self.line_search_alpha < 1e-10: # Failsafe
-                self.status = 'FINISHED'
-                self._is_finished = True
-                self.success = False # Line search failed
-                return [] # Job is done
+        # Step rejected: shrink alpha and retry; bail out if it underflows.
+        self.line_search_alpha *= 0.5
+        if self.line_search_alpha < 1e-10:
+            self.status = 'FINISHED'
+            self._is_finished = True
+            self.success = False
+            return []
 
-            return [self._calculate_line_search_task()]
+        return [self._calculate_line_search_task()]
 
     def on_finish(self, next_job_id):
-        """Finalize a job, updating the sampler state."""
+        """Finalize the job and write the result back to the sampler state."""
 
         if self.success:
-            # For patching, record the improvement
             self.improvement = self.current_fitness - self.start_fitness
-
-        if not self.success:
-            # For optimization, if it fails, set status back to 'converged'
-            # so it can be picked up by patching later.
+        else:
+            # Failed cell-anchored optimization: keep the cell as 'converged'
+            # so patching can pick it up later.
             if self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB'] and self.grid_idx in self.sampler.population:
                 self.sampler.population[self.grid_idx]['status'] = 'converged'
-            return None # Don't record failed jobs
+            return None
 
         if self.type == 'INITIAL_OPTIMIZATION':
             final_params = self._construct_full_params_for_task(self.current_params)
@@ -471,7 +420,6 @@ class LBFGSBJob(Job):
             if final_target_val > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = final_target_val
 
-            # Update global solution pool with discovered maximum
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
         elif self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB']:
@@ -479,35 +427,26 @@ class LBFGSBJob(Job):
             if grid_idx in self.sampler.population:
                 state = self.sampler.population[grid_idx]
                 state['optimizer_state'] = {'s': list(self.s_hist), 'y': list(self.y_hist)}
+                # LBFGSB_LOOP cells stay 'converged' so dynamic activation can
+                # re-promote them; everything else terminates at 'optimized'.
+                state['status'] = 'converged' if self.type == 'LBFGSB_LOOP' else 'optimized'
 
-                # For LBFGSB_LOOP, mark as 'converged' to enable dynamic activation
-                # For others, mark as 'optimized' (final state)
-                if self.type == 'LBFGSB_LOOP':
-                    state['status'] = 'converged'
-                else:
-                    state['status'] = 'optimized'
-
-                # Update the best individual with the optimized result
                 if self.current_fitness > state['best_fitness']:
-                     state['best_fitness'] = self.current_fitness
-                     best_idx = np.argmax(state['fitnesses'])
-                     state['profiled_params'][best_idx] = self.current_params
-                     state['fitnesses'][best_idx] = self.current_fitness
-                     self.sampler.profile_likelihood_grid[self.grid_idx] = self.current_fitness
+                    state['best_fitness'] = self.current_fitness
+                    best_idx = np.argmax(state['fitnesses'])
+                    state['profiled_params'][best_idx] = self.current_params
+                    state['fitnesses'][best_idx] = self.current_fitness
+                    self.sampler.profile_likelihood_grid[self.grid_idx] = self.current_fitness
 
-                     if self.current_fitness > self.sampler.global_max_target_val:
-                         self.sampler.global_max_target_val = self.current_fitness
+                    if self.current_fitness > self.sampler.global_max_target_val:
+                        self.sampler.global_max_target_val = self.current_fitness
 
-                     # Update global solution pool with optimized solution
-                     # Construct full parameter vector for the pool
-                     full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
-                     self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
+                    full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
+                    self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
 
         elif self.type == 'REFINEMENT_LBFGSB':
-            # For refinement, we create a new population entry directly (no prior DE)
+            # Refinement cells skip DE and get a minimal population state here.
             grid_idx = self.grid_idx
-
-            # Create a minimal population state for this grid point
             self.sampler.population[grid_idx] = {
                 'profiled_params': np.array([self.current_params]),
                 'fitnesses': np.array([self.current_fitness]),
@@ -515,18 +454,13 @@ class LBFGSBJob(Job):
                 'status': 'optimized',
                 'improvement_history': [],
                 'last_update_gen': 0,
-                'optimizer_state': {'s': list(self.s_hist), 'y': list(self.y_hist)}
+                'optimizer_state': {'s': list(self.s_hist), 'y': list(self.y_hist)},
             }
-
-            # Update profile likelihood grid
             self.sampler.profile_likelihood_grid[grid_idx] = self.current_fitness
-
-            # Update global maximum if needed
             if self.current_fitness > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = self.current_fitness
 
-            # Update global solution pool
             full_params = self.sampler._construct_params(grid_idx, self.current_params)
             self.sampler._update_global_pool(full_params, self.current_fitness, grid_idx)
 
-        return None # This job doesn't spawn children
+        return None
