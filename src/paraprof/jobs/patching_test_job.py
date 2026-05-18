@@ -1,18 +1,10 @@
-"""
-Patching test job for wave-based patching verification.
-"""
+"""Patching test job for wave-based patching verification."""
 import numpy as np
 from .base import Job
 
 
 class PatchingTestJob(Job):
-    """
-    A job to test whether a grid point can be improved using
-    profiled parameters from a neighbor.
-
-    This is used in wave-based patching to systematically verify
-    that each grid point has found the best solution.
-    """
+    """Test whether a grid point improves when using a neighbor's profiled params."""
     def __init__(self, job_id, sampler, grid_idx, test_profiled_params,
                  wave_number):
         super().__init__(job_id, 'PATCHING_TEST', sampler)

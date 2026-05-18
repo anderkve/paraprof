@@ -1,13 +1,10 @@
-"""
-Grid interpolation utilities for refinement runs.
-"""
+"""Grid interpolation utilities for refinement runs."""
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from .logger import get_logger
 
 logger = get_logger()
 
-# Check if scikit-learn is available for clustering
 try:
     from sklearn.cluster import DBSCAN, AgglomerativeClustering
     from sklearn.preprocessing import StandardScaler
@@ -19,30 +16,14 @@ except ImportError:
 
 
 class GridInterpolator:
-    """
-    Interpolates profiled parameter values from a coarse grid solution
-    to predict good starting points for a refined grid.
+    """Interpolate coarse-grid profiled-param values to seed a refined-grid run.
 
-    This class creates separate interpolators for each profiled parameter
-    dimension, allowing prediction of optimal profiled parameters at any
-    point in the projection space.
+    Builds one RegularGridInterpolator per profiled dimension over the
+    sparse coarse solution. Takes the dict returned by
+    ``ProfileProjector.export_grid_solution()``.
     """
 
     def __init__(self, coarse_grid_solution):
-        """
-        Initializes the interpolator from a coarse grid solution.
-
-        Parameters
-        ----------
-        coarse_grid_solution : dict
-            Dictionary returned by ProfileProjector.export_grid_solution()
-            containing:
-            - 'grid_axes': List of arrays defining grid coordinates
-            - 'projection_dims': List of projection dimension indices
-            - 'profiled_dims': List of profiled dimension indices
-            - 'solutions': Dict mapping grid_idx -> solution dict
-            - 'grid_shape': Tuple of grid dimensions
-        """
         self.grid_axes = coarse_grid_solution['grid_axes']
         self.projection_dims = coarse_grid_solution['projection_dims']
         self.profiled_dims = coarse_grid_solution['profiled_dims']
@@ -67,74 +48,45 @@ class GridInterpolator:
 
 
     def _build_interpolators(self):
-        """
-        Constructs RegularGridInterpolator objects for each profiled parameter.
-
-        For each profiled dimension, creates a dense grid of values from the
-        sparse coarse solution, then builds an interpolator.
-        """
+        """Build one RegularGridInterpolator per profiled-param dimension."""
         self.interpolators = []
-
         if self.n_prof_dims == 0:
-            # No profiled dimensions to interpolate
             return
 
-        # For each profiled parameter dimension
         for prof_dim_idx in range(self.n_prof_dims):
-            # Create a dense grid filled with NaN
             values_grid = np.full(self.grid_shape, np.nan)
-
-            # Fill in the known values from coarse solutions
             for grid_idx, solution in self.solutions.items():
-                profiled_params = solution['profiled_params']
-                values_grid[grid_idx] = profiled_params[prof_dim_idx]
+                values_grid[grid_idx] = solution['profiled_params'][prof_dim_idx]
 
-            # Check if we have enough data for interpolation
-            valid_mask = ~np.isnan(values_grid)
-            n_valid = np.sum(valid_mask)
+            n_valid = int(np.sum(~np.isnan(values_grid)))
 
             if n_valid == 0:
                 logger.warning(f" No valid data for profiled dim {prof_dim_idx}. "
-                      f"Interpolator will return NaN.")
-                # Create dummy interpolator that returns NaN
+                               f"Interpolator will return NaN.")
                 interpolator = None
             elif n_valid < 2**self.n_proj_dims:
                 logger.warning(f" Sparse data ({n_valid} points) for profiled dim {prof_dim_idx}. "
-                      f"Using nearest neighbor interpolation.")
-                # Nearest with fill_value=None extrapolates to the nearest grid value,
-                # which is the desired behaviour for sparse data.
+                               f"Using nearest neighbor interpolation.")
                 interpolator = RegularGridInterpolator(
-                    self.grid_axes,
-                    values_grid,
-                    method='nearest',
-                    bounds_error=False,
-                    fill_value=None
+                    self.grid_axes, values_grid,
+                    method='nearest', bounds_error=False, fill_value=None,
                 )
             else:
-                # Use linear interpolation; out-of-bounds queries return NaN so
-                # that downstream code can detect them instead of receiving a
-                # linearly extrapolated (unbounded) value. Callers clip query
-                # points to the grid via _clip_to_grid below.
+                # fill_value=NaN so callers can detect out-of-bounds; we clip
+                # query points to the grid in _clip_to_grid first.
                 interpolator = RegularGridInterpolator(
-                    self.grid_axes,
-                    values_grid,
-                    method='linear',
-                    bounds_error=False,
-                    fill_value=np.nan
+                    self.grid_axes, values_grid,
+                    method='linear', bounds_error=False, fill_value=np.nan,
                 )
 
             self.interpolators.append(interpolator)
 
 
     def _clip_to_grid(self, coords):
-        """Clip query coordinates into the closed grid domain.
+        """Clip query coordinates into the grid domain.
 
-        scipy's linear RegularGridInterpolator with fill_value=None
-        extrapolates linearly outside the grid, which can produce wildly wrong
-        values for profile likelihoods or profiled parameters. Clipping every
-        query to the grid edges gives nearest-neighbour behaviour at and
-        beyond the boundary, which is the conservative choice the original
-        code intended.
+        Linear RegularGridInterpolator extrapolates wildly outside the
+        grid; clipping forces nearest-neighbour behaviour at the boundary.
         """
         coords = np.asarray(coords, dtype=float).copy()
         for i, axis in enumerate(self.grid_axes):
@@ -143,77 +95,36 @@ class GridInterpolator:
 
 
     def interpolate(self, projection_coords):
-        """
-        Interpolates profiled parameter values at given projection coordinates.
-
-        Parameters
-        ----------
-        projection_coords : array-like
-            Coordinates in projection space, shape (n_proj_dims,)
-
-        Returns
-        -------
-        np.ndarray or None
-            Interpolated profiled parameter values, shape (n_prof_dims,)
-            Returns None if no profiled dimensions exist
-        """
+        """Interpolated profiled params at the given projection coords, or None."""
         if self.n_prof_dims == 0:
             return None
 
         projection_coords = self._clip_to_grid(np.asarray(projection_coords))
-
-        # Ensure projection_coords is in the right shape for interpolation
-        # RegularGridInterpolator expects shape (n_points, n_dims)
         coords_for_interp = projection_coords.reshape(1, -1)
 
         interpolated_params = np.zeros(self.n_prof_dims)
-
         for i, interpolator in enumerate(self.interpolators):
             if interpolator is None:
-                # No valid data, return NaN
                 interpolated_params[i] = np.nan
-            else:
-                try:
-                    interpolated_params[i] = interpolator(coords_for_interp)[0]
-                except Exception as e:
-                    logger.warning(f"Warning: Interpolation failed for profiled dim {i}: {e}")
-                    interpolated_params[i] = np.nan
+                continue
+            try:
+                interpolated_params[i] = interpolator(coords_for_interp)[0]
+            except Exception as e:
+                logger.warning(f"Warning: Interpolation failed for profiled dim {i}: {e}")
+                interpolated_params[i] = np.nan
 
         return interpolated_params
 
 
     def get_interpolated_likelihood(self, projection_coords):
-        """
-        Interpolates the likelihood value at given projection coordinates.
-
-        Uses a cached interpolator for efficiency when called multiple times.
-
-        Parameters
-        ----------
-        projection_coords : array-like
-            Coordinates in projection space, shape (n_proj_dims,)
-
-        Returns
-        -------
-        float
-            Interpolated likelihood value
-        """
-        # Build likelihood interpolator on first use and cache it
+        """Interpolated likelihood at given projection coords. Lazily built and cached."""
         if self._likelihood_interpolator is None:
             likelihood_grid = np.full(self.grid_shape, np.nan)
-
             for grid_idx, solution in self.solutions.items():
                 likelihood_grid[grid_idx] = solution['likelihood']
-
-            # Create interpolator for likelihood. Out-of-bounds queries return
-            # NaN; without this, scipy linearly extrapolates and can produce
-            # arbitrarily large likelihood values outside the grid.
             self._likelihood_interpolator = RegularGridInterpolator(
-                self.grid_axes,
-                likelihood_grid,
-                method='linear',
-                bounds_error=False,
-                fill_value=np.nan
+                self.grid_axes, likelihood_grid,
+                method='linear', bounds_error=False, fill_value=np.nan,
             )
 
         projection_coords = self._clip_to_grid(np.asarray(projection_coords)).reshape(1, -1)
@@ -221,32 +132,20 @@ class GridInterpolator:
 
 
     def get_coverage_fraction(self):
-        """
-        Returns the fraction of grid points that have valid solutions.
-
-        Returns
-        -------
-        float
-            Fraction of grid points with solutions (0 to 1)
-        """
+        """Fraction of grid points with valid solutions, in [0, 1]."""
         total_grid_points = np.prod(self.grid_shape)
         valid_points = len(self.solutions)
         return valid_points / total_grid_points if total_grid_points > 0 else 0.0
 
 
     def __repr__(self):
-        """String representation of the interpolator."""
         coverage = self.get_coverage_fraction()
         return (f"GridInterpolator(grid_shape={self.grid_shape}, "
                 f"n_profiled_dims={self.n_prof_dims}, "
                 f"coverage={coverage:.1%})")
 
 
-
-
-# =============================================================================
-# Clustering-Based Boundary Detection for Refinement
-# =============================================================================
+# --- Clustering-based boundary detection for refinement ---
 
 def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
                                   eps=None, min_samples=None,
@@ -254,78 +153,17 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
                                   distance_threshold=1.0, n_clusters=2,
                                   include_likelihood=False, likelihood_weight=0.1,
                                   include_projection_coords=True, projection_weight=1.0):
-    """
-    Cluster coarse grid points by their optimal profiled parameters (and optionally likelihood).
-    Each cluster represents a distinct mode/optimum being tracked in the profiled parameter space.
+    """Cluster coarse-grid cells by their optimal profiled parameters.
 
-    This clustering enables detection of discontinuity boundaries where the optimal profiled
-    parameters change abruptly, typically because optimization has switched from tracking one
-    mode to another.
+    Each cluster represents a distinct mode being tracked in profiled-param
+    space. Returns ``(cluster_labels, cluster_info, boundary_points)``:
+    ``cluster_labels`` maps grid_idx -> label (-1 = DBSCAN noise),
+    ``cluster_info`` carries sizes/centers/spreads, and ``boundary_points``
+    are cells whose neighbours sit in a different cluster.
 
-    Parameters
-    ----------
-    coarse_solution : dict
-        Exported coarse grid solution containing:
-        - 'solutions': Dict mapping grid_idx -> solution dict
-        - 'grid_shape': Tuple of grid dimensions
-        - 'grid_axes': List of arrays defining grid coordinates
-        - 'profiled_dims': List of profiled dimension indices
-        - 'projection_dims': List of projection dimension indices
-    method : str, optional
-        Clustering method: 'dbscan', 'hierarchical', or 'kmeans' (default: 'dbscan')
-    eps : float, optional
-        DBSCAN eps parameter (maximum distance for neighbors).
-        If None, auto-estimated from data (default: None)
-    min_samples : int, optional
-        DBSCAN min_samples parameter (minimum cluster size).
-        If None, defaults to max(2, n_profiled_dims) (default: None)
-    eps_multiplier : float, optional
-        Multiplier for auto-estimated DBSCAN eps (default: 3.0)
-        Higher values create fewer, larger clusters. Only used when eps=None.
-    distance_threshold : float, optional
-        Hierarchical clustering distance threshold (default: 1.0)
-    n_clusters : int, optional
-        K-means number of clusters (default: 2)
-    include_likelihood : bool, optional
-        If True, include log-likelihood as an additional feature for clustering.
-        Generally should be False (default) to cluster only by profiled parameter
-        smoothness. Likelihood is still used for selecting best cluster at boundaries.
-        (default: False)
-    likelihood_weight : float, optional
-        Relative weight for likelihood feature compared to profiled parameters.
-        Only used if include_likelihood=True (default: 0.1)
-    include_projection_coords : bool, optional
-        If True, include projection (gridded) parameter coordinates as features.
-        This provides spatial context, helping DBSCAN recognize that nearby grid points
-        with similar profiled parameters form connected clusters. Highly recommended.
-        (default: True)
-    projection_weight : float, optional
-        Relative weight for projection coordinates compared to profiled parameters.
-        Higher values emphasize spatial connectivity. (default: 1.0)
-
-    Returns
-    -------
-    cluster_labels : dict
-        Maps grid_idx (tuple) -> cluster_label (int)
-        Label -1 indicates noise points (for DBSCAN)
-    cluster_info : dict
-        Statistics and metadata about clusters:
-        - 'cluster_sizes': dict mapping cluster_id -> number of points
-        - 'cluster_centers': dict mapping cluster_id -> mean profiled params
-        - 'cluster_spreads': dict mapping cluster_id -> std profiled params
-        - 'n_noise': number of noise points (label -1)
-        - 'unique_labels': set of all cluster labels
-        - 'method': clustering method used
-    boundary_points : set
-        Grid indices (tuples) at cluster boundaries (neighbors in different clusters)
-
-    Examples
-    --------
-    >>> cluster_labels, cluster_info, boundary_points = cluster_coarse_grid_by_modes(
-    ...     coarse_solution, method='dbscan'
-    ... )
-    >>> print(f"Found {len(cluster_info['unique_labels'])} clusters")
-    >>> print(f"Boundary points: {len(boundary_points)}")
+    Including projection coords as features (the default) gives DBSCAN
+    spatial context so connected components with similar profiled params
+    are kept together.
     """
     if not HAS_SKLEARN:
         raise ImportError(
@@ -333,7 +171,6 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
             "Install with: pip install scikit-learn"
         )
 
-    # Extract features from coarse solutions
     grid_indices = []
     feature_list = []
     grid_axes = coarse_solution['grid_axes']
@@ -341,23 +178,14 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
 
     for grid_idx in sorted(coarse_solution['solutions'].keys()):
         solution = coarse_solution['solutions'][grid_idx]
-        prof_params = solution['profiled_params']
+        features = list(solution['profiled_params'])
 
-        # Start with profiled parameters
-        features = list(prof_params)
-
-        # Add projection coordinates if requested
         if include_projection_coords:
-            # Get the actual parameter values at this grid point
             proj_coords = [grid_axes[i][grid_idx[i]] for i in range(n_proj_dims)]
-            # Weight projection coordinates
-            proj_coords_weighted = [c * projection_weight for c in proj_coords]
-            features.extend(proj_coords_weighted)
+            features.extend(c * projection_weight for c in proj_coords)
 
-        # Add likelihood if requested
         if include_likelihood:
-            likelihood = solution['likelihood']
-            features.append(likelihood * likelihood_weight)
+            features.append(solution['likelihood'] * likelihood_weight)
 
         grid_indices.append(grid_idx)
         feature_list.append(np.array(features))
@@ -367,12 +195,11 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
         return {}, {}, set()
 
     features_array = np.array(feature_list)
-    n_points, n_features = features_array.shape
+    n_points, _ = features_array.shape
     n_prof_dims = len(coarse_solution['profiled_dims'])
 
     logger.info(f"Clustering {n_points} coarse grid points by modes...")
 
-    # Build feature description
     feature_desc = f"{n_prof_dims} profiled params"
     if include_projection_coords:
         feature_desc += f" + {n_proj_dims} projection coords (weight={projection_weight})"
@@ -380,74 +207,51 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
         feature_desc += f" + likelihood (weight={likelihood_weight})"
     logger.info(f"  Features: {feature_desc}")
 
-    # Normalize features for clustering (critical for stability)
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features_array)
+    features_scaled = StandardScaler().fit_transform(features_array)
 
-    # Perform clustering
     if method == 'dbscan':
-        # DBSCAN: Density-based, finds arbitrary shaped clusters, auto-determines number
         if min_samples is None:
             min_samples = max(2, n_prof_dims)
-
-        # Auto-estimate eps if not provided
         if eps is None:
             nn = NearestNeighbors(n_neighbors=min_samples)
             nn.fit(features_scaled)
             distances, _ = nn.kneighbors(features_scaled)
-
-            # Use 90th percentile as base estimate
             eps_base = np.percentile(distances[:, -1], 90)
-
-            # Apply multiplier to be more permissive
-            # This prevents over-segmentation from small variations in profiled params
-            # Default factor of 3 works well empirically - creates clusters for distinct modes
-            # while allowing smooth variation within a mode
+            # Multiplier prevents over-segmentation from small variations in
+            # profiled params; ~3 keeps distinct modes apart while letting a
+            # single mode vary smoothly.
             eps = eps_base * eps_multiplier
-
             logger.info(f"  Auto-estimated DBSCAN eps = {eps:.3f} (base: {eps_base:.3f}, multiplier: {eps_multiplier})")
 
-        clustering = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
-        labels = clustering.fit_predict(features_scaled)
+        labels = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean').fit_predict(features_scaled)
         logger.info(f"  DBSCAN parameters: eps={eps:.3f}, min_samples={min_samples}")
 
     elif method == 'hierarchical':
-        # Hierarchical clustering with distance threshold
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=distance_threshold,
-            linkage='ward'
-        )
-        labels = clustering.fit_predict(features_scaled)
+        labels = AgglomerativeClustering(
+            n_clusters=None, distance_threshold=distance_threshold, linkage='ward',
+        ).fit_predict(features_scaled)
         logger.info(f"  Hierarchical clustering: distance_threshold={distance_threshold}")
 
     elif method == 'kmeans':
-        # K-means: need to specify number of clusters
         from sklearn.cluster import KMeans
-        clustering = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
-        labels = clustering.fit_predict(features_scaled)
+        labels = KMeans(n_clusters=n_clusters, n_init=10, random_state=42).fit_predict(features_scaled)
         logger.info(f"  K-means: n_clusters={n_clusters}")
 
     else:
         raise ValueError(f"Unknown clustering method: {method}. "
                         f"Must be 'dbscan', 'hierarchical', or 'kmeans'")
 
-    # Create mapping from grid_idx to cluster label
     cluster_labels = {grid_idx: int(label) for grid_idx, label in zip(grid_indices, labels)}
 
-    # Compute cluster statistics (only on profiled params, not likelihood)
     prof_params_array = np.array([solution['profiled_params']
                                    for solution in coarse_solution['solutions'].values()])
     cluster_info = _compute_cluster_statistics(
         cluster_labels, prof_params_array, grid_indices, coarse_solution, method
     )
-
-    # Identify boundary points
     boundary_points = _identify_cluster_boundaries(
         cluster_labels, coarse_solution['grid_shape']
     )
 
-    # Log results
     n_clusters_found = len(cluster_info['cluster_sizes'])
     n_noise = cluster_info['n_noise']
     logger.info(f"Clustering complete:")
@@ -465,27 +269,7 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
 
 def _compute_cluster_statistics(cluster_labels, prof_params_array,
                                  grid_indices, coarse_solution, method):
-    """
-    Compute statistics for each cluster.
-
-    Parameters
-    ----------
-    cluster_labels : dict
-        Maps grid_idx -> cluster_label
-    prof_params_array : np.ndarray
-        Array of profiled parameters, shape (n_points, n_prof_dims)
-    grid_indices : list
-        List of grid indices (in same order as prof_params_array)
-    coarse_solution : dict
-        Coarse grid solution
-    method : str
-        Clustering method used
-
-    Returns
-    -------
-    dict
-        Cluster statistics
-    """
+    """Sizes, centers, spreads, and max-likelihood per cluster."""
     unique_labels = set(cluster_labels.values())
 
     cluster_sizes = {}
@@ -495,14 +279,11 @@ def _compute_cluster_statistics(cluster_labels, prof_params_array,
 
     for cluster_id in unique_labels:
         if cluster_id == -1:
-            continue  # Skip noise points
+            continue
 
-        # Find all points in this cluster
         mask = np.array([cluster_labels[grid_idx] == cluster_id for grid_idx in grid_indices])
         cluster_params = prof_params_array[mask]
         cluster_grid_indices = [grid_indices[i] for i, m in enumerate(mask) if m]
-
-        # Get likelihoods for this cluster
         cluster_likelihoods = [coarse_solution['solutions'][idx]['likelihood']
                                for idx in cluster_grid_indices]
 
@@ -525,213 +306,97 @@ def _compute_cluster_statistics(cluster_labels, prof_params_array,
 
 
 def _identify_cluster_boundaries(cluster_labels, grid_shape):
-    """
-    Find grid points at cluster boundaries.
-    A point is at a boundary if any neighbor belongs to a different cluster.
-
-    Parameters
-    ----------
-    cluster_labels : dict
-        Maps grid_idx -> cluster_label
-    grid_shape : tuple
-        Shape of the grid
-
-    Returns
-    -------
-    set
-        Grid indices at boundaries
-    """
+    """Grid cells with at least one neighbour in a different cluster."""
     boundary_points = set()
-
     for grid_idx, my_cluster in cluster_labels.items():
-        # Get neighbors in the grid
-        neighbors = _get_grid_neighbors(grid_idx, grid_shape)
-
-        # Check if any neighbor has a different cluster label
-        for neighbor_idx in neighbors:
-            if neighbor_idx in cluster_labels:
-                neighbor_cluster = cluster_labels[neighbor_idx]
-                if neighbor_cluster != my_cluster:
-                    # Found a boundary
-                    boundary_points.add(grid_idx)
-                    break
-
+        for neighbor_idx in _get_grid_neighbors(grid_idx, grid_shape):
+            if neighbor_idx in cluster_labels and cluster_labels[neighbor_idx] != my_cluster:
+                boundary_points.add(grid_idx)
+                break
     return boundary_points
 
 
 def _get_grid_neighbors(grid_idx, grid_shape):
-    """
-    Get valid neighbor indices in the grid (using 6-connectivity for efficiency).
-
-    Parameters
-    ----------
-    grid_idx : tuple
-        Grid index
-    grid_shape : tuple
-        Shape of the grid
-
-    Returns
-    -------
-    list
-        List of neighbor grid indices (tuples)
-    """
+    """6-connectivity in-grid neighbours of ``grid_idx``."""
     neighbors = []
-
-    # grid_idx is already a tuple, use it directly
     for dim in range(len(grid_shape)):
         for delta in [-1, +1]:
             neighbor_coords = list(grid_idx)
             neighbor_coords[dim] += delta
-
-            # Check bounds
             if 0 <= neighbor_coords[dim] < grid_shape[dim]:
                 neighbors.append(tuple(neighbor_coords))
-
     return neighbors
 
 
 def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
                                      cluster_labels, cluster_info,
                                      boundary_points, interpolator):
+    """Candidate profiled-param sets for a fine grid point, cluster-aware.
+
+    Near a cluster boundary, returns one candidate per nearby cluster
+    (via inverse-distance weighting within each cluster) plus the plain
+    interpolated candidate. Elsewhere, returns just the interpolated one.
     """
-    Get initialization parameters for a fine grid point using cluster-aware interpolation.
-
-    For fine grid points near cluster boundaries, this function extrapolates profiled
-    parameters from all nearby clusters and returns multiple candidate parameter sets
-    to be evaluated. The caller should evaluate the likelihood at each candidate and
-    select the best one.
-
-    Parameters
-    ----------
-    fine_grid_coords : array-like
-        Projection coordinates of the fine grid point, shape (n_proj_dims,)
-    coarse_solution : dict
-        Coarse grid solution
-    cluster_labels : dict
-        Maps grid_idx -> cluster_label
-    cluster_info : dict
-        Cluster statistics
-    boundary_points : set
-        Grid indices at cluster boundaries
-    interpolator : GridInterpolator
-        Interpolator for profiled parameters
-
-    Returns
-    -------
-    candidates : list of dict
-        List of candidate parameter sets. Each dict contains:
-        - 'profiled_params': np.ndarray - profiled parameter values
-        - 'cluster_id': int or None - source cluster ID
-        - 'method': str - how these params were generated
-    """
-    # Find k nearest coarse grid points
-    # Use interpolator's cached coordinates if available
     k = 6
     coords_cache = getattr(interpolator, '_coarse_coords_cache', None)
     k_nearest_indices, k_nearest_distances = _find_k_nearest_coarse_points(
         fine_grid_coords, coarse_solution, k=k, coords_cache=coords_cache
     )
 
-    # Check if any of the nearest points are at boundaries
     nearby_boundaries = [idx for idx in k_nearest_indices if idx in boundary_points]
 
     if len(nearby_boundaries) == 0:
-        # Not near a boundary - use standard interpolation
-        profiled_params = interpolator.interpolate(fine_grid_coords)
         return [{
-            'profiled_params': profiled_params,
+            'profiled_params': interpolator.interpolate(fine_grid_coords),
             'cluster_id': None,
             'method': 'interpolated'
         }]
 
-    # Near a boundary - determine which clusters are involved
-    nearby_clusters = set()
-    for idx in k_nearest_indices:
-        if idx in cluster_labels:
-            cluster_id = cluster_labels[idx]
-            if cluster_id != -1:  # Exclude noise points
-                nearby_clusters.add(cluster_id)
+    nearby_clusters = {
+        cluster_labels[idx] for idx in k_nearest_indices
+        if idx in cluster_labels and cluster_labels[idx] != -1
+    }
 
     if len(nearby_clusters) <= 1:
-        # Only one cluster nearby - use standard interpolation
-        profiled_params = interpolator.interpolate(fine_grid_coords)
         return [{
-            'profiled_params': profiled_params,
-            'cluster_id': list(nearby_clusters)[0] if nearby_clusters else None,
+            'profiled_params': interpolator.interpolate(fine_grid_coords),
+            'cluster_id': next(iter(nearby_clusters), None),
             'method': 'interpolated'
         }]
 
-    # Multiple clusters nearby - generate candidates from each cluster
-    candidates = []
-
-    # Always add interpolated version as first candidate
-    interpolated_params = interpolator.interpolate(fine_grid_coords)
-    candidates.append({
-        'profiled_params': interpolated_params,
+    candidates = [{
+        'profiled_params': interpolator.interpolate(fine_grid_coords),
         'cluster_id': None,
         'method': 'interpolated'
-    })
+    }]
 
-    # For each nearby cluster, extrapolate profiled parameters
     for cluster_id in nearby_clusters:
-        # Find all nearby coarse points in this cluster
-        cluster_points = []
         cluster_distances = []
         cluster_params = []
-
         for idx, dist in zip(k_nearest_indices, k_nearest_distances):
             if idx in cluster_labels and cluster_labels[idx] == cluster_id:
-                cluster_points.append(idx)
                 cluster_distances.append(dist)
                 cluster_params.append(coarse_solution['solutions'][idx]['profiled_params'])
 
-        if len(cluster_points) > 0:
-            # Use inverse-distance weighted average for smooth interpolation within the cluster
-            cluster_params = np.array(cluster_params)
-            cluster_distances = np.array(cluster_distances)
+        if not cluster_params:
+            continue
 
-            # Avoid division by zero for exact matches
-            cluster_distances = np.maximum(cluster_distances, 1e-10)
-
-            # Inverse distance weights
-            weights = 1.0 / cluster_distances
-            weights /= np.sum(weights)
-
-            # Weighted average
-            profiled_params = np.sum(cluster_params * weights[:, np.newaxis], axis=0)
-
-            candidates.append({
-                'profiled_params': profiled_params,
-                'cluster_id': cluster_id,
-                'method': 'cluster_extrapolated',
-                'n_points_used': len(cluster_points)
-            })
+        cluster_params = np.array(cluster_params)
+        cluster_distances = np.maximum(np.array(cluster_distances), 1e-10)
+        weights = 1.0 / cluster_distances
+        weights /= weights.sum()
+        candidates.append({
+            'profiled_params': np.sum(cluster_params * weights[:, np.newaxis], axis=0),
+            'cluster_id': cluster_id,
+            'method': 'cluster_extrapolated',
+            'n_points_used': len(cluster_params),
+        })
 
     return candidates
 
 
 def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cache=None):
-    """
-    Find k nearest coarse grid points to fine grid coordinates.
-
-    Parameters
-    ----------
-    fine_coords : array-like
-        Projection coordinates of fine grid point, shape (n_proj_dims,)
-    coarse_solution : dict
-        Coarse grid solution
-    k : int, optional
-        Number of nearest neighbors to find (default: 6)
-    coords_cache : dict, optional
-        Pre-computed coordinates cache {grid_idx: proj_coords}
-
-    Returns
-    -------
-    k_nearest_indices : list
-        List of k nearest grid indices (tuples)
-    k_nearest_distances : list
-        Corresponding distances
-    """
+    """k nearest coarse-grid cells to ``fine_coords`` as (indices, distances)."""
     coarse_coords_list = []
     coarse_indices = []
 

@@ -1,6 +1,4 @@
-"""
-MPI worker process logic.
-"""
+"""MPI worker process logic."""
 import sys
 import numpy as np
 from .logger import setup_logger
@@ -16,14 +14,11 @@ TASK_TERMINATE = -1
 
 
 def _normalize_user_gradient(raw, n_dims):
-    """Normalize a ``grad_func`` return value to a length-``n_dims`` array,
-    with ``np.nan`` for missing or non-finite components.
+    """Coerce a grad_func return value into a length-n_dims array (NaN = missing).
 
-    Accepts a length-``n_dims`` array-like (NaN/inf treated as missing) or
-    a ``{dim_index: value}`` dict of known components.
-
-    Returns ``(array, error_msg)``. ``array`` is None on a hard
-    shape/type error; the master then falls back to FD for all dims.
+    Accepts an array-like (NaN/inf -> missing) or a ``{dim_index: value}``
+    dict. Returns ``(array_or_None, error_msg)``; ``array`` is None on a
+    hard shape/type error and the master falls back to FD for every dim.
     """
     if raw is None:
         return None, "grad_func returned None"
@@ -56,29 +51,14 @@ def _normalize_user_gradient(raw, n_dims):
 
 
 def worker_main(comm, myrank, target_func=None, grad_func=None):
-    """
-    Main loop for a worker process.
+    """Main loop for a worker process.
 
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator
-    myrank : int
-        Worker rank
-    target_func : callable, optional
-        Pre-supplied target function to evaluate. If ``None`` (the default),
-        the worker waits for the master to broadcast the target function via
-        ``comm.bcast(..., root=0)``. Pass a callable here when the target
-        function is already available on every rank (e.g. when integrating
-        into a host framework whose evaluation entry point cannot be pickled).
-    grad_func : callable, optional
-        User gradient of ``target_func`` (sign: ∇target_func, the function
-        being MAXIMIZED). Only called when the master sets
-        ``context['compute_gradient']`` on a task. Must return either a
-        length-``n_dims`` array (NaN for unknown components) or a
-        ``{dim_index: value}`` dict. If ``None`` and the master broadcasts
-        a ``(target_func, grad_func)`` tuple, the worker picks it up
-        from the broadcast.
+    If ``target_func`` is None, the worker waits for ``comm.bcast`` from
+    the master; pass it directly for hosts that can't pickle the target
+    (e.g. a bound method). ``grad_func`` is the gradient of the function
+    being MAXIMIZED; the worker invokes it only when the master sets
+    ``context['compute_gradient']``. It must return a length-n_dims array
+    (NaN for unknown components) or a ``{dim_index: value}`` dict.
     """
     logger = setup_logger(rank=myrank)
 

@@ -1,39 +1,21 @@
-"""
-Test functions for benchmarking the optimization algorithm.
+"""Benchmark test functions (negated for maximization; global max value 0
+when known).
 
-This module provides a comprehensive suite of test functions with diverse
-characteristics for testing profile likelihood computations. All functions
-are negated for maximization and shifted so that the global optimum has
-a value of 0.0 (when the optimum value is known).
+Categories: unimodal (Sphere, Rosenbrock); multimodal with few peaks
+(Himmelblau, Beale, Eggholder); multimodal with many regular peaks
+(Rastrigin, Ackley, Griewank); multimodal with steep/rugged landscapes
+(Michalewicz, Styblinski-Tang, Levy, Schwefel).
 
-Function Categories
--------------------
-- Unimodal: Sphere, Rosenbrock
-- Multimodal (few peaks): Himmelblau, Beale, Eggholder
-- Multimodal (many regular peaks): Rastrigin, Ackley, Griewank
-- Multimodal (steep/rugged): Michalewicz, Styblinski-Tang, Levy, Schwefel
+Each ``*_nd`` implementation works in any supported dimension; the
+``*_2d/4d/6d/10d`` aliases are kept for convenience.
 
-Dimensionality
---------------
-Each ``*_nd`` implementation accepts a parameter vector of any supported
-dimension. Per-dimension aliases (``sphere_4d``, ``rastrigin_10d``, ...)
-are provided for backwards compatibility and convenience.
-
-References
-----------
-- Jamil, M. & Yang, X.-S. (2013). A literature survey of benchmark functions
-  for global optimization problems. Int. J. Mathematical Modelling and
-  Numerical Optimisation, 4(2), 150-194.
-- Momin, J. & Yang, X.-S. (2013). A literature survey of benchmark functions
-  for global optimization. Journal of Mathematical Modelling and Numerical
-  Optimisation, 4(2), 150-194.
+References: Jamil & Yang (2013), Int. J. Math. Modelling Numerical
+Optimisation 4(2), 150-194; Momin & Yang (2013), same journal.
 """
 import numpy as np
 
 
-# =============================================================================
-# UNIMODAL FUNCTIONS
-# =============================================================================
+# --- Unimodal ---
 
 def sphere_nd(params):
     """N-dimensional Sphere function (negated for maximization).
@@ -55,9 +37,7 @@ def rosenbrock_nd(params):
     )
 
 
-# =============================================================================
-# MULTIMODAL FUNCTIONS - FEW PEAKS
-# =============================================================================
+# --- Multimodal: few peaks ---
 
 def himmelblau_4d(params):
     """4D Himmelblau function (negated and scaled for maximization).
@@ -112,9 +92,7 @@ def eggholder_nd(params):
     return -(f_original - f_min)
 
 
-# =============================================================================
-# MULTIMODAL FUNCTIONS - MANY REGULAR PEAKS
-# =============================================================================
+# --- Multimodal: many regular peaks ---
 
 def rastrigin_nd(params):
     """N-dimensional Rastrigin function (negated for maximization).
@@ -153,9 +131,7 @@ def griewank_nd(params):
     return -(sum_sq / 4000 - prod_cos + 1)
 
 
-# =============================================================================
-# MULTIMODAL FUNCTIONS - STEEP/RUGGED LANDSCAPE
-# =============================================================================
+# --- Multimodal: steep / rugged landscape ---
 
 # Approximate Michalewicz minima (m=10) by dimension, used as a shift so the
 # global optimum is at 0. Dimensions outside this table are returned unshifted.
@@ -214,13 +190,7 @@ def schwefel_nd(params):
     return -f_original
 
 
-# =============================================================================
-# BACKWARDS-COMPATIBLE PER-DIMENSION ALIASES
-# =============================================================================
-
-# Each entry below maps the historical fixed-dimension name to the corresponding
-# dimension-agnostic implementation. The implementations dispatch on len(params)
-# internally, so the alias does not need to enforce a dimension.
+# --- Per-dimension aliases (the *_nd implementations dispatch on len(params)) ---
 
 sphere_2d = sphere_4d = sphere_6d = sphere_10d = sphere_nd
 rosenbrock_2d = rosenbrock_4d = rosenbrock_6d = rosenbrock_10d = rosenbrock_nd
@@ -235,12 +205,10 @@ levy_2d = levy_4d = levy_6d = levy_10d = levy_nd
 schwefel_2d = schwefel_4d = schwefel_6d = schwefel_10d = schwefel_nd
 
 
-# =============================================================================
-# FACTORY FUNCTION
-# =============================================================================
+# --- Factory function ---
 
 def _make_uniform_registry(prefix, func, bounds, peak_value, dims=(2, 4, 6, 10)):
-    """Build registry entries for a family with uniform bounds and a single peak."""
+    """Registry entries for a function family with uniform bounds and a single peak."""
     return {
         f"{prefix}_{n}d": (func, bounds, [np.full(n, peak_value)])
         for n in dims
@@ -306,23 +274,11 @@ def list_test_functions():
 
 
 def get_test_function(name):
-    """
-    Factory function to get a test likelihood, its bounds, and true peaks.
+    """Look up a registered test function by name.
 
-    Parameters
-    ----------
-    name : str
-        Name of the test function. Format: "function_Nd" where N is dimension.
-        Examples: "sphere_2d", "rastrigin_4d", "eggholder_6d".
-
-    Returns
-    -------
-    func : callable
-        The test function.
-    bounds : list of [min, max] pairs
-        Parameter bounds for each dimension.
-    peaks : list of numpy arrays
-        Known peak locations (empty list if not precisely known).
+    Returns ``(func, bounds, peaks)``. ``name`` is ``'<function>_Nd'``
+    (e.g. ``'sphere_2d'``, ``'eggholder_6d'``). ``peaks`` is empty when
+    the peak locations are not precisely known.
     """
     if name not in _FUNCTION_REGISTRY:
         available = list_test_functions()
