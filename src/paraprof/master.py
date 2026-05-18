@@ -48,16 +48,7 @@ def _log_user_gradient_error(result, sampler, logger):
 
 
 def terminate_workers(comm, myrank=0):
-    """
-    Terminates all worker processes.
-
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator
-    myrank : int
-        Master rank (usually 0)
-    """
+    """Send TASK_TERMINATE to every worker; master is ``myrank`` (default 0)."""
     logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
 
@@ -77,67 +68,18 @@ def run_projection(comm, sampler, projection_config,
                    plot_settings=None,
                    skip_init_opt_on_warm_start=True,
                    myrank=0):
-    """
-    Runs a complete projection workflow including optional grid refinement.
+    """Run one projection (coarse grid + optional refinement) end-to-end.
 
-    This high-level function encapsulates the entire projection computation,
-    including both the coarse grid run and optional refinement. It handles
-    all internal state management, cleanup, and optional plotting, providing
-    a clean API for users.
+    ``projection_config`` keys: required ``dims`` (list of int) and
+    ``grid_points`` (list of int); optional ``optimization_method``
+    ('de' or 'lbfgsb'), ``grid_refinement_factor`` (>1 enables a refined
+    pass), ``refinement_method`` ('linear' only), ``patch_coarse_grid``,
+    ``patch_refined_grid``.
 
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator
-    sampler : ProfileProjector
-        The sampler instance (already configured with num_generations and max_num_to_evolve
-        in advanced_config['de'])
-    projection_config : dict
-        Projection configuration. Required keys:
-        - 'dims': list of int - projection dimension indices
-        - 'grid_points': list of int - grid points per dimension
-        Optional keys:
-        - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
-        - 'grid_refinement_factor': int - grid refinement factor (default: 2)
-        - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
-        - 'patch_coarse_grid': bool - enable patching on coarse grid (default: True)
-        - 'patch_refined_grid': bool - enable patching on refined grid (default: False)
-    save_plots : bool
-        Whether to save plots to disk after each stage
-    plot_settings : dict, optional
-        Plot settings dictionary with keys:
-        - 'dpi': int (default: 300)
-        - 'filetype': str (default: 'png')
-    skip_init_opt_on_warm_start : bool
-        Whether to skip initial optimization if warm-start data exists
-    myrank : int
-        Master rank (usually 0)
-
-    Returns
-    -------
-    dict
-        Results dictionary containing:
-        - 'coarse_solution': dict - exported coarse grid state
-        - 'refined_solution': dict or None - exported refined grid state (if refinement enabled)
-        - 'metrics': dict - performance metrics including:
-            - 'coarse_target_calls': int - target function calls for coarse grid
-            - 'refined_target_calls': int - total calls after refinement (if enabled)
-            - 'total_target_calls': int - cumulative calls
-            - 'global_max': float - best likelihood value found
-
-    Examples
-    --------
-    >>> results = run_projection(
-    ...     comm=comm,
-    ...     sampler=sampler,
-    ...     projection_config={
-    ...         'dims': [0, 1],
-    ...         'grid_points': [50, 50],
-    ...         'grid_refinement_factor': 3
-    ...     },
-    ...     save_plots=True
-    ... )
-    >>> print(f"Best likelihood: {results['metrics']['global_max']}")
+    Returns a dict with ``coarse_solution``, ``refined_solution`` (or
+    None), and a ``metrics`` dict (``coarse_target_calls``,
+    ``refined_target_calls`` if applicable, ``total_target_calls``,
+    ``global_max``).
     """
     # Extract refinement configuration
     refinement_factor = projection_config.get('grid_refinement_factor', None)
@@ -238,48 +180,14 @@ def run_scan(comm, sampler, projections,
              plot_settings=None,
              broadcast_target_func=True,
              myrank=0):
-    """Master-side convenience wrapper that runs a full scan and tears down workers.
+    """Master-side wrapper: broadcast target, run all projections, terminate workers.
 
-    This bundles the three steps a master process always performs into a single call:
-
-    1. Optionally broadcast ``sampler.target_func`` to the workers (so they can
-       enter ``worker_main`` with no ``target_func`` argument and pick it up
-       from the broadcast).
-    2. Run all configured projections via :func:`run_all_projections`.
-    3. Send the terminate signal to all workers via :func:`terminate_workers`.
-
-    Use ``broadcast_target_func=False`` when integrating into a host framework
-    that already provides the target function on every rank (e.g. as a bound
-    method that cannot be pickled). In that case the workers should be started
-    with ``worker_main(comm, myrank, target_func=...)`` so they never wait for
-    a broadcast.
-
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator. Must be called from the master rank only.
-    sampler : ProfileProjector
-        Configured sampler instance.
-    projections : list of dict
-        Projection configurations (see :func:`run_all_projections`).
-    save_plots : bool, optional
-        Whether to save plots after each projection (default: False).
-    plot_settings : dict, optional
-        Plot settings forwarded to :func:`run_all_projections`.
-    broadcast_target_func : bool, optional
-        If True (default), broadcast ``sampler.target_func`` to workers before
-        starting the scan. Set to False when workers were started with an
-        explicit ``target_func`` argument.
-    myrank : int, optional
-        Master rank (default: 0).
-
-    Returns
-    -------
-    list of dict
-        Per-projection results, as returned by :func:`run_all_projections`.
+    Set ``broadcast_target_func=False`` for hosts that already provide
+    the target function on every rank (e.g. bound methods that can't be
+    pickled); in that case start workers with an explicit
+    ``worker_main(comm, myrank, target_func=...)``.
     """
     if broadcast_target_func:
-        # Tuple form; worker also accepts the legacy bare-callable form.
         comm.bcast((sampler.target_func, sampler.grad_func), root=myrank)
 
     results = run_all_projections(
@@ -299,68 +207,11 @@ def run_all_projections(comm, sampler, projections,
                         save_plots=False,
                         plot_settings=None,
                         myrank=0):
-    """
-    Runs multiple projections sequentially with automatic warm-starting.
+    """Run a list of projections sequentially with automatic cross-projection warm-start.
 
-    This high-level function orchestrates multiple projection computations,
-    automatically managing state transitions and warm-starting between
-    projections. Each projection can optionally include grid refinement.
-
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator
-    sampler : ProfileProjector
-        The sampler instance (already configured with bounds, algorithm parameters,
-        including num_generations and max_num_to_evolve in advanced_config)
-    projections : list of dict
-        List of projection configurations. Each dict must contain:
-        - 'dims': list of int - projection dimension indices
-        - 'grid_points': list of int - grid points per dimension
-        Optional keys per projection:
-        - 'optimization_method': str - optimization algorithm ('de', 'lbfgsb') (default: 'de')
-        - 'grid_refinement_factor': int - grid refinement factor (default: 2)
-        - 'refinement_method': str - interpolation method (only 'linear' supported) (default: 'linear')
-        - 'patch_coarse_grid': bool - enable patching on coarse grid (default: True)
-        - 'patch_refined_grid': bool - enable patching on refined grid (default: False)
-    save_plots : bool
-        Whether to save plots to disk after each stage
-    plot_settings : dict, optional
-        Plot settings dictionary with keys:
-        - 'dpi': int (default: 300)
-        - 'filetype': str (default: 'png')
-    myrank : int
-        Master rank (usually 0)
-
-    Returns
-    -------
-    list of dict
-        List of results dictionaries (one per projection), each containing:
-        - 'projection_config': dict - the original projection configuration
-        - 'coarse_solution': dict - exported coarse grid state
-        - 'refined_solution': dict or None - exported refined grid state (if refinement enabled)
-        - 'metrics': dict - performance metrics
-
-    Notes
-    -----
-    - Warm-starting is automatically enabled after the first projection
-    - The global solution pool accumulates knowledge across all projections
-    - Total target function calls are cumulative across all projections
-
-    Examples
-    --------
-    >>> projections = [
-    ...     {'dims': [0, 1], 'grid_points': [50, 50], 'grid_refinement_factor': 2},
-    ...     {'dims': [0, 2], 'grid_points': [50, 50], 'grid_refinement_factor': 2},
-    ... ]
-    >>> results = run_all_projections(
-    ...     comm=comm,
-    ...     sampler=sampler,
-    ...     projections=projections,
-    ...     save_plots=True
-    ... )
-    >>> for i, res in enumerate(results):
-    ...     print(f"Projection {i}: {res['metrics']['total_target_calls']} calls")
+    See :func:`run_projection` for the per-projection config and result shape.
+    Returns a list of per-projection result dicts with an extra
+    ``projection_config`` field carrying the original input.
     """
     logger = setup_logger(rank=myrank)
     all_results = []
@@ -403,27 +254,7 @@ def run_all_projections(comm, sampler, projections,
 def master_main(comm, sampler,
                 plot_settings=None, skip_init_opt_on_warm_start=True,
                 myrank=0):
-    """
-    Main control loop for the master process.
-    Acts as a state machine, dispatching jobs and processing results.
-
-    Parameters
-    ----------
-    comm : MPI.Comm
-        MPI communicator
-    sampler : ProfileProjector
-        The sampler instance (contains num_generations and max_num_to_evolve
-        in de_num_generations, de_max_num_to_evolve)
-    plot_settings : dict, optional
-        Plot settings dictionary with keys:
-        - 'dpi': int (default: 300)
-        - 'filetype': str (default: 'png')
-        Not used in master_main directly (only passed for compatibility)
-    skip_init_opt_on_warm_start : bool
-        Whether to skip initial optimization if initial_maxima already exist
-    myrank : int
-        Master rank (usually 0)
-    """
+    """State-machine main loop: dispatches jobs and processes results until done."""
     logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
     if n_workers <= 0:

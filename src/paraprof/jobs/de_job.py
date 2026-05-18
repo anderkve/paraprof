@@ -1,6 +1,4 @@
-"""
-Differential Evolution job for grid point evolution.
-"""
+"""Differential Evolution job for grid point evolution."""
 import numpy as np
 from scipy.stats import cauchy, norm
 from ..logger import get_logger
@@ -9,24 +7,14 @@ from .base import Job
 logger = get_logger()
 
 
-# DE mutation and crossover constants
 DE_CR_NORMAL_SCALE = 0.1
-"""Standard deviation for sampling CR from normal distribution around memory value"""
-
 DE_F_CAUCHY_SCALE = 0.1
-"""Scale parameter for sampling F from Cauchy distribution around memory value"""
-
 DE_F_MAX_VALUE = 1.0
-"""Maximum allowed value for mutation factor F"""
-
 DE_MIN_PARENT_POOL_SIZE = 3
-"""Minimum number of parents required in pool to perform DE mutation"""
 
 
 class DEGridPointJob(Job):
-    """
-    A job to run one generation of DE for one grid point.
-    """
+    """Run one DE generation for a single grid point."""
     def __init__(self, job_id, sampler, grid_idx, parent_pool,
                  pbest_archive, successful_F_list, successful_CR_list):
 
@@ -51,7 +39,6 @@ class DEGridPointJob(Job):
 
     def start(self):
         """Generate all trial points and return their evaluation tasks."""
-        # Direct evaluation mode: no profiled dimensions, so no evolution needed
         if self.sampler.direct_eval_mode or self.sampler.n_prof_dims == 0:
             self.success = True
             self._is_finished = True
@@ -191,10 +178,7 @@ class DEGridPointJob(Job):
         return []
 
     def on_finish(self, next_job_id):
-        """
-        Update the best_fitness and history for this grid point.
-        If converged, spawn a new LBFGSB job.
-        """
+        """Update best_fitness and history; spawn an LBFGSB polish job if converged."""
         if not self.success:
             return None
 
