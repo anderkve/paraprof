@@ -33,6 +33,20 @@ def _log_worker_error(result, sampler, logger):
     return True
 
 
+def _log_user_gradient_error(result, sampler, logger):
+    """Log a grad_func error; paraprof falls back to FD for the affected dims."""
+    err = result.get('user_gradient_error') if isinstance(result, dict) else None
+    if not err:
+        return False
+    sampler.user_gradient_errors += 1
+    worker_rank = result.get('context', {}).get('worker_rank', '?')
+    logger.warning(
+        f"Worker {worker_rank} grad_func failure at params {result.get('params')}: "
+        f"{err} (falling back to FD; total: {sampler.user_gradient_errors})"
+    )
+    return True
+
+
 def terminate_workers(comm, myrank=0):
     """
     Terminates all worker processes.
@@ -265,7 +279,8 @@ def run_scan(comm, sampler, projections,
         Per-projection results, as returned by :func:`run_all_projections`.
     """
     if broadcast_target_func:
-        comm.bcast(sampler.target_func, root=myrank)
+        # Tuple form; worker also accepts the legacy bare-callable form.
+        comm.bcast((sampler.target_func, sampler.grad_func), root=myrank)
 
     results = run_all_projections(
         comm=comm,
@@ -766,6 +781,7 @@ def master_main(comm, sampler,
             tasks_completed += 1
 
             _log_worker_error(result, sampler, logger)
+            _log_user_gradient_error(result, sampler, logger)
             sampler._register_target_call(result['params'], result['target_val'])
 
             job_id = result['context'].get('job_id', -1)
@@ -906,6 +922,16 @@ def master_main(comm, sampler,
             f"  Target Function Errors: {sampler.target_call_errors} "
             f"(out of {sampler.target_calls} calls)"
         )
+    if sampler.grad_func is not None:
+        logger.info(
+            f"  Target Calls Saved by User Gradient: "
+            f"{sampler.target_calls_saved_by_user_gradient}"
+        )
+        if sampler.user_gradient_errors:
+            logger.warning(
+                f"  User Gradient Errors: {sampler.user_gradient_errors} "
+                f"(fell back to finite differences for these)"
+            )
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     logger.info("=" * 80)

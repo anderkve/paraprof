@@ -132,6 +132,8 @@ class ProfileProjector:
                  lbfgsb_polish=True,
                  n_initial_optimizations=None,
                  initial_points=None,
+                 # Optional user-supplied gradient
+                 grad_func=None,
                  # Feature toggles
                  use_clustering=True,
                  refinement_direct_eval=False,
@@ -153,6 +155,23 @@ class ProfileProjector:
             Parameter bounds for each dimension
         projections : list of dict
             List of projection configurations, each with 'dims' and 'grid_points'
+        grad_func : callable, optional
+            User-supplied gradient of ``target_func`` (default: None). Only
+            used in the L-BFGS-B paths; ignored by Differential Evolution.
+            Sign convention: returns ``∇target_func`` (gradient of the
+            function being MAXIMIZED). ParaProf negates internally for the
+            minimization objective. Accepts two return formats:
+
+            - length-``n_dims`` array of floats; entries that are ``NaN``,
+              ``+inf`` or ``-inf`` are treated as "not provided" and filled
+              in by finite differences.
+            - ``{dim_index: value}`` dict of known components; any dim not
+              in the dict is filled in by finite differences.
+
+            For components the user does provide, paraprof skips the
+            corresponding finite-difference target evaluations, cutting
+            target-call cost. See ``sampler.target_calls_saved_by_user_gradient``
+            for the savings counter.
 
         Core Tuning Parameters
         ----------------------
@@ -276,6 +295,13 @@ class ProfileProjector:
         if not callable(target_func):
             raise ConfigurationError("target_func must be callable", parameter="target_func", value=target_func)
 
+        # Validate optional user gradient function
+        if grad_func is not None and not callable(grad_func):
+            raise ConfigurationError(
+                "grad_func must be callable or None",
+                parameter="grad_func", value=grad_func,
+            )
+
         # Validate and set bounds
         self.bounds = np.array(bounds)
         if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
@@ -290,6 +316,7 @@ class ProfileProjector:
             )
 
         self.target_func = target_func
+        self.grad_func = grad_func
         self.dims = len(self.bounds)
 
         # Validate parameter_names (optional) and store as a name->index map
@@ -522,6 +549,9 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
+        # Counters for the grad_func feature (cumulative across projections).
+        self.target_calls_saved_by_user_gradient = 0
+        self.user_gradient_errors = 0
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
