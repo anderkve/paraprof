@@ -23,7 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function being MAXIMIZED. The MPI broadcast format for `run_scan` is
   now a `(target_func, grad_func)` tuple; the worker still accepts the
   legacy bare-callable form so manual broadcasts continue to work.
-
+- **Suspect-cell recheck** pass, on by default. Runs after standard patching
+  to catch grid cells (including contiguous strips) that converged to a
+  wrong optimum in the profiled dimensions but slipped past the
+  fitness-only patching filter. Flags cells whose profiled-parameter
+  vector is far (robust MAD threshold) from its neighbour-median, then
+  re-evaluates each flagged cell against a small, diverse set of seeds
+  (non-suspect neighbours, an extended Chebyshev-radius ring, and
+  proximity samples from the cross-projection global pool); seeds that
+  beat the cell by more than a tolerance trigger an L-BFGS-B polish.
+  Subsequent waves propagate from updated cells the same way patching
+  does, so a fix at the boundary of a stuck strip carries inward.
+  Configurable via the new ``suspect_recheck`` sub-dict of
+  ``advanced_config`` (see ``ProfileProjector`` docstring); also exposed
+  as ``sampler.suspect_recheck_enabled`` etc. The whole pass is a no-op
+  on perfectly-smooth surfaces.
 - **Cross-projection knowledge transfer** for multi-projection scans, on by
   default. When `run_all_projections` runs more than one projection, the
   later projections automatically reuse evaluations from the earlier ones
