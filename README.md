@@ -1,41 +1,41 @@
-# ParaProf: Parallel profile likelihood computation
+# paraprof: Parallel profile likelihood computation
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-ParaProf computes profile likelihood projections on a grid in parallel via MPI. At each grid point the remaining parameters are profiled out using differential evolution (DE) or L-BFGS-B, and the grid expands dynamically into the high-likelihood region.
+**paraprof** is a robust and MPI-parallelised algorithm for computing profile likelihood projections. At each grid point the remaining parameters are profiled out using differential evolution (DE) or L-BFGS-B, and the grid expands dynamically into the high-likelihood region.
 
 <p align="center">
-  <img src="examples/example_plots/animation/paraprof_rosenbrock_himmelblau_4D.gif" alt="ParaProf scanning the 4D Rosenbrock and 4D Himmelblau log-likelihoods" width="780"/>
+  <img src="examples/example_plots/animation/paraprof_rosenbrock_himmelblau_4D.gif" alt="ParaProf scanning the 4D Rosenbrock and 4D Himmelblau log-likelihoods" width="600"/>
 </p>
 
 ## Example output
 
-Below are 1D and 2D projections of three 4D test functions. Dimensions not shown on the axes are profiled (optimized) out. Contours are 68% and 95% Wilks confidence regions; the white star marks the best-fit grid point. Plots come from `examples/run_showcase_scan.py` followed by `examples/make_showcase_plots.py`.
+Below are 1D and 2D projections of three 4D test functions used as example log-likelihood functions. Dimensions not shown on the axes are profiled (optimized) out. The white star marks the best-fit point; the contours are 68% and 95% confidence regions (assuming Wilks' theorem). Plots come from `examples/run_showcase_scan.py` followed by `examples/make_showcase_plots.py`.
 
 <p align="center">
-  <img src="examples/example_plots/showcase/himmelblau_4d_1d.png" alt="Himmelblau 4D 1D profile for x0" width="280"/>
-  <img src="examples/example_plots/showcase/himmelblau_4d_2d_a.png" alt="Himmelblau 4D 2D profile for (x0, x1)" width="280"/>
-  <img src="examples/example_plots/showcase/himmelblau_4d_2d_b.png" alt="Himmelblau 4D 2D profile for (x0, x2)" width="280"/>
+  <img src="examples/example_plots/showcase/himmelblau_4d_1d.png" alt="Himmelblau 4D 1D profile for x0" width="300"/>
+  <img src="examples/example_plots/showcase/himmelblau_4d_2d_a.png" alt="Himmelblau 4D 2D profile for (x0, x1)" width="240"/>
+  <img src="examples/example_plots/showcase/himmelblau_4d_2d_b.png" alt="Himmelblau 4D 2D profile for (x0, x2)" width="240"/>
 </p>
 
-Himmelblau 4D — 264,617 target-function evaluations across all three projections.
+Himmelblau 4D: 264,617 target-function evaluations across all three projections.
 
 <p align="center">
-  <img src="examples/example_plots/showcase/rosenbrock_4d_1d.png" alt="Rosenbrock 4D 1D profile for x0" width="280"/>
-  <img src="examples/example_plots/showcase/rosenbrock_4d_2d_a.png" alt="Rosenbrock 4D 2D profile for (x0, x1)" width="280"/>
-  <img src="examples/example_plots/showcase/rosenbrock_4d_2d_b.png" alt="Rosenbrock 4D 2D profile for (x1, x3)" width="280"/>
+  <img src="examples/example_plots/showcase/rosenbrock_4d_1d.png" alt="Rosenbrock 4D 1D profile for x0" width="300"/>
+  <img src="examples/example_plots/showcase/rosenbrock_4d_2d_a.png" alt="Rosenbrock 4D 2D profile for (x0, x1)" width="240"/>
+  <img src="examples/example_plots/showcase/rosenbrock_4d_2d_b.png" alt="Rosenbrock 4D 2D profile for (x1, x3)" width="240"/>
 </p>
 
-Rosenbrock 4D — 63,904 evaluations.
+Rosenbrock 4D: 63,904 evaluations.
 
 <p align="center">
-  <img src="examples/example_plots/showcase/levy_4d_1d.png" alt="Levy 4D 1D profile for x0" width="280"/>
-  <img src="examples/example_plots/showcase/levy_4d_2d_a.png" alt="Levy 4D 2D profile for (x0, x1)" width="280"/>
-  <img src="examples/example_plots/showcase/levy_4d_2d_b.png" alt="Levy 4D 2D profile for (x0, x3)" width="280"/>
+  <img src="examples/example_plots/showcase/levy_4d_1d.png" alt="Levy 4D 1D profile for x0" width="300"/>
+  <img src="examples/example_plots/showcase/levy_4d_2d_a.png" alt="Levy 4D 2D profile for (x0, x1)" width="240"/>
+  <img src="examples/example_plots/showcase/levy_4d_2d_b.png" alt="Levy 4D 2D profile for (x0, x3)" width="240"/>
 </p>
 
-Levy 4D — 117,757 evaluations. The last dimension uses `sin(2π·w₃)` rather than `sin(π·w + 1)`, so the (x₀, x₃) projection has denser horizontal ridges than (x₀, x₁).
+Levy 4D: 117,757 evaluations. The last dimension uses `sin(2π·w₃)` rather than `sin(π·w + 1)`, so the (x₀, x₃) projection has denser horizontal ridges than (x₀, x₁).
 
 ## Installation
 
@@ -45,7 +45,7 @@ pip install git+https://github.com/anderkve/paraprof.git
 
 Optional extras: `pip install -e ".[viz]"`, `".[dev]"`, or `".[all]"`.
 
-Requires Python 3.10+, NumPy, SciPy, and mpi4py (with an MPI implementation like OpenMPI or MPICH). Matplotlib and scikit-learn are optional, used for plotting and clustering during refinement.
+Requires Python 3.10+, NumPy, SciPy, and mpi4py (with an MPI implementation like OpenMPI or MPICH). Matplotlib and scikit-learn are optional.
 
 ## Quick start
 
@@ -94,11 +94,11 @@ A scan proceeds roughly as follows:
 
 1. Lay a regular grid over the projection dimensions; the rest are profiled at each grid point.
 2. Run a few global L-BFGS-B starts to find initial maxima. On later projections these are seeded from an in-memory pool built up by earlier projections, often skipping the global step entirely.
-3. Anchor a DE population (or a single L-BFGS-B start) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
+3. Anchor a DE population (or an initial point for L-BFGS-B optimization) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
 4. Optimize the profiled parameters at each active cell. L-BFGS-B cells also reuse the best already-converged neighbour's quasi-Newton history and its best profiled parameters as an alternative start, propagating local curvature outward.
 5. Activate the neighbours of high-likelihood cells, expanding the active set into the region of interest.
 6. Patching: re-test each cell with its neighbours' best profiled parameters and polish any improvement.
-7. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seeds (non-suspect neighbours, an extended Chebyshev ring, the cross-projection pool). This breaks contiguous wrong-optimum strips that patching's fitness-only filter cannot escape.
+7. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seed points. This breaks contiguous wrong-optimum strips that the fitness-only filter of the patching step cannot fix.
 8. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
 
 Key code paths: `ProfileProjector` (`sampler.py`) holds state and configuration, `master_main()` (`master.py`) is the state machine, `worker_main()` (`worker.py`) is the evaluation loop, and `jobs/` contains the asynchronous optimization jobs.
@@ -107,7 +107,7 @@ Key code paths: `ProfileProjector` (`sampler.py`) holds state and configuration,
 
 Common constructor arguments:
 
-- `roi_threshold` — region-of-interest cutoff in χ²; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 3.0.
+- `roi_threshold` — region-of-interest cutoff in log-likelihood; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 3.0.
 - `pop_per_grid_point` — DE population size per cell. Default 3.
 - `n_initial_optimizations` — global L-BFGS-B starts before grid optimization. Default `min(100, 20 * n_dims)`.
 - `max_patching_waves` — cap on patching iterations. Default 10.
@@ -121,7 +121,7 @@ Common constructor arguments:
 
 ### User-supplied gradients
 
-By default L-BFGS-B uses finite differences, which costs N (forward) or 2N (central) extra calls per gradient. If you have an analytic gradient, pass it via `grad_func`:
+By default L-BFGS-B uses finite differences, which costs 2N (central difference) or N (forward difference) extra calls per gradient. If you have an analytic gradient, pass it via `grad_func`:
 
 ```python
 def target(p):
@@ -171,7 +171,7 @@ Each projection is a dict. Required: `dims` (parameter indices) and `grid_points
 
 ## Visualization
 
-With `save_plots=True`, ParaProf writes 1D line plots, 2D heatmaps with contours, and pairwise 2D slices for higher-dimensional projections (either the max slice or marginalized). It also writes plots of the optimal profiled-parameter values across the projection grid, which is useful for seeing what the profiling actually did.
+With `save_plots=True`, paraprof writes 1D line plots, 2D heatmaps with contours, and pairwise 2D slices for higher-dimensional projections (either the max slice or marginalized). It also writes plots of the optimal profiled-parameter values across the projection grid, which is useful for seeing what the profiling actually did.
 
 Override the defaults with a `plot_settings` dict:
 
