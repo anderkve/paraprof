@@ -70,6 +70,65 @@ RUNNER = textwrap.dedent("""
 """)
 
 
+# 4-D sphere runner: with/without grad_func, same projection.
+USER_GRAD_RUNNER = textwrap.dedent("""
+    import json
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    def target(p):
+        return -float(np.sum(np.asarray(p) ** 2))
+
+    def grad(p):
+        return -2.0 * np.asarray(p)  # ∇target (function being MAXIMIZED)
+
+    use_grad = sys.argv[1] == 'with_grad'
+    bounds = np.array([[-5.0, 5.0]] * 4)
+    projections = [
+        {'dims': [0, 1], 'grid_points': [6, 6], 'optimization_method': 'lbfgsb'},
+    ]
+
+    np.random.seed(20260513)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=bounds,
+            projections=projections,
+            grad_func=grad if use_grad else None,
+            roi_threshold=4.0,
+            n_initial_optimizations=4,
+            max_patching_waves=2,
+            lbfgsb_max_iter=15,
+        ) as sampler:
+            comm.bcast((sampler.target_func, sampler.grad_func), root=0)
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            print('RESULT', json.dumps({
+                'use_grad': use_grad,
+                'calls': sampler.target_calls,
+                'saved': sampler.target_calls_saved_by_user_gradient,
+                'grad_errors': sampler.user_gradient_errors,
+                'max_logL': float(sampler.global_max_target_val),
+            }), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
 def _have_mpiexec():
     return shutil.which('mpiexec') is not None
 
@@ -80,10 +139,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run(method):
-    """Run the runner with `mpiexec -n 4` and parse the RESULT line."""
+def _run_runner(runner_src, arg):
+    """Run a runner script with `mpiexec -n 4` and parse the RESULT line."""
     with tempfile.NamedTemporaryFile('w', suffix='.py', delete=False) as f:
-        f.write(RUNNER)
+        f.write(runner_src)
         runner_path = f.name
     # If pytest's parent process imported mpi4py (e.g. via earlier tests
     # importing paraprof), OMPI/PMIX env vars leak into the child mpiexec
@@ -93,7 +152,7 @@ def _run(method):
     try:
         proc = subprocess.run(
             ['mpiexec', '--allow-run-as-root', '--oversubscribe',
-             '-n', '4', sys.executable, runner_path, method],
+             '-n', '4', sys.executable, runner_path, arg],
             capture_output=True, text=True, timeout=120, env=env,
         )
     finally:
@@ -107,6 +166,10 @@ def _run(method):
         if line.startswith('RESULT '):
             return json.loads(line[len('RESULT '):])
     raise AssertionError(f"Runner produced no RESULT line.\nSTDOUT:\n{proc.stdout}")
+
+
+def _run(method):
+    return _run_runner(RUNNER, method)
 
 
 @pytest.mark.parametrize('method', ['de', 'lbfgsb'])
@@ -132,6 +195,24 @@ def test_end_to_end_scan(method):
         f"calls = {result['calls']} for method={method!r} is out of expected "
         "range [100, 50000]"
     )
+
+
+def test_user_gradient_cuts_target_calls():
+    """grad_func cuts target calls and reaches the same maximum."""
+    baseline = _run_runner(USER_GRAD_RUNNER, 'no_grad')
+    with_grad = _run_runner(USER_GRAD_RUNNER, 'with_grad')
+
+    assert baseline['use_grad'] is False
+    assert baseline['saved'] == 0
+    assert baseline['grad_errors'] == 0
+    assert baseline['calls'] > 0
+
+    assert with_grad['use_grad'] is True
+    assert with_grad['saved'] > 0
+    assert with_grad['grad_errors'] == 0
+    assert with_grad['calls'] < baseline['calls']
+    assert with_grad['max_logL'] > -1e-6
+    assert baseline['max_logL'] > -1e-6
 
 
 # ---------------------------------------------------------------------------
