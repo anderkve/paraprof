@@ -53,5 +53,27 @@ See `paraprof_example.yaml` for a complete worked example.
 - `samples_output_file` is forwarded to paraprof and only written by rank 0.
   This is purely a paraprof-side diagnostic: GAMBIT's printers already
   capture every evaluation, so it defaults to off.
+- `warm_start_file` reads a previous run's CSV at the start of each
+  projection to pre-populate `initial_maxima` and skip the global L-BFGS-B
+  seeding step. Set equal to `samples_output_file` to round-trip samples
+  from one run into the next.
 - `save_plots: true` enables paraprof's built-in 1D/2D profile plots
   alongside the GAMBIT outputs, written to the working directory.
+
+## Features supported via `advanced_config`
+
+Everything under `advanced_config:` is forwarded verbatim to
+`ProfileProjector`, so every expert knob in the
+[paraprof README](https://github.com/anderkve/paraprof) is reachable. Two
+sub-dicts worth flagging:
+
+- **`cross_projection`** — multi-projection knowledge transfer (default on):
+  later projections seed `initial_maxima` from the global pool and swap one
+  population slot per cell for the nearest past evaluation.
+- **`suspect_recheck`** — extra pass after patching (default on, no-op on
+  smooth targets) that re-optimizes cells whose profiled-parameter vector
+  is discontinuous from its neighbours, catching wrong-optimum strips the
+  fitness-only patching filter misses.
+
+paraprof's `grad_func` is not exposed: ScannerBit's Python scanner API
+surfaces only the loglike value, so L-BFGS-B uses finite differences.

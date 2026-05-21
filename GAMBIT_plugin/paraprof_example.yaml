@@ -59,12 +59,27 @@ Scanner:
             convergence_window: 3
           lbfgsb:
             ftol: 1.0e-9
+          # Cross-projection knowledge transfer (both default true).
+          cross_projection:
+            proximity_warm_start: true
+            pool_seeded_initial_maxima: true
+          # Suspect-cell recheck after patching (defaults shown).
+          suspect_recheck:
+            enabled: true
+            max_waves: 3
+            param_k: 3.0
+            max_fraction: 0.25
+            seeds_k_ring: 3
+            seeds_from_pool: 3
+            polish_threshold: 1.0e-4
         # Optional paraprof-side diagnostics.
         save_plots: true
         plot_settings:
           dpi: 200
           filetype: png
-          contour_levels: [-4.5, -3.0, -1.0]
+          contour_levels: [-3.0, -1.0]   # 2D Wilks 2-DOF: 68%, 95% CL
+          slice_mode: max                # 3D+ projections: 'max' or 'all'
+          plot_profiled_params: true
         # samples_output_file: paraprof_samples.csv  # optional, rank-0 only
         # warm_start_file: paraprof_samples.csv      # optional; set equal to
         #                                            # samples_output_file to
