@@ -1,17 +1,29 @@
-# paraprof: Parallel profile likelihood computation
+# paraprof
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**paraprof** is a robust and MPI-parallelised algorithm for computing profile likelihood projections. At each grid point the remaining parameters are profiled out using differential evolution (DE) or L-BFGS-B, and the grid expands dynamically into the high-likelihood region.
+**paraprof** is a robust and MPI-parallelised algorithm for computing profile likelihood projections – or more generally for mapping out low-dimensional projections of a target function by optimizing over the remaining dimensions.
+At each grid point in the projection space the remaining parameters are profiled (optimized) out using differential evolution (DE) or L-BFGS-B, and the grid expands dynamically to cover the region of interest, e.g. the high-likelihood region.
 
 <p align="center">
   <img src="examples/example_plots/animation/paraprof_rosenbrock_himmelblau_4D.gif" alt="ParaProf scanning the 4D Rosenbrock and 4D Himmelblau log-likelihoods" width="600"/>
 </p>
 
+## Installation
+
+```bash
+pip install git+https://github.com/anderkve/paraprof.git
+```
+
+Optional extras: `pip install -e ".[viz]"`, `".[dev]"`, or `".[all]"`.
+
+Requires Python 3.10+, NumPy, SciPy, and mpi4py (with an MPI implementation like OpenMPI or MPICH). Matplotlib and scikit-learn are optional.
+
+
 ## Example output
 
-Below are 1D and 2D projections of three 4D test functions used as example log-likelihood functions. Dimensions not shown on the axes are profiled (optimized) out. The white star marks the best-fit point; the contours are 68% and 95% confidence regions (assuming Wilks' theorem). Plots come from `examples/run_showcase_scan.py` followed by `examples/make_showcase_plots.py`.
+Below are 1D and 2D projections of three 4D test functions used as example log-likelihood functions. Dimensions not shown on the axes are profiled out. The white star marks the best-fit point; the contours are 68% and 95% confidence regions (assuming Wilks' theorem). Plots come from `examples/run_showcase_scan.py` followed by `examples/make_showcase_plots.py`.
 
 <p align="center">
   <img src="examples/example_plots/showcase/himmelblau_4d_1d.png" alt="Himmelblau 4D 1D profile for x0" width="300"/>
@@ -37,15 +49,6 @@ Rosenbrock 4D: 63,904 evaluations.
 
 Levy 4D: 117,757 evaluations. The last dimension uses `sin(2π·w₃)` rather than `sin(π·w + 1)`, so the (x₀, x₃) projection has denser horizontal ridges than (x₀, x₁).
 
-## Installation
-
-```bash
-pip install git+https://github.com/anderkve/paraprof.git
-```
-
-Optional extras: `pip install -e ".[viz]"`, `".[dev]"`, or `".[all]"`.
-
-Requires Python 3.10+, NumPy, SciPy, and mpi4py (with an MPI implementation like OpenMPI or MPICH). Matplotlib and scikit-learn are optional.
 
 ## Quick start
 
