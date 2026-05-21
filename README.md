@@ -131,7 +131,7 @@ def target(p):
     return -float(np.sum(p**2))         # log-likelihood, maximized
 
 def grad(p):
-    return -2.0 * np.asarray(p)         # ∇target_func (NOT ∇objective)
+    return -2.0 * np.asarray(p)         # ∇target_func
 
 sampler = ProfileProjector(target_func=target, grad_func=grad, ...)
 ```
@@ -223,7 +223,7 @@ MIT — see [LICENSE](LICENSE).
 
 ```bibtex
 @software{paraprof2025,
-  title = {ParaProf: Parallel Profile Likelihood Computation},
+  title = {paraprof},
   author = {Kvellestad, Anders},
   year = {2025},
   url = {https://github.com/anderkve/paraprof}
