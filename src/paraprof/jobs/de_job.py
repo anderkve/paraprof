@@ -210,11 +210,9 @@ class DEGridPointJob(Job):
             avg_improvement = np.mean(grid_state['improvement_history'])
             if avg_improvement < self.sampler.convergence_threshold:
                 if self.sampler.lbfgsb_polish:
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Spawning L-BFGS-B polish job. ---")
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
                 else:
                     grid_state['status'] = 'optimized'
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized. ---")
                     return None
 
         return None
