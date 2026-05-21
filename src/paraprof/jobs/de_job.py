@@ -213,7 +213,6 @@ class DEGridPointJob(Job):
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
                 else:
                     grid_state['status'] = 'optimized'
-                    logger.info(f"--- DE Converged for {self.grid_idx}. Marked as optimized. ---")
                     return None
 
         return None
