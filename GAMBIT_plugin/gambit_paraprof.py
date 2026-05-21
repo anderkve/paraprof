@@ -83,11 +83,39 @@ YAML options:
                              ``samples_output_file`` to round-trip samples into
                              the next run.
     advanced_config:         Forwarded as-is to ProfileProjector for expert tuning.
+                             Notable sub-dicts (see the paraprof README for the
+                             full table):
+                               de:               'convergence_window', 'num_generations',
+                                                 'max_num_to_evolve'
+                               lbfgsb:           'ftol', 'gradient_method'
+                               clustering:       DBSCAN tuning for refinement
+                               cross_projection: Toggles for the multi-projection
+                                                 knowledge-transfer hooks
+                                                 ('proximity_warm_start',
+                                                 'pool_seeded_initial_maxima';
+                                                 both default to True).
+                               suspect_recheck:  Tuning for the suspect-cell
+                                                 recheck pass that catches
+                                                 wrong-optimum strips missed by
+                                                 fitness-only patching
+                                                 ('enabled', 'max_waves',
+                                                 'param_k', 'max_fraction',
+                                                 'seeds_k_ring',
+                                                 'seeds_from_pool',
+                                                 'polish_threshold').
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
                              the working directory after each projection.
-    plot_settings:           Dict forwarded to paraprof's plotting helpers
-                             (e.g. {dpi: 200, filetype: png}).
+    plot_settings:           Dict forwarded to paraprof's plotting helpers.
+                             Common keys: dpi, filetype, vmin, vmax,
+                             contour_levels (2D, default [-3.0, -1.0]),
+                             slice_mode ('max' or 'all' for 3D+ projections),
+                             plot_profiled_params (default True).
+
+Note: paraprof's ``grad_func`` (analytic-gradient support for L-BFGS-B) is not
+exposed by this plugin because ScannerBit's Python scanner API only surfaces
+the loglike value, not its gradient. The L-BFGS-B paths fall back to finite
+differences as before.
 """
 
     __version__ = paraprof_version

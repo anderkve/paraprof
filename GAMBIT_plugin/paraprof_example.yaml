@@ -59,12 +59,35 @@ Scanner:
             convergence_window: 3
           lbfgsb:
             ftol: 1.0e-9
+          # Cross-projection knowledge transfer (both default to true).
+          # When multiple projections are scanned, later projections reuse
+          # evaluations from earlier ones via the in-memory global solution
+          # pool. Disable individually for A/B benchmarking or as a safety
+          # valve on a pathological target.
+          cross_projection:
+            proximity_warm_start: true
+            pool_seeded_initial_maxima: true
+          # Suspect-cell recheck pass (defaults shown). Runs after standard
+          # patching to catch grid cells whose profiled-parameter values
+          # look discontinuous compared to their neighbours -- typical
+          # symptom of a wrong-optimum strip that the fitness-only patching
+          # filter cannot fix. No-op on smooth surfaces.
+          suspect_recheck:
+            enabled: true
+            max_waves: 3
+            param_k: 3.0
+            max_fraction: 0.25
+            seeds_k_ring: 3
+            seeds_from_pool: 3
+            polish_threshold: 1.0e-4
         # Optional paraprof-side diagnostics.
         save_plots: true
         plot_settings:
           dpi: 200
           filetype: png
-          contour_levels: [-4.5, -3.0, -1.0]
+          contour_levels: [-3.0, -1.0]   # 2D, Wilks 2-DOF: 68%, 95% CL
+          slice_mode: max                # for 3D+ projections: 'max' or 'all'
+          plot_profiled_params: true     # plot best-fit profiled params per cell
         # samples_output_file: paraprof_samples.csv  # optional, rank-0 only
         # warm_start_file: paraprof_samples.csv      # optional; set equal to
         #                                            # samples_output_file to
