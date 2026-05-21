@@ -62,23 +62,18 @@ See `paraprof_example.yaml` for a complete worked example.
 
 ## Features supported via `advanced_config`
 
-Everything the user passes under `advanced_config:` in the YAML is forwarded
-verbatim to `ProfileProjector`, so all expert knobs documented in the
-[paraprof README](https://github.com/anderkve/paraprof) are reachable from
-GAMBIT. The most useful sub-dicts in practice:
+Everything under `advanced_config:` is forwarded verbatim to
+`ProfileProjector`, so every expert knob in the
+[paraprof README](https://github.com/anderkve/paraprof) is reachable. Two
+sub-dicts worth flagging:
 
-- **`cross_projection`** — multi-projection knowledge transfer (default on).
-  When more than one projection is requested, later projections reuse the
-  global solution pool built up by earlier ones: `initial_maxima` are
-  seeded from the pool (and the global L-BFGS-B starts are skipped), and
-  one population slot per cell is swapped for the highest-fitness nearby
-  past evaluation. Disable per-hook for A/B benchmarking.
+- **`cross_projection`** — multi-projection knowledge transfer (default on):
+  later projections seed `initial_maxima` from the global pool and swap one
+  population slot per cell for the nearest past evaluation.
 - **`suspect_recheck`** — extra pass after patching (default on, no-op on
-  smooth targets) that flags grid cells whose profiled-parameter vector
-  looks discontinuous from its neighbours' (robust MAD threshold) and
-  re-optimizes them from diverse seeds. Catches wrong-optimum strips that
-  the fitness-only patching filter misses.
+  smooth targets) that re-optimizes cells whose profiled-parameter vector
+  is discontinuous from its neighbours, catching wrong-optimum strips the
+  fitness-only patching filter misses.
 
-A user-supplied analytic gradient (paraprof's `grad_func`) is *not* exposed
-here because ScannerBit's Python scanner API only surfaces the loglike value
-itself. The L-BFGS-B paths fall back to finite differences.
+paraprof's `grad_func` is not exposed: ScannerBit's Python scanner API
+surfaces only the loglike value, so L-BFGS-B uses finite differences.
