@@ -244,14 +244,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
                              or {})
             best_x_unit = self._best_full_params(best_solution)
             if best_x_unit is not None:
-                try:
-                    best_x_phys = self.transform_to_vec(np.asarray(best_x_unit))
-                    print(f"{prefix}     best-fit point (physical):", flush=True)
-                    for name, val in zip(self.parameter_names, best_x_phys):
-                        print(f"{prefix}       {name}: {val}", flush=True)
-                except Exception:
-                    # Defensive: never let pretty-printing kill the scan.
-                    pass
+                best_x_phys = self.transform_to_vec(np.asarray(best_x_unit))
+                print(f"{prefix}     best-fit point (physical):", flush=True)
+                for name, val in zip(self.parameter_names, best_x_phys):
+                    print(f"{prefix}       {name}: {val}", flush=True)
         print()
 
 
