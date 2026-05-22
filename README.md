@@ -4,7 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **paraprof** is a robust and MPI-parallelised algorithm for computing profile likelihood projections – or more generally for mapping out low-dimensional projections of a target function by optimizing over the remaining dimensions.
-At each grid point in the projection space the remaining parameters are profiled (optimized) out using differential evolution (DE) or L-BFGS-B, and the grid expands dynamically to cover the region of interest, e.g. the high-likelihood region.
+
+First an initial global optimization identifies promising starting points. These starting points are used to activate initial grid points in the user-selected projection space. At each active grid point the remaining parameters are profiled (optimized) out using differential evolution (DE) and/or L-BFGS-B. If the optimized target value for a grid point meets the user-set threshold, the neighboring grid points are activated. This way the set of optimized grid points dynamically expands to cover the full region of interest, e.g. the high-likelihood region. Information from already converged grid points is communicated to neighboring grid points for faster convergence.
+
 
 <p align="center">
   <img src="examples/example_plots/animation/paraprof_rosenbrock_himmelblau_4D.gif" alt="ParaProf scanning the 4D Rosenbrock and 4D Himmelblau log-likelihoods" width="600"/>
