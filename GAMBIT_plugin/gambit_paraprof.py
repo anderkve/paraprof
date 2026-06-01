@@ -89,10 +89,13 @@ YAML options:
                              See the paraprof README for the full key list.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
-                             the working directory after each projection.
+                             the directory specified by
+                             ``plot_settings['output_dir']`` (default: the
+                             working directory) after each projection.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
-                             contour_levels, slice_mode, plot_profiled_params.
+                             contour_levels, slice_mode, plot_profiled_params,
+                             output_dir (created automatically if missing).
 
 paraprof's ``grad_func`` is not exposed: ScannerBit's Python API surfaces
 only the loglike value, so L-BFGS-B uses finite differences.

@@ -2,6 +2,7 @@
 Visualization utilities for profile likelihood plots.
 Supports 1D, 2D, and N-D projections.
 """
+import os
 import numpy as np
 import itertools
 from .logger import get_logger
@@ -15,7 +16,8 @@ def plot_profiles(sampler, filename, plot_settings=None):
     ``plot_settings`` keys (all optional): ``dpi`` (300), ``filetype`` ('png'),
     ``slice_mode`` ('max' or 'all', 3D+), ``vmin``/``vmax`` (colorbar range
     relative to best-fit log L; -4.0/0.0), ``contour_levels``
-    (default ``[-3.0, -1.0]``), ``plot_profiled_params`` (True).
+    (default ``[-3.0, -1.0]``), ``plot_profiled_params`` (True),
+    ``output_dir`` (default ``'.'``; created automatically if missing).
     """
     try:
         import matplotlib
@@ -28,17 +30,26 @@ def plot_profiles(sampler, filename, plot_settings=None):
     if plot_settings is None:
         plot_settings = {}
 
+    output_path = _resolve_output_path(filename, plot_settings)
+
     if sampler.n_proj_dims == 1:
-        _plot_1d_profile(sampler, filename, plot_settings)
+        _plot_1d_profile(sampler, output_path, plot_settings)
     elif sampler.n_proj_dims == 2:
-        _plot_2d_profile(sampler, filename, plot_settings)
+        _plot_2d_profile(sampler, output_path, plot_settings)
     elif sampler.n_proj_dims >= 3:
-        _plot_nd_profile(sampler, filename, plot_settings)
+        _plot_nd_profile(sampler, output_path, plot_settings)
     else:
         logger.info(f"Invalid projection dimensions: {sampler.n_proj_dims}")
 
     if plot_settings.get('plot_profiled_params', True) and sampler.n_prof_dims > 0:
         plot_profiled_parameters(sampler, filename, plot_settings)
+
+
+def _resolve_output_path(filename, plot_settings):
+    """Join ``filename`` with ``plot_settings['output_dir']`` and ensure the dir exists."""
+    output_dir = plot_settings.get('output_dir', '.')
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, filename)
 
 
 def _plot_1d_profile(sampler, filename, plot_settings):
@@ -354,12 +365,14 @@ def plot_profiled_parameters(sampler, base_filename, plot_settings=None):
     if plot_settings is None:
         plot_settings = {}
 
+    base_path = _resolve_output_path(base_filename, plot_settings)
+
     if sampler.n_proj_dims == 1:
-        _plot_1d_profiled_params(sampler, base_filename, plot_settings)
+        _plot_1d_profiled_params(sampler, base_path, plot_settings)
     elif sampler.n_proj_dims == 2:
-        _plot_2d_profiled_params(sampler, base_filename, plot_settings)
+        _plot_2d_profiled_params(sampler, base_path, plot_settings)
     elif sampler.n_proj_dims >= 3:
-        _plot_nd_profiled_params(sampler, base_filename, plot_settings)
+        _plot_nd_profiled_params(sampler, base_path, plot_settings)
 
 
 def _plot_1d_profiled_params(sampler, base_filename, plot_settings):
