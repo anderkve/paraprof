@@ -492,6 +492,11 @@ class ProfileProjector:
 
         # File handle and closed flag depend on whether output file is configured
         if self.samples_output_file:
+            # Create the target directory up front so the first flush succeeds
+            # even when the user points at a not-yet-existing subdirectory.
+            samples_dir = os.path.dirname(self.samples_output_file)
+            if samples_dir:
+                os.makedirs(samples_dir, exist_ok=True)
             # File handle is now None - open/close per flush for crash safety
             self._samples_file_handle = None
             self._file_closed = False

@@ -1,6 +1,7 @@
 """Logging utilities for ParaProf with MPI rank support."""
 
 import logging
+import os
 import sys
 from typing import Optional, Union
 
@@ -42,6 +43,9 @@ def setup_logger(
     logger.addHandler(console_handler)
 
     if log_file:
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)

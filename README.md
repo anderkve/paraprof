@@ -188,6 +188,7 @@ plot_settings = {
     'vmin': -4.0,
     'vmax': 0.0,
     'plot_profiled_params': True,
+    'output_dir': '.',  # created automatically if missing
 }
 ```
 
