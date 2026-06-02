@@ -563,7 +563,7 @@ class ProfileProjector:
         self.grid_points_per_dim = None
         self.initial_maxima = []
         self.population = {}  # {grid_idx: state_dict}
-        self.active_grid_indices = set()
+        self.activated_grid_indices = set()
         self.pending_activation_indices = set()
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
@@ -692,7 +692,7 @@ class ProfileProjector:
         # Reset state variables
         self.initial_maxima = []
         self.population = {}
-        self.active_grid_indices = set()
+        self.activated_grid_indices = set()
         self.pending_activation_indices = set()
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
@@ -1743,7 +1743,7 @@ class ProfileProjector:
         )
         indices_to_process = [unconverged_indices[i] for i in indices_to_process_map]
 
-        active_pop_list = list(self.active_grid_indices)
+        active_pop_list = list(self.activated_grid_indices)
         if len(active_pop_list) < 4:
             self.logger.info("Not enough active points (<4) to perform DE. Waiting.")
             return [], next_job_id, successful_F, successful_CR
