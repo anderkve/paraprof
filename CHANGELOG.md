@@ -9,40 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Basin detection for the initial-optimization stage**, on by default.
-  Replaces the fixed all-at-once batch of Latin-hypercube-seeded global
-  L-BFGS-B starts with a *rolling* multistart: a configurable number of
-  optimizations are kept in flight, each converged optimum is clustered
-  online into a registry of distinct optima (single-linkage merging within a
-  fixed internal tolerance, an RMS bounds-normalized parameter distance),
-  and a Boender-Rinnooy Kan Bayesian stopping rule — restricted to
-  ROI-competitive optima — halts the stage once the expected number of
-  undiscovered ROI optima falls below `basin_detection.undiscovered_threshold`.
-  When the rule fires, any still-running optimizations are aborted so their
-  remaining evaluations aren't wasted (partial runs are discarded, consistent
-  with the rule's own undiscovered-optima risk tolerance); reaching the
-  `n_initial_optimizations` cap instead lets in-flight runs finish.
-  `n_initial_optimizations` now acts as the upper bound on starts rather than a
-  fixed count. New `advanced_config['basin_detection']` knobs: `batch_size`,
-  `undiscovered_threshold`, `min_starts`. `batch_size`'s `None` default is an
-  FD-aware auto value (≈ `n_workers` / the per-gradient finite-difference
-  fan-out, floored at 2): since one optimization's gradient phase already fans
-  out across workers, fewer concurrent runs are needed to stay saturated, and
-  fewer are wasted when the rule aborts the rest. The clustering tolerance is a
-  fixed internal constant (a sensitivity sweep showed a wide safe plateau at
-  its value, with larger values only over-merging distinct optima and biasing
-  the stopping statistic), so it is not user-tunable. Basin detection is always
-  on; set `undiscovered_threshold: 0` to disable early stopping, in which case
-  the stage runs the full `n_initial_optimizations` starts. New sampler state:
-  `initial_optima_registry` (the discovered distinct optima with hit counts)
-  plus the `register_initial_optimum`, `basin_detection_roi_stats`,
+  Replaces the fixed all-at-once batch of Latin-hypercube global L-BFGS-B
+  starts with a *rolling* multistart: each converged optimum is clustered
+  online into a registry of distinct optima, and a Boender-Rinnooy Kan Bayesian
+  stopping rule (restricted to ROI-competitive optima) halts the stage once the
+  expected number of undiscovered ROI optima falls below
+  `basin_detection.undiscovered_threshold`, aborting any still-running
+  optimizations at that point. `n_initial_optimizations` is now an upper bound
+  rather than a fixed count. Knobs under `advanced_config['basin_detection']`:
+  `undiscovered_threshold` (set to `0` to disable early stopping), `min_starts`,
+  and `batch_size` (`None` = FD-aware auto: ≈ `n_workers` / the per-gradient
+  finite-difference fan-out). The clustering tolerance is a fixed internal
+  constant, not user-tunable. New sampler state `initial_optima_registry` plus
+  the `register_initial_optimum`, `basin_detection_roi_stats`,
   `basin_detection_should_stop`, and `resolve_initial_opt_batch_size` helpers.
 
 ### Changed
 - The default `n_initial_optimizations` is now a generous safe ceiling,
-  `min(400, 50 * n_dims)`, since the stopping rule controls the actual spend; a
-  benchmark across Ackley/Schwefel/Himmelblau shows the adaptive run matches the
-  full-budget recall of distinct ROI optima while only spending what each target
-  warrants. An explicit `n_initial_optimizations` overrides the default.
+  `min(400, 50 * n_dims)`, since the stopping rule controls the actual spend. An
+  explicit `n_initial_optimizations` overrides the default.
 - **User-supplied gradient support** via the new `grad_func` constructor
   argument on `ProfileProjector`. When provided, the L-BFGS-B paths
   request `grad_func(params)` from workers alongside the target evaluation

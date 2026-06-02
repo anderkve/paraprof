@@ -167,7 +167,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `suspect_recheck.seeds_k_ring`                | `3`                | Max Chebyshev radius for extended-neighbour seeds. |
 | `suspect_recheck.seeds_from_pool`             | `3`                | Cross-projection pool seeds tested per suspect cell. |
 | `suspect_recheck.polish_threshold`            | `1e-4`             | Min logL improvement to trigger the L-BFGS-B polish. |
-| `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once for the initial-optimization stage's rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2): a single run's gradient already fans out across workers, so fewer concurrent runs are needed, and fewer are wasted when early stopping aborts the rest. |
+| `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 

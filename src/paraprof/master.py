@@ -775,15 +775,11 @@ def master_main(comm, sampler,
                         elif sampler.basin_detection_should_stop(initial_opt_completed):
                             W, n_roi = sampler.basin_detection_roi_stats()
                             initial_opt_stopped = True
-                            # Abort the still-running optimizations: we have
-                            # concluded enough ROI optima are found, so their
+                            # Abort the still-running optimizations -- their
                             # remaining evaluations would be pure overshoot.
-                            # Drop them from active_jobs (in-flight task results
-                            # are then ignored) and purge their queued tasks.
-                            # Partial runs are discarded without registering --
-                            # consistent with the rule's own undiscovered-optima
-                            # risk tolerance. (No abort on the cap branch above:
-                            # there we keep the runs we have already paid for.)
+                            # Dropping them from active_jobs makes their in-flight
+                            # results get ignored; queued tasks are purged. (The
+                            # cap branch above keeps runs we've already paid for.)
                             aborted = set(initial_opt_inflight)
                             for jid in aborted:
                                 active_jobs.pop(jid, None)

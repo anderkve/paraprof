@@ -19,21 +19,14 @@ from .jobs.de_job import DEGridPointJob
 DEFAULT_BASIN_CAP_MULTIPLIER = 50
 DEFAULT_BASIN_CAP_MAX = 400
 
-# Basin detection for the initial-optimization stage: always on. A rolling
-# multistart keeps a batch of global L-BFGS-B starts in flight, clusters each
-# converged optimum online (single-linkage in bounds-normalized parameter
-# space), and applies a Boender-Rinnooy Kan Bayesian stopping rule restricted
-# to ROI-competitive optima. The stage halts once the expected number of
-# undiscovered ROI optima drops below ``undiscovered_threshold``, or when the
-# ``n_initial_optimizations`` cap is reached. Set the threshold to 0 to disable
-# early stopping (the stage then always runs to the cap).
+# Basin detection for the initial-optimization stage (always on; see the
+# ProfileProjector docstring). Online single-linkage clustering of converged
+# optima feeds a Boender-Rinnooy Kan Bayesian stopping rule over ROI optima.
 DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve_initial_opt_batch_size)
-# merge_tol is an internal constant, not a user knob: a sensitivity sweep showed
-# a wide safe plateau at/below 0.02 (results identical from 0.005-0.02 across
-# unimodal, dense, and well-separated multimodal targets), while larger values
-# over-merge distinct optima and bias the W count the stopping rule depends on.
-# The right value tracks the bounds-normalization and L-BFGS-B tolerance, both
-# internal, so it is fixed here rather than exposed.
+# merge_tol is fixed, not a user knob: a sensitivity sweep showed a wide safe
+# plateau at/below 0.02, while larger values over-merge distinct optima and bias
+# the W count the rule depends on. The right value tracks internal scales
+# (bounds-normalization, L-BFGS-B tolerance), not the target.
 DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
 DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5  # stop when E[undiscovered ROI optima] < this
 DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
@@ -267,22 +260,17 @@ class ProfileProjector:
         The ``basin_detection`` sub-dict controls the initial-optimization
         stage, where ``n_initial_optimizations`` is treated as a *maximum*:
         paraprof runs a rolling Latin-hypercube multistart, clusters each
-        converged optimum online into distinct basins (merging endpoints within
-        a fixed internal tolerance, an RMS bounds-normalized parameter
-        distance), and applies a Boender-Rinnooy Kan Bayesian stopping rule
-        restricted to ROI-competitive optima. The stage halts once the expected
-        number of undiscovered ROI optima falls below ``undiscovered_threshold``
-        (after at least ``min_starts`` starts), at which point any still-running
-        optimizations are aborted (their remaining evaluations would be pure
-        overshoot); it also halts when the ``n_initial_optimizations`` cap is
-        reached (there in-flight runs are allowed to finish). ``batch_size`` is
-        the number of optimizations kept in flight; its ``None`` default is an
-        FD-aware auto value (roughly ``n_workers`` divided by the per-gradient
-        finite-difference fan-out -- see :meth:`resolve_initial_opt_batch_size`).
-        Set ``undiscovered_threshold`` to ``0`` to disable early stopping: the
-        rule then never fires and the stage always runs the full
-        ``n_initial_optimizations`` starts (so set that cap explicitly when you
-        do, since its default assumes early stopping is active).
+        converged optimum online into distinct basins, and applies a
+        Boender-Rinnooy Kan Bayesian stopping rule restricted to ROI-competitive
+        optima. The stage halts once the expected number of undiscovered ROI
+        optima falls below ``undiscovered_threshold`` (after at least
+        ``min_starts`` starts), aborting any still-running optimizations; it also
+        halts at the ``n_initial_optimizations`` cap, where in-flight runs are
+        allowed to finish instead. ``batch_size`` (default ``None``) sets how
+        many optimizations run concurrently -- see
+        :meth:`resolve_initial_opt_batch_size`. Set ``undiscovered_threshold`` to
+        ``0`` to disable early stopping, running the full
+        ``n_initial_optimizations`` starts (set that cap explicitly when you do).
 
         The ``cross_projection`` sub-dict toggles the two cross-projection
         knowledge-transfer hooks. Both default to enabled; set either to
@@ -1395,15 +1383,12 @@ class ProfileProjector:
         """Number of initial-optimization runs to keep in flight for the rolling
         multistart, given ``n_workers`` available workers.
 
-        ``basin_detection.batch_size`` overrides this directly. The ``None``
-        (auto) default is FD-aware: a single global L-BFGS-B run's gradient
-        phase already fans out ``fd_width`` parallel evaluations (one per dim,
-        two per dim for central differences), so only about
-        ``n_workers / fd_width`` concurrent runs are needed to keep the workers
-        fed. Keeping fewer runs in flight means less partial work is discarded
-        when the stopping rule fires and aborts the remainder. Floored at 2 to
-        retain some concurrency through the (serial) line-search phases, and
-        capped at ``n_workers`` and ``n_initial_optimizations``."""
+        ``basin_detection.batch_size`` overrides this. The ``None`` default is
+        FD-aware: one run's gradient phase already fans out ``fd_width`` parallel
+        evaluations (one per dim, two for central differences), so ~``n_workers /
+        fd_width`` concurrent runs keep the workers fed -- and fewer runs in
+        flight means less partial work discarded when the rule aborts the rest.
+        Floored at 2, capped at ``n_workers`` and ``n_initial_optimizations``."""
         cap = self.n_initial_optimizations
         if self.basin_batch_size is not None:
             return max(1, min(int(self.basin_batch_size), cap))
