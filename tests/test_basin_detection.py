@@ -24,6 +24,7 @@ class TestConfig:
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
         assert s.basin_detection_enabled is True
         assert s.basin_batch_size is None
+        # merge_tol is a fixed internal constant, not a config knob.
         assert s.basin_merge_tol == pytest.approx(0.02)
         assert s.basin_undiscovered_threshold == pytest.approx(0.5)
         # min_starts auto: max(10, 3 * n_dims) = max(10, 6) = 10, capped at cap.
@@ -35,13 +36,12 @@ class TestConfig:
         s = _make_sampler(
             simple_2d_function, simple_bounds_2d, basic_projection_2d,
             advanced_config={'basin_detection': {
-                'enabled': False, 'batch_size': 7, 'merge_tol': 0.1,
+                'enabled': False, 'batch_size': 7,
                 'undiscovered_threshold': 1.0, 'min_starts': 5,
             }},
         )
         assert s.basin_detection_enabled is False
         assert s.basin_batch_size == 7
-        assert s.basin_merge_tol == pytest.approx(0.1)
         assert s.basin_undiscovered_threshold == pytest.approx(1.0)
         assert s.basin_min_starts == 5
 
@@ -102,9 +102,11 @@ class TestRegistry:
 
     def test_merge_tol_boundary(self, simple_2d_function, simple_bounds_2d,
                                 basic_projection_2d):
-        # Tight tolerance: two points 0.5/dim apart (span 10) should stay distinct.
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          advanced_config={'basin_detection': {'merge_tol': 0.001}})
+        # merge_tol is a fixed internal constant; poke it directly to exercise
+        # the clustering threshold. Tight tolerance: two points 0.5/dim apart
+        # (span 10) should stay distinct.
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        s.basin_merge_tol = 0.001
         s.register_initial_optimum(np.array([3.0, 2.0]), -0.1)
         s.register_initial_optimum(np.array([3.5, 2.5]), -0.1)
         assert len(s.initial_optima_registry) == 2

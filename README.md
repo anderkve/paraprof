@@ -169,7 +169,6 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `suspect_recheck.polish_threshold`            | `1e-4`             | Min logL improvement to trigger the L-BFGS-B polish. |
 | `basin_detection.enabled`                     | `True`             | Rolling multistart + online basin clustering + Bayesian stop for the initial-optimization stage. `False` reverts to firing all `n_initial_optimizations` starts at once. |
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once. `None` = one per worker. |
-| `basin_detection.merge_tol`                   | `0.02`             | RMS bounds-normalized parameter distance below which two converged optima are treated as the same basin. |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner. |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 

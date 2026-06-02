@@ -29,6 +29,12 @@ DEFAULT_INITIAL_OPT_MAX = 100
 # undiscovered ROI optima drops below a threshold.
 DEFAULT_BASIN_DETECTION_ENABLED = True
 DEFAULT_BASIN_BATCH_SIZE = None             # None -> auto (one optimization per worker)
+# merge_tol is an internal constant, not a user knob: a sensitivity sweep showed
+# a wide safe plateau at/below 0.02 (results identical from 0.005-0.02 across
+# unimodal, dense, and well-separated multimodal targets), while larger values
+# over-merge distinct optima and bias the W count the stopping rule depends on.
+# The right value tracks the bounds-normalization and L-BFGS-B tolerance, both
+# internal, so it is fixed here rather than exposed.
 DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
 DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5  # stop when E[undiscovered ROI optima] < this
 DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
@@ -255,7 +261,6 @@ class ProfileProjector:
                 'basin_detection': {
                     'enabled': bool,                # Default: True
                     'batch_size': int,              # Default: None (auto: one per worker)
-                    'merge_tol': float,             # Default: 0.02
                     'undiscovered_threshold': float,# Default: 0.5
                     'min_starts': int,              # Default: None (auto)
                 },
@@ -265,8 +270,8 @@ class ProfileProjector:
         stage. With it enabled (the default), ``n_initial_optimizations`` is
         treated as a *maximum*: paraprof runs a rolling Latin-hypercube
         multistart, clusters each converged optimum online into distinct basins
-        (merging endpoints within ``merge_tol``, an RMS bounds-normalized
-        parameter distance), and applies a Boender-Rinnooy Kan Bayesian
+        (merging endpoints within a fixed internal tolerance, an RMS
+        bounds-normalized parameter distance), and applies a Boender-Rinnooy Kan Bayesian
         stopping rule restricted to ROI-competitive optima. The stage halts once
         the expected number of undiscovered ROI optima falls below
         ``undiscovered_threshold`` (after at least ``min_starts`` starts), or
@@ -284,7 +289,10 @@ class ProfileProjector:
         in benchmarking (mutation_strategy, pbest_fraction,
         neighbor_pull_probability, global_pool_size, patching.n_neighbors,
         activation.mix_ratios) are now module-level constants in sampler.py
-        and are no longer user-tunable.
+        and are no longer user-tunable. The basin-clustering ``merge_tol`` is
+        likewise a fixed internal constant: a sensitivity sweep showed a wide
+        safe plateau at/below its value, with larger values only over-merging
+        distinct optima and biasing the stopping statistic.
         """
         # --- Input Validation ---
 
@@ -472,7 +480,6 @@ class ProfileProjector:
             'basin_detection': {
                 'enabled': DEFAULT_BASIN_DETECTION_ENABLED,
                 'batch_size': DEFAULT_BASIN_BATCH_SIZE,
-                'merge_tol': DEFAULT_BASIN_MERGE_TOL,
                 'undiscovered_threshold': DEFAULT_BASIN_UNDISCOVERED_THRESHOLD,
                 'min_starts': None,  # None -> max(floor, mult*n_dims), capped at n_initial_optimizations
             },
@@ -606,7 +613,9 @@ class ProfileProjector:
         bd = config['basin_detection']
         self.basin_detection_enabled = bd['enabled']
         self.basin_batch_size = bd['batch_size']
-        self.basin_merge_tol = bd['merge_tol']
+        # merge_tol is a fixed internal constant (not a user knob); see the
+        # DEFAULT_BASIN_MERGE_TOL sensitivity note above.
+        self.basin_merge_tol = DEFAULT_BASIN_MERGE_TOL
         self.basin_undiscovered_threshold = bd['undiscovered_threshold']
         if bd['min_starts'] is None:
             self.basin_min_starts = min(

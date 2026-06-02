@@ -12,14 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Replaces the fixed all-at-once batch of Latin-hypercube-seeded global
   L-BFGS-B starts with a *rolling* multistart: a configurable number of
   optimizations are kept in flight, each converged optimum is clustered
-  online into a registry of distinct optima (single-linkage merging within
-  `basin_detection.merge_tol`, an RMS bounds-normalized parameter distance),
+  online into a registry of distinct optima (single-linkage merging within a
+  fixed internal tolerance, an RMS bounds-normalized parameter distance),
   and a Boender-Rinnooy Kan Bayesian stopping rule — restricted to
   ROI-competitive optima — halts the stage once the expected number of
   undiscovered ROI optima falls below `basin_detection.undiscovered_threshold`.
   `n_initial_optimizations` now acts as the upper bound on starts rather than a
   fixed count. New `advanced_config['basin_detection']` knobs: `enabled`,
-  `batch_size`, `merge_tol`, `undiscovered_threshold`, `min_starts`. Set
+  `batch_size`, `undiscovered_threshold`, `min_starts`. The clustering
+  tolerance is a fixed internal constant (a sensitivity sweep showed a wide
+  safe plateau at its value, with larger values only over-merging distinct
+  optima and biasing the stopping statistic), so it is not user-tunable. Set
   `enabled: False` to restore the legacy fixed-batch behavior. New sampler
   state: `initial_optima_registry` (the discovered distinct optima with hit
   counts) plus the `register_initial_optimum`, `basin_detection_roi_stats`, and
