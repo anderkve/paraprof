@@ -125,5 +125,5 @@ class ActivationJob(Job):
             state['full_params'] = self.all_full_params[0]
         self.sampler.population[self.grid_idx] = state
 
-        self.sampler.active_grid_indices.add(self.grid_idx)
+        self.sampler.activated_grid_indices.add(self.grid_idx)
         return None
