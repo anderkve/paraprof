@@ -345,6 +345,17 @@ def master_main(comm, sampler,
     suspect_wave_test_jobs = set()
     suspect_wave_lbfgsb_jobs = set()
 
+    # Rolling initial-optimization (basin detection) state. The stage keeps
+    # `initial_opt_batch_size` global L-BFGS-B starts in flight, classifying each
+    # converged optimum and refilling until the Bayesian stopping rule trips or
+    # the `initial_opt_cap` (= n_initial_optimizations) is reached.
+    initial_opt_inflight = set()   # job IDs of in-flight INITIAL_OPTIMIZATION jobs
+    initial_opt_started = 0        # starts launched so far
+    initial_opt_completed = 0      # starts finished so far (incl. failures)
+    initial_opt_batch_size = 0
+    initial_opt_cap = 0
+    initial_opt_stopped = False    # rule tripped or cap reached: stop refilling
+
     # --- Main Event Loop ---
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
 
@@ -384,16 +395,51 @@ def master_main(comm, sampler,
                         and len(sampler.global_solution_pool) > 0):
                     sampler._initialize_from_global_pool()
 
-                # If no maxima found from warm start (or warm start disabled), run global optimization
-                if not sampler.initial_maxima:
-                    new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
-                else:
+                # If maxima already came from warm start / pool seeding, skip the
+                # global optimization stage entirely.
+                if sampler.initial_maxima:
                     logger.info("Skipping initial optimization - using provided initial points or warm start.")
-                    new_jobs = []
-
-                if not new_jobs:
                     current_stage = stages.pop(0) if stages else None
                     continue
+
+                if sampler.basin_detection_enabled:
+                    # Rolling multistart with online basin detection. Launch a
+                    # first batch and hand control to WAITING_FOR_INITIAL_OPT,
+                    # which refills and applies the stopping rule as jobs return.
+                    initial_opt_cap = sampler.n_initial_optimizations
+                    if sampler.basin_batch_size is None:
+                        initial_opt_batch_size = max(min(n_workers, initial_opt_cap), 1)
+                    else:
+                        initial_opt_batch_size = max(1, min(int(sampler.basin_batch_size), initial_opt_cap))
+                    initial_opt_started = 0
+                    initial_opt_completed = 0
+                    initial_opt_stopped = False
+                    initial_opt_inflight = set()
+                    sampler.init_initial_opt_lhs(initial_opt_cap)
+
+                    logger.info(
+                        f"--- Basin detection: rolling multistart "
+                        f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
+                        f"min_starts={sampler.basin_min_starts}) ---"
+                    )
+                    new_jobs = []
+                    for _ in range(min(initial_opt_batch_size, initial_opt_cap)):
+                        job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
+                        new_jobs.append(job)
+                        initial_opt_inflight.add(job.id)
+                        initial_opt_started += 1
+
+                    if not new_jobs:
+                        # Degenerate cap (e.g. n_initial_optimizations == 0):
+                        # nothing to optimize, move on.
+                        current_stage = stages.pop(0) if stages else None
+                        continue
+                    current_stage = 'WAITING_FOR_INITIAL_OPT'
+                else:
+                    new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
+                    if not new_jobs:
+                        current_stage = stages.pop(0) if stages else None
+                        continue
 
             elif current_stage == 'ACTIVATION':
                 # Use refinement activation for refinement runs
@@ -600,7 +646,8 @@ def master_main(comm, sampler,
             # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
             if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP',
                                      'WAITING_FOR_PATCHING_WAVE',
-                                     'WAITING_FOR_SUSPECT_WAVE']:
+                                     'WAITING_FOR_SUSPECT_WAVE',
+                                     'WAITING_FOR_INITIAL_OPT']:
                  current_stage = stages.pop(0) if stages else None
 
         # --- 2. Check for and process ALL available results ---
@@ -707,6 +754,51 @@ def master_main(comm, sampler,
                         current_stage = 'SUSPECT_RECHECK_WAVES'
                     else:
                         logger.info("--- Master: No updates in wave. Suspect recheck converged. ---")
+                        current_stage = stages.pop(0) if stages else None
+
+                # Rolling initial-optimization with basin detection. The job's
+                # on_finish has already clustered its endpoint into the registry;
+                # here we apply the stopping rule and refill the in-flight batch.
+                if current_stage == 'WAITING_FOR_INITIAL_OPT' and \
+                   job_id_finished in initial_opt_inflight:
+
+                    initial_opt_inflight.discard(job_id_finished)
+                    initial_opt_completed += 1
+
+                    if not initial_opt_stopped:
+                        if initial_opt_started >= initial_opt_cap:
+                            initial_opt_stopped = True
+                            logger.info(
+                                f"--- Basin detection: reached cap of "
+                                f"{initial_opt_cap} starts; stopping ---"
+                            )
+                        elif sampler.basin_detection_should_stop(initial_opt_completed):
+                            W, n_roi = sampler.basin_detection_roi_stats()
+                            initial_opt_stopped = True
+                            logger.info(
+                                f"--- Basin detection: stopping rule met after "
+                                f"{initial_opt_completed} optimizations "
+                                f"({W} distinct ROI optima from {n_roi} ROI hits) ---"
+                            )
+
+                    # Refill to keep `initial_opt_batch_size` starts in flight.
+                    if not initial_opt_stopped:
+                        while (len(initial_opt_inflight) < initial_opt_batch_size
+                               and initial_opt_started < initial_opt_cap):
+                            new_job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
+                            active_jobs[new_job.id] = new_job
+                            initial_opt_inflight.add(new_job.id)
+                            initial_opt_started += 1
+                            _queue_tasks(new_job.start(), new_job.type)
+
+                    # Stage done once the in-flight batch has fully drained.
+                    if not initial_opt_inflight:
+                        W, n_roi = sampler.basin_detection_roi_stats()
+                        logger.info(
+                            f"--- Basin detection complete: {initial_opt_completed} "
+                            f"optimizations, {W} distinct ROI optima "
+                            f"({len(sampler.initial_optima_registry)} optima total) ---"
+                        )
                         current_stage = stages.pop(0) if stages else None
 
         # --- End of Iprobe receive loop ---

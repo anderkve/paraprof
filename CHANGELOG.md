@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Basin detection for the initial-optimization stage**, on by default.
+  Replaces the fixed all-at-once batch of Latin-hypercube-seeded global
+  L-BFGS-B starts with a *rolling* multistart: a configurable number of
+  optimizations are kept in flight, each converged optimum is clustered
+  online into a registry of distinct optima (single-linkage merging within
+  `basin_detection.merge_tol`, an RMS bounds-normalized parameter distance),
+  and a Boender-Rinnooy Kan Bayesian stopping rule — restricted to
+  ROI-competitive optima — halts the stage once the expected number of
+  undiscovered ROI optima falls below `basin_detection.undiscovered_threshold`.
+  `n_initial_optimizations` now acts as the upper bound on starts rather than a
+  fixed count. New `advanced_config['basin_detection']` knobs: `enabled`,
+  `batch_size`, `merge_tol`, `undiscovered_threshold`, `min_starts`. Set
+  `enabled: False` to restore the legacy fixed-batch behavior. New sampler
+  state: `initial_optima_registry` (the discovered distinct optima with hit
+  counts) plus the `register_initial_optimum`, `basin_detection_roi_stats`, and
+  `basin_detection_should_stop` helpers.
 - **User-supplied gradient support** via the new `grad_func` constructor
   argument on `ProfileProjector`. When provided, the L-BFGS-B paths
   request `grad_func(params)` from workers alongside the target evaluation
