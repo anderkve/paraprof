@@ -1,5 +1,6 @@
 """Profile Likelihood Projector with Grid-Based Optimization."""
 import os
+import math
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
@@ -26,7 +27,7 @@ DEFAULT_BASIN_CAP_MAX = 400
 # undiscovered ROI optima drops below ``undiscovered_threshold``, or when the
 # ``n_initial_optimizations`` cap is reached. Set the threshold to 0 to disable
 # early stopping (the stage then always runs to the cap).
-DEFAULT_BASIN_BATCH_SIZE = None             # None -> auto (one optimization per worker)
+DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve_initial_opt_batch_size)
 # merge_tol is an internal constant, not a user knob: a sensitivity sweep showed
 # a wide safe plateau at/below 0.02 (results identical from 0.005-0.02 across
 # unimodal, dense, and well-separated multimodal targets), while larger values
@@ -257,7 +258,7 @@ class ProfileProjector:
                 },
 
                 'basin_detection': {
-                    'batch_size': int,              # Default: None (auto: one per worker)
+                    'batch_size': int,              # Default: None (FD-aware auto)
                     'undiscovered_threshold': float,# Default: 0.5 (0 disables early stop)
                     'min_starts': int,              # Default: None (auto)
                 },
@@ -271,11 +272,15 @@ class ProfileProjector:
         distance), and applies a Boender-Rinnooy Kan Bayesian stopping rule
         restricted to ROI-competitive optima. The stage halts once the expected
         number of undiscovered ROI optima falls below ``undiscovered_threshold``
-        (after at least ``min_starts`` starts), or when the
-        ``n_initial_optimizations`` cap is reached. ``batch_size`` is the number
-        of optimizations kept in flight (defaults to one per worker). Set
-        ``undiscovered_threshold`` to ``0`` to disable early stopping: the rule
-        then never fires and the stage always runs the full
+        (after at least ``min_starts`` starts), at which point any still-running
+        optimizations are aborted (their remaining evaluations would be pure
+        overshoot); it also halts when the ``n_initial_optimizations`` cap is
+        reached (there in-flight runs are allowed to finish). ``batch_size`` is
+        the number of optimizations kept in flight; its ``None`` default is an
+        FD-aware auto value (roughly ``n_workers`` divided by the per-gradient
+        finite-difference fan-out -- see :meth:`resolve_initial_opt_batch_size`).
+        Set ``undiscovered_threshold`` to ``0`` to disable early stopping: the
+        rule then never fires and the stage always runs the full
         ``n_initial_optimizations`` starts (so set that cap explicitly when you
         do, since its default assumes early stopping is active).
 
@@ -1385,6 +1390,26 @@ class ProfileProjector:
             start_params_full=start_point,     # Full vector
             seed_history=None,
         )
+
+    def resolve_initial_opt_batch_size(self, n_workers):
+        """Number of initial-optimization runs to keep in flight for the rolling
+        multistart, given ``n_workers`` available workers.
+
+        ``basin_detection.batch_size`` overrides this directly. The ``None``
+        (auto) default is FD-aware: a single global L-BFGS-B run's gradient
+        phase already fans out ``fd_width`` parallel evaluations (one per dim,
+        two per dim for central differences), so only about
+        ``n_workers / fd_width`` concurrent runs are needed to keep the workers
+        fed. Keeping fewer runs in flight means less partial work is discarded
+        when the stopping rule fires and aborts the remainder. Floored at 2 to
+        retain some concurrency through the (serial) line-search phases, and
+        capped at ``n_workers`` and ``n_initial_optimizations``."""
+        cap = self.n_initial_optimizations
+        if self.basin_batch_size is not None:
+            return max(1, min(int(self.basin_batch_size), cap))
+        fd_width = self.dims * (2 if self.lbfgsb_gradient_method == 'central' else 1)
+        auto = max(2, math.ceil(n_workers / max(fd_width, 1)))
+        return max(1, min(auto, max(n_workers, 1), cap))
 
     def init_initial_opt_lhs(self, n_points):
         """Pre-generate the LHS start-point pool (sized to the hard cap) for the

@@ -322,6 +322,15 @@ def master_main(comm, sampler,
             # DE_GRID_POINT, ACTIVATION go to low priority
             low_prio_tasks.extend(tasks)
 
+    def _purge_queued_tasks(job_ids):
+        """Drop not-yet-dispatched tasks belonging to the given jobs from both
+        priority queues (used to abort optimizations). Tasks already running on
+        workers return normally and are ignored via the unknown-job path."""
+        for q in (high_prio_tasks, low_prio_tasks):
+            kept = [t for t in q if t.get('context', {}).get('job_id') not in job_ids]
+            q.clear()
+            q.extend(kept)
+
     next_job_id = 0
     tasks_sent = 0
     tasks_completed = 0
@@ -406,10 +415,7 @@ def master_main(comm, sampler,
                 # first batch and hand control to WAITING_FOR_INITIAL_OPT,
                 # which refills and applies the stopping rule as jobs return.
                 initial_opt_cap = sampler.n_initial_optimizations
-                if sampler.basin_batch_size is None:
-                    initial_opt_batch_size = max(min(n_workers, initial_opt_cap), 1)
-                else:
-                    initial_opt_batch_size = max(1, min(int(sampler.basin_batch_size), initial_opt_cap))
+                initial_opt_batch_size = sampler.resolve_initial_opt_batch_size(n_workers)
                 initial_opt_started = 0
                 initial_opt_completed = 0
                 initial_opt_stopped = False
@@ -769,10 +775,25 @@ def master_main(comm, sampler,
                         elif sampler.basin_detection_should_stop(initial_opt_completed):
                             W, n_roi = sampler.basin_detection_roi_stats()
                             initial_opt_stopped = True
+                            # Abort the still-running optimizations: we have
+                            # concluded enough ROI optima are found, so their
+                            # remaining evaluations would be pure overshoot.
+                            # Drop them from active_jobs (in-flight task results
+                            # are then ignored) and purge their queued tasks.
+                            # Partial runs are discarded without registering --
+                            # consistent with the rule's own undiscovered-optima
+                            # risk tolerance. (No abort on the cap branch above:
+                            # there we keep the runs we have already paid for.)
+                            aborted = set(initial_opt_inflight)
+                            for jid in aborted:
+                                active_jobs.pop(jid, None)
+                            initial_opt_inflight.clear()
+                            _purge_queued_tasks(aborted)
                             logger.info(
                                 f"--- Basin detection: stopping rule met after "
                                 f"{initial_opt_completed} optimizations "
-                                f"({W} distinct ROI optima from {n_roi} ROI hits) ---"
+                                f"({W} distinct ROI optima from {n_roi} ROI hits); "
+                                f"aborted {len(aborted)} in-flight run(s) ---"
                             )
 
                     # Refill to keep `initial_opt_batch_size` starts in flight.

@@ -17,17 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a Boender-Rinnooy Kan Bayesian stopping rule — restricted to
   ROI-competitive optima — halts the stage once the expected number of
   undiscovered ROI optima falls below `basin_detection.undiscovered_threshold`.
+  When the rule fires, any still-running optimizations are aborted so their
+  remaining evaluations aren't wasted (partial runs are discarded, consistent
+  with the rule's own undiscovered-optima risk tolerance); reaching the
+  `n_initial_optimizations` cap instead lets in-flight runs finish.
   `n_initial_optimizations` now acts as the upper bound on starts rather than a
   fixed count. New `advanced_config['basin_detection']` knobs: `batch_size`,
-  `undiscovered_threshold`, `min_starts`. The clustering tolerance is a fixed
-  internal constant (a sensitivity sweep showed a wide safe plateau at its
-  value, with larger values only over-merging distinct optima and biasing the
-  stopping statistic), so it is not user-tunable. Basin detection is always on;
-  set `undiscovered_threshold: 0` to disable early stopping, in which case the
-  stage runs the full `n_initial_optimizations` starts. New sampler state:
+  `undiscovered_threshold`, `min_starts`. `batch_size`'s `None` default is an
+  FD-aware auto value (≈ `n_workers` / the per-gradient finite-difference
+  fan-out, floored at 2): since one optimization's gradient phase already fans
+  out across workers, fewer concurrent runs are needed to stay saturated, and
+  fewer are wasted when the rule aborts the rest. The clustering tolerance is a
+  fixed internal constant (a sensitivity sweep showed a wide safe plateau at
+  its value, with larger values only over-merging distinct optima and biasing
+  the stopping statistic), so it is not user-tunable. Basin detection is always
+  on; set `undiscovered_threshold: 0` to disable early stopping, in which case
+  the stage runs the full `n_initial_optimizations` starts. New sampler state:
   `initial_optima_registry` (the discovered distinct optima with hit counts)
-  plus the `register_initial_optimum`, `basin_detection_roi_stats`, and
-  `basin_detection_should_stop` helpers.
+  plus the `register_initial_optimum`, `basin_detection_roi_stats`,
+  `basin_detection_should_stop`, and `resolve_initial_opt_batch_size` helpers.
 
 ### Changed
 - The default `n_initial_optimizations` is now a generous safe ceiling,

@@ -75,6 +75,39 @@ class TestConfig:
         assert s.basin_detection_should_stop(20) is False
 
 
+class TestBatchSize:
+    def test_auto_fd_aware_default(self, simple_2d_function, simple_bounds_2d,
+                                   basic_projection_2d):
+        # 2-D, forward FD -> fd_width = 2, so auto batch ~= n_workers / 2,
+        # floored at 2 and capped at n_workers and the cap (default 100).
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        assert s.resolve_initial_opt_batch_size(1) == 1   # capped at n_workers
+        assert s.resolve_initial_opt_batch_size(2) == 2   # floor
+        assert s.resolve_initial_opt_batch_size(8) == 4
+        assert s.resolve_initial_opt_batch_size(32) == 16
+
+    def test_auto_capped_at_n_initial_optimizations(self, simple_2d_function,
+                                                    simple_bounds_2d, basic_projection_2d):
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
+                          n_initial_optimizations=3)
+        assert s.resolve_initial_opt_batch_size(32) == 3
+
+    def test_auto_uses_central_fd_width(self, simple_2d_function, simple_bounds_2d,
+                                        basic_projection_2d):
+        # central FD doubles fd_width (2 evals/dim) -> fewer concurrent runs.
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
+                          advanced_config={'lbfgsb': {'gradient_method': 'central'}})
+        assert s.resolve_initial_opt_batch_size(8) == 2   # ceil(8 / (2*2)) = 2
+
+    def test_explicit_override(self, simple_2d_function, simple_bounds_2d,
+                               basic_projection_2d):
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
+                          advanced_config={'basin_detection': {'batch_size': 7}})
+        # Explicit value is honored (only capped at n_initial_optimizations).
+        assert s.resolve_initial_opt_batch_size(2) == 7
+        assert s.resolve_initial_opt_batch_size(100) == 7
+
+
 class TestRegistry:
     def test_distinct_optima_registered_separately(self, simple_2d_function,
                                                    simple_bounds_2d, basic_projection_2d):
