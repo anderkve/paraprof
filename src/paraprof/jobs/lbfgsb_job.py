@@ -422,6 +422,10 @@ class LBFGSBJob(Job):
 
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
+            # Online basin detection: cluster this endpoint into the distinct-optima
+            # registry that drives the rolling multistart's stopping rule.
+            self.sampler.register_initial_optimum(final_params, final_target_val)
+
         elif self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB']:
             grid_idx = self.grid_idx
             if grid_idx in self.sampler.population:

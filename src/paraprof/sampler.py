@@ -1,5 +1,6 @@
 """Profile Likelihood Projector with Grid-Based Optimization."""
 import os
+import math
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
@@ -12,9 +13,24 @@ from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
 
 
-# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims).
-DEFAULT_INITIAL_OPT_MULTIPLIER = 20
-DEFAULT_INITIAL_OPT_MAX = 100
+# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). It is a safe
+# ceiling — the Bayesian stopping rule controls the actual spend — so it is
+# generous.
+DEFAULT_BASIN_CAP_MULTIPLIER = 50
+DEFAULT_BASIN_CAP_MAX = 400
+
+# Basin detection for the initial-optimization stage (always on; see the
+# ProfileProjector docstring). Online single-linkage clustering of converged
+# optima feeds a Boender-Rinnooy Kan Bayesian stopping rule over ROI optima.
+DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve_initial_opt_batch_size)
+# merge_tol is fixed, not a user knob: a sensitivity sweep showed a wide safe
+# plateau at/below 0.02, while larger values over-merge distinct optima and bias
+# the W count the rule depends on. The right value tracks internal scales
+# (bounds-normalization, L-BFGS-B tolerance), not the target.
+DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
+DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5  # stop when E[undiscovered ROI optima] < this
+DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
+DEFAULT_BASIN_MIN_STARTS_FLOOR = 10         # ... floored at this many
 
 # Global solution pool size: clip(n_dims * PER_DIM, POOL_SIZE, POOL_MAX).
 # Floor keeps the 4-D default at 10 000 entries; ceiling caps master-side
@@ -146,9 +162,13 @@ class ProfileProjector:
             Apply L-BFGS-B polishing step after DE optimization (default: True)
             Refines solutions found by DE using gradient-based optimization
         n_initial_optimizations : int, optional
-            Number of global L-BFGS-B optimizations to find initial maxima (default: None)
-            If None, auto-configured as min(100, 20 * n_dims)
-            Typical values: 20-100. Higher = better initial coverage but slower startup
+            Number of global L-BFGS-B optimizations to find initial maxima (default: None).
+            With basin detection enabled (the default) this is a *cap*, not a fixed
+            spend: the Bayesian stopping rule halts early on easy targets and uses
+            the full budget only when optima remain, so set it generously. If None,
+            auto-configured as min(400, 50 * n_dims) with basin detection on, or the
+            modest min(100, 20 * n_dims) when it is off (where it is the fixed number
+            of starts). See ``advanced_config['basin_detection']``.
         initial_points : array-like, shape (n_points, n_dims), optional
             Initial points in full parameter space to activate corresponding grid points (default: None)
             Each point will activate its nearest grid point, independent of optimization
@@ -229,7 +249,28 @@ class ProfileProjector:
                     'seeds_from_pool': int,         # Default: 3
                     'polish_threshold': float,      # Default: 1e-4
                 },
+
+                'basin_detection': {
+                    'batch_size': int,              # Default: None (FD-aware auto)
+                    'undiscovered_threshold': float,# Default: 0.5 (0 disables early stop)
+                    'min_starts': int,              # Default: None (auto)
+                },
             }
+
+        The ``basin_detection`` sub-dict controls the initial-optimization
+        stage, where ``n_initial_optimizations`` is treated as a *maximum*:
+        paraprof runs a rolling Latin-hypercube multistart, clusters each
+        converged optimum online into distinct basins, and applies a
+        Boender-Rinnooy Kan Bayesian stopping rule restricted to ROI-competitive
+        optima. The stage halts once the expected number of undiscovered ROI
+        optima falls below ``undiscovered_threshold`` (after at least
+        ``min_starts`` starts), aborting any still-running optimizations; it also
+        halts at the ``n_initial_optimizations`` cap, where in-flight runs are
+        allowed to finish instead. ``batch_size`` (default ``None``) sets how
+        many optimizations run concurrently -- see
+        :meth:`resolve_initial_opt_batch_size`. Set ``undiscovered_threshold`` to
+        ``0`` to disable early stopping, running the full
+        ``n_initial_optimizations`` starts (set that cap explicitly when you do).
 
         The ``cross_projection`` sub-dict toggles the two cross-projection
         knowledge-transfer hooks. Both default to enabled; set either to
@@ -240,7 +281,10 @@ class ProfileProjector:
         in benchmarking (mutation_strategy, pbest_fraction,
         neighbor_pull_probability, global_pool_size, patching.n_neighbors,
         activation.mix_ratios) are now module-level constants in sampler.py
-        and are no longer user-tunable.
+        and are no longer user-tunable. The basin-clustering ``merge_tol`` is
+        likewise a fixed internal constant: a sensitivity sweep showed a wide
+        safe plateau at/below its value, with larger values only over-merging
+        distinct optima and biasing the stopping statistic.
         """
         # --- Input Validation ---
 
@@ -387,13 +431,6 @@ class ProfileProjector:
         # --- Build configuration with smart defaults ---
         max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
-        # Set n_initial_optimizations with smart default if not provided
-        if n_initial_optimizations is None:
-            n_initial_optimizations = min(
-                DEFAULT_INITIAL_OPT_MAX,
-                DEFAULT_INITIAL_OPT_MULTIPLIER * self.dims
-            )
-
         config = {
             'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
             'convergence_threshold': DEFAULT_CONVERGENCE_THRESHOLD,
@@ -431,11 +468,27 @@ class ProfileProjector:
                 'seeds_from_pool': DEFAULT_SUSPECT_SEEDS_FROM_POOL,
                 'polish_threshold': DEFAULT_SUSPECT_POLISH_THRESHOLD,
             },
+
+            'basin_detection': {
+                'batch_size': DEFAULT_BASIN_BATCH_SIZE,
+                'undiscovered_threshold': DEFAULT_BASIN_UNDISCOVERED_THRESHOLD,
+                'min_starts': None,  # None -> max(floor, mult*n_dims), capped at n_initial_optimizations
+            },
         }
 
         # Merge with advanced_config if provided
         if advanced_config:
             self._deep_update(config, advanced_config)
+
+        # Default cap for the initial-optimization stage: a generous safe
+        # ceiling, since the Bayesian stopping rule normally halts the stage
+        # well before it. (If early stopping is disabled via
+        # undiscovered_threshold=0, set this explicitly.)
+        if n_initial_optimizations is None:
+            n_initial_optimizations = min(
+                DEFAULT_BASIN_CAP_MAX,
+                DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
+            )
 
         # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
@@ -541,6 +594,25 @@ class ProfileProjector:
         self.suspect_seeds_k_ring = sc['seeds_k_ring']
         self.suspect_seeds_from_pool = sc['seeds_from_pool']
         self.suspect_polish_threshold = sc['polish_threshold']
+
+        # Basin-detection configuration for the initial-optimization stage.
+        bd = config['basin_detection']
+        self.basin_batch_size = bd['batch_size']
+        # merge_tol is a fixed internal constant (not a user knob); see the
+        # DEFAULT_BASIN_MERGE_TOL sensitivity note above.
+        self.basin_merge_tol = DEFAULT_BASIN_MERGE_TOL
+        self.basin_undiscovered_threshold = bd['undiscovered_threshold']
+        if bd['min_starts'] is None:
+            self.basin_min_starts = min(
+                self.n_initial_optimizations,
+                max(DEFAULT_BASIN_MIN_STARTS_FLOOR,
+                    DEFAULT_BASIN_MIN_STARTS_MULTIPLIER * self.dims),
+            )
+        else:
+            self.basin_min_starts = int(bd['min_starts'])
+        # Pre-generated LHS start pool for rolling multistart (lazily filled).
+        self._initial_opt_start_points = None
+        self._initial_opt_lhs_idx = 0
         # Lazy snapshot of (proj_coords, profiled_coords, extent) for the
         # global pool, rebuilt at most once per projection. See
         # _sample_proximity_from_global_pool for the invalidation rule.
@@ -562,6 +634,11 @@ class ProfileProjector:
         self.projection_dims = None
         self.grid_points_per_dim = None
         self.initial_maxima = []
+        # Registry of distinct optima found by the initial-optimization stage.
+        # Each entry: {'point', 'point_norm', 'target_val', 'count'}. Built up
+        # online by register_initial_optimum and consumed by the basin-detection
+        # stopping rule. Reset per projection alongside initial_maxima.
+        self.initial_optima_registry = []
         self.population = {}  # {grid_idx: state_dict}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
@@ -691,6 +768,9 @@ class ProfileProjector:
 
         # Reset state variables
         self.initial_maxima = []
+        self.initial_optima_registry = []
+        self._initial_opt_start_points = None
+        self._initial_opt_lhs_idx = 0
         self.population = {}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
@@ -1286,29 +1366,119 @@ class ProfileProjector:
         )
         return [job], next_job_id + 1
 
-    def create_initial_optimization_jobs(self, next_job_id):
-        """L-BFGS-B jobs from LHS starts to seed the initial-maxima list."""
-        self.logger.info(f"--- Generating {self.n_initial_optimizations} initial optimization jobs ---")
-        jobs = []
-        sampler = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
-        unit_samples = sampler.random(n=self.n_initial_optimizations)
-        start_points = self.bounds[:, 0] + unit_samples * (self.bounds[:, 1] - self.bounds[:, 0])
+    def _make_initial_opt_job(self, next_job_id, start_point):
+        """Build a single global-optimization L-BFGS-B job from a start point."""
+        return LBFGSBJob(
+            job_id=next_job_id,
+            job_type='INITIAL_OPTIMIZATION',
+            sampler=self,
+            opt_dims=tuple(range(self.dims)),  # Global optimization
+            start_params=start_point,          # Full vector
+            grid_idx=None,                     # No grid anchor
+            start_params_full=start_point,     # Full vector
+            seed_history=None,
+        )
 
-        for i, start_point in enumerate(start_points):
-            job = LBFGSBJob(
-                job_id=next_job_id,
-                job_type='INITIAL_OPTIMIZATION',
-                sampler=self,
-                opt_dims=tuple(range(self.dims)), # Global optimization
-                start_params=start_point,          # Full vector
-                grid_idx=None,                     # No grid anchor
-                start_params_full=start_point,     # Full vector
-                seed_history=None
-            )
-            jobs.append(job)
-            next_job_id += 1
+    def resolve_initial_opt_batch_size(self, n_workers):
+        """Number of initial-optimization runs to keep in flight for the rolling
+        multistart, given ``n_workers`` available workers.
 
-        return jobs, next_job_id
+        ``basin_detection.batch_size`` overrides this. The ``None`` default is
+        FD-aware: one run's gradient phase already fans out ``fd_width`` parallel
+        evaluations (one per dim, two for central differences), so ~``n_workers /
+        fd_width`` concurrent runs keep the workers fed -- and fewer runs in
+        flight means less partial work discarded when the rule aborts the rest.
+        Floored at 2, capped at ``n_workers`` and ``n_initial_optimizations``."""
+        cap = self.n_initial_optimizations
+        if self.basin_batch_size is not None:
+            return max(1, min(int(self.basin_batch_size), cap))
+        fd_width = self.dims * (2 if self.lbfgsb_gradient_method == 'central' else 1)
+        auto = max(2, math.ceil(n_workers / max(fd_width, 1)))
+        return max(1, min(auto, max(n_workers, 1), cap))
+
+    def init_initial_opt_lhs(self, n_points):
+        """Pre-generate the LHS start-point pool (sized to the hard cap) for the
+        rolling multistart. Jobs consume points from it sequentially, so any
+        prefix of the design is itself space-filling."""
+        n_points = max(int(n_points), 1)
+        lhs = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
+        unit_samples = lhs.random(n=n_points)
+        self._initial_opt_start_points = (
+            self.bounds[:, 0] + unit_samples * (self.bounds[:, 1] - self.bounds[:, 0])
+        )
+        self._initial_opt_lhs_idx = 0
+
+    def create_one_initial_optimization_job(self, next_job_id):
+        """Single global L-BFGS-B job from the next pooled LHS start point."""
+        if (self._initial_opt_start_points is None
+                or self._initial_opt_lhs_idx >= len(self._initial_opt_start_points)):
+            # Cap normally bounds consumption; refill defensively if exhausted.
+            self.init_initial_opt_lhs(max(self.n_initial_optimizations, 1))
+        start_point = self._initial_opt_start_points[self._initial_opt_lhs_idx]
+        self._initial_opt_lhs_idx += 1
+        return self._make_initial_opt_job(next_job_id, start_point), next_job_id + 1
+
+    def register_initial_optimum(self, point, target_val):
+        """Online single-linkage clustering of a converged global-opt endpoint.
+
+        Merges into an existing registry entry when within ``basin_merge_tol``
+        (RMS bounds-normalized parameter distance), otherwise registers a new
+        distinct optimum. Returns True iff a new optimum was registered.
+        """
+        point = np.array(point, dtype=float)  # copy: stored in the registry
+        span = self.bounds[:, 1] - self.bounds[:, 0]
+        span = np.where(span > 0, span, 1.0)
+        xnorm = (point - self.bounds[:, 0]) / span
+        sqrt_d = np.sqrt(self.dims)
+
+        for opt in self.initial_optima_registry:
+            dist = np.linalg.norm(xnorm - opt['point_norm']) / sqrt_d
+            if dist < self.basin_merge_tol:
+                opt['count'] += 1
+                if target_val > opt['target_val']:
+                    opt['target_val'] = float(target_val)
+                    opt['point'] = point
+                    opt['point_norm'] = xnorm
+                return False
+
+        self.initial_optima_registry.append({
+            'point': point,
+            'point_norm': xnorm,
+            'target_val': float(target_val),
+            'count': 1,
+        })
+        return True
+
+    def basin_detection_roi_stats(self):
+        """(W, N_roi): distinct ROI-competitive optima and the number of starts
+        that converged into them, using the *current* global max."""
+        thresh = self.global_max_target_val - self.roi_threshold
+        roi = [o for o in self.initial_optima_registry if o['target_val'] >= thresh]
+        W = len(roi)
+        n_roi = sum(o['count'] for o in roi)
+        return W, n_roi
+
+    def basin_detection_should_stop(self, n_completed):
+        """Boender-Rinnooy Kan Bayesian stopping rule, restricted to ROI optima.
+
+        ``n_completed`` is the total number of finished optimizations; the rule
+        only applies once it reaches ``basin_min_starts``. Let ``N`` be the
+        starts that landed in ROI-competitive basins and ``W`` the distinct
+        optima among them. The estimated true number of ROI optima is
+        ``W*(N-1)/(N-W-1)``, so the expected number still undiscovered is
+        ``W**2/(N-W-1)``; stop once that falls below
+        ``basin_undiscovered_threshold``.
+        """
+        if n_completed < self.basin_min_starts:
+            return False
+        W, n_roi = self.basin_detection_roi_stats()
+        if W < 1:
+            return False
+        denom = n_roi - W - 1
+        if denom <= 0:
+            return False
+        expected_undiscovered = (W * W) / denom
+        return expected_undiscovered < self.basin_undiscovered_threshold
 
 
     def create_activation_jobs(self, next_job_id):

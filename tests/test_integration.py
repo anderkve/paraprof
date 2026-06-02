@@ -129,6 +129,62 @@ USER_GRAD_RUNNER = textwrap.dedent("""
 """)
 
 
+# 4-D sphere (single optimum -> W=1) with a generous initial-opt cap and several
+# runs kept in flight, so the Boender rule fires at min_starts and ABORTS the
+# remaining in-flight optimizations well before the cap.
+EARLY_STOP_RUNNER = textwrap.dedent("""
+    import json
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    def target(p):
+        return -float(np.sum(np.asarray(p) ** 2))
+
+    bounds = np.array([[-5.0, 5.0]] * 4)
+    projections = [
+        {'dims': [0, 1], 'grid_points': [4, 4], 'optimization_method': 'lbfgsb'},
+    ]
+    cap = 60
+
+    np.random.seed(20260513)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=bounds,
+            projections=projections,
+            roi_threshold=8.0,
+            n_initial_optimizations=cap,
+            advanced_config={'basin_detection': {'batch_size': 4}},
+            max_patching_waves=2,
+            lbfgsb_max_iter=15,
+        ) as sampler:
+            comm.bcast(sampler.target_func, root=0)
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            print('RESULT', json.dumps({
+                'cap': cap,
+                'n_initial_maxima': len(sampler.initial_maxima),
+                'max_logL': float(sampler.global_max_target_val),
+            }), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
 def _have_mpiexec():
     return shutil.which('mpiexec') is not None
 
@@ -170,6 +226,24 @@ def _run_runner(runner_src, arg):
 
 def _run(method):
     return _run_runner(RUNNER, method)
+
+
+def test_early_stop_aborts_in_flight_runs():
+    """The Boender rule fires before the cap on a unimodal target and aborts
+    the in-flight optimizations: the run completes cleanly and far fewer than
+    `cap` initial optimizations actually finish."""
+    result = _run_runner(EARLY_STOP_RUNNER, 'x')
+
+    # Found the single optimum at the origin (logL = 0).
+    assert result['max_logL'] > -1e-6, result
+
+    # Early stopping fired well before the cap (min_starts for 4-D is
+    # max(10, 3*4) = 12). If abort or early stopping regressed, this would run
+    # the full cap. Allow head room for completions in flight at firing time.
+    assert 10 <= result['n_initial_maxima'] < result['cap'], (
+        f"expected early stop near min_starts, got "
+        f"{result['n_initial_maxima']} of cap {result['cap']}"
+    )
 
 
 @pytest.mark.parametrize('method', ['de', 'lbfgsb'])
