@@ -402,44 +402,38 @@ def master_main(comm, sampler,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
-                if sampler.basin_detection_enabled:
-                    # Rolling multistart with online basin detection. Launch a
-                    # first batch and hand control to WAITING_FOR_INITIAL_OPT,
-                    # which refills and applies the stopping rule as jobs return.
-                    initial_opt_cap = sampler.n_initial_optimizations
-                    if sampler.basin_batch_size is None:
-                        initial_opt_batch_size = max(min(n_workers, initial_opt_cap), 1)
-                    else:
-                        initial_opt_batch_size = max(1, min(int(sampler.basin_batch_size), initial_opt_cap))
-                    initial_opt_started = 0
-                    initial_opt_completed = 0
-                    initial_opt_stopped = False
-                    initial_opt_inflight = set()
-                    sampler.init_initial_opt_lhs(initial_opt_cap)
-
-                    logger.info(
-                        f"--- Basin detection: rolling multistart "
-                        f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
-                        f"min_starts={sampler.basin_min_starts}) ---"
-                    )
-                    new_jobs = []
-                    for _ in range(min(initial_opt_batch_size, initial_opt_cap)):
-                        job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
-                        new_jobs.append(job)
-                        initial_opt_inflight.add(job.id)
-                        initial_opt_started += 1
-
-                    if not new_jobs:
-                        # Degenerate cap (e.g. n_initial_optimizations == 0):
-                        # nothing to optimize, move on.
-                        current_stage = stages.pop(0) if stages else None
-                        continue
-                    current_stage = 'WAITING_FOR_INITIAL_OPT'
+                # Rolling multistart with online basin detection. Launch a
+                # first batch and hand control to WAITING_FOR_INITIAL_OPT,
+                # which refills and applies the stopping rule as jobs return.
+                initial_opt_cap = sampler.n_initial_optimizations
+                if sampler.basin_batch_size is None:
+                    initial_opt_batch_size = max(min(n_workers, initial_opt_cap), 1)
                 else:
-                    new_jobs, next_job_id = sampler.create_initial_optimization_jobs(next_job_id)
-                    if not new_jobs:
-                        current_stage = stages.pop(0) if stages else None
-                        continue
+                    initial_opt_batch_size = max(1, min(int(sampler.basin_batch_size), initial_opt_cap))
+                initial_opt_started = 0
+                initial_opt_completed = 0
+                initial_opt_stopped = False
+                initial_opt_inflight = set()
+                sampler.init_initial_opt_lhs(initial_opt_cap)
+
+                logger.info(
+                    f"--- Basin detection: rolling multistart "
+                    f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
+                    f"min_starts={sampler.basin_min_starts}) ---"
+                )
+                new_jobs = []
+                for _ in range(min(initial_opt_batch_size, initial_opt_cap)):
+                    job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
+                    new_jobs.append(job)
+                    initial_opt_inflight.add(job.id)
+                    initial_opt_started += 1
+
+                if not new_jobs:
+                    # Degenerate cap (e.g. n_initial_optimizations == 0):
+                    # nothing to optimize, move on.
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+                current_stage = 'WAITING_FOR_INITIAL_OPT'
 
             elif current_stage == 'ACTIVATION':
                 # Use refinement activation for refinement runs

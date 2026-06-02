@@ -22,7 +22,6 @@ def _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
 class TestConfig:
     def test_defaults(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        assert s.basin_detection_enabled is True
         assert s.basin_batch_size is None
         # merge_tol is a fixed internal constant, not a config knob.
         assert s.basin_merge_tol == pytest.approx(0.02)
@@ -36,11 +35,10 @@ class TestConfig:
         s = _make_sampler(
             simple_2d_function, simple_bounds_2d, basic_projection_2d,
             advanced_config={'basin_detection': {
-                'enabled': False, 'batch_size': 7,
+                'batch_size': 7,
                 'undiscovered_threshold': 1.0, 'min_starts': 5,
             }},
         )
-        assert s.basin_detection_enabled is False
         assert s.basin_batch_size == 7
         assert s.basin_undiscovered_threshold == pytest.approx(1.0)
         assert s.basin_min_starts == 5
@@ -52,19 +50,29 @@ class TestConfig:
         # auto min_starts would be 10 but is capped at the cap.
         assert s.basin_min_starts == 4
 
-    def test_default_cap_depends_on_toggle(self, simple_2d_function, simple_bounds_2d,
-                                           basic_projection_2d):
-        # Basin detection on (default): generous ceiling min(400, 50*n_dims).
-        on = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        assert on.n_initial_optimizations == 100  # min(400, 50*2)
-        # Off: modest fixed count min(100, 20*n_dims).
-        off = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                            advanced_config={'basin_detection': {'enabled': False}})
-        assert off.n_initial_optimizations == 40  # min(100, 20*2)
-        # An explicit value overrides the toggle-dependent default.
+    def test_default_cap(self, simple_2d_function, simple_bounds_2d,
+                         basic_projection_2d):
+        # Default: generous ceiling min(400, 50*n_dims), since the stopping rule
+        # controls the actual spend.
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        assert s.n_initial_optimizations == 100  # min(400, 50*2)
+        # An explicit value overrides the default.
         explicit = _make_sampler(simple_2d_function, simple_bounds_2d,
                                  basic_projection_2d, n_initial_optimizations=7)
         assert explicit.n_initial_optimizations == 7
+
+    def test_threshold_zero_disables_early_stop(self, simple_2d_function,
+                                                simple_bounds_2d, basic_projection_2d):
+        # undiscovered_threshold=0 is the "off" switch: the rule never fires,
+        # even with many distinct ROI optima recorded past min_starts.
+        s = _make_sampler(
+            simple_2d_function, simple_bounds_2d, basic_projection_2d,
+            advanced_config={'basin_detection': {'undiscovered_threshold': 0.0}},
+        )
+        s.global_max_target_val = 0.0
+        for i in range(20):
+            s.register_initial_optimum(np.array([float(i) * 0.4 - 2.0, 0.0]), 0.0)
+        assert s.basin_detection_should_stop(20) is False
 
 
 class TestRegistry:

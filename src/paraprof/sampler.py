@@ -12,22 +12,20 @@ from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
 
 
-# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). With basin
-# detection enabled (the default) the cap is a safe ceiling — the Bayesian
-# stopping rule controls the actual spend — so it is generous. Without basin
-# detection the cap is the fixed number of starts, so it is kept modest.
+# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). It is a safe
+# ceiling — the Bayesian stopping rule controls the actual spend — so it is
+# generous.
 DEFAULT_BASIN_CAP_MULTIPLIER = 50
 DEFAULT_BASIN_CAP_MAX = 400
-DEFAULT_INITIAL_OPT_MULTIPLIER = 20
-DEFAULT_INITIAL_OPT_MAX = 100
 
-# Basin detection for the initial-optimization stage: a rolling multistart
-# that keeps a batch of global L-BFGS-B starts in flight, clusters each
+# Basin detection for the initial-optimization stage: always on. A rolling
+# multistart keeps a batch of global L-BFGS-B starts in flight, clusters each
 # converged optimum online (single-linkage in bounds-normalized parameter
 # space), and applies a Boender-Rinnooy Kan Bayesian stopping rule restricted
 # to ROI-competitive optima. The stage halts once the expected number of
-# undiscovered ROI optima drops below a threshold.
-DEFAULT_BASIN_DETECTION_ENABLED = True
+# undiscovered ROI optima drops below ``undiscovered_threshold``, or when the
+# ``n_initial_optimizations`` cap is reached. Set the threshold to 0 to disable
+# early stopping (the stage then always runs to the cap).
 DEFAULT_BASIN_BATCH_SIZE = None             # None -> auto (one optimization per worker)
 # merge_tol is an internal constant, not a user knob: a sensitivity sweep showed
 # a wide safe plateau at/below 0.02 (results identical from 0.005-0.02 across
@@ -259,26 +257,27 @@ class ProfileProjector:
                 },
 
                 'basin_detection': {
-                    'enabled': bool,                # Default: True
                     'batch_size': int,              # Default: None (auto: one per worker)
-                    'undiscovered_threshold': float,# Default: 0.5
+                    'undiscovered_threshold': float,# Default: 0.5 (0 disables early stop)
                     'min_starts': int,              # Default: None (auto)
                 },
             }
 
         The ``basin_detection`` sub-dict controls the initial-optimization
-        stage. With it enabled (the default), ``n_initial_optimizations`` is
-        treated as a *maximum*: paraprof runs a rolling Latin-hypercube
-        multistart, clusters each converged optimum online into distinct basins
-        (merging endpoints within a fixed internal tolerance, an RMS
-        bounds-normalized parameter distance), and applies a Boender-Rinnooy Kan Bayesian
-        stopping rule restricted to ROI-competitive optima. The stage halts once
-        the expected number of undiscovered ROI optima falls below
-        ``undiscovered_threshold`` (after at least ``min_starts`` starts), or
-        when the ``n_initial_optimizations`` cap is reached. ``batch_size`` is
-        the number of optimizations kept in flight (defaults to one per worker).
-        With ``enabled`` set to ``False`` all ``n_initial_optimizations`` starts
-        are launched at once with no clustering or early stopping.
+        stage, where ``n_initial_optimizations`` is treated as a *maximum*:
+        paraprof runs a rolling Latin-hypercube multistart, clusters each
+        converged optimum online into distinct basins (merging endpoints within
+        a fixed internal tolerance, an RMS bounds-normalized parameter
+        distance), and applies a Boender-Rinnooy Kan Bayesian stopping rule
+        restricted to ROI-competitive optima. The stage halts once the expected
+        number of undiscovered ROI optima falls below ``undiscovered_threshold``
+        (after at least ``min_starts`` starts), or when the
+        ``n_initial_optimizations`` cap is reached. ``batch_size`` is the number
+        of optimizations kept in flight (defaults to one per worker). Set
+        ``undiscovered_threshold`` to ``0`` to disable early stopping: the rule
+        then never fires and the stage always runs the full
+        ``n_initial_optimizations`` starts (so set that cap explicitly when you
+        do, since its default assumes early stopping is active).
 
         The ``cross_projection`` sub-dict toggles the two cross-projection
         knowledge-transfer hooks. Both default to enabled; set either to
@@ -478,7 +477,6 @@ class ProfileProjector:
             },
 
             'basin_detection': {
-                'enabled': DEFAULT_BASIN_DETECTION_ENABLED,
                 'batch_size': DEFAULT_BASIN_BATCH_SIZE,
                 'undiscovered_threshold': DEFAULT_BASIN_UNDISCOVERED_THRESHOLD,
                 'min_starts': None,  # None -> max(floor, mult*n_dims), capped at n_initial_optimizations
@@ -489,20 +487,15 @@ class ProfileProjector:
         if advanced_config:
             self._deep_update(config, advanced_config)
 
-        # Default cap for the initial-optimization stage, chosen once the
-        # basin-detection toggle is known: a generous ceiling when stopping is
-        # active, a modest fixed count when it is not.
+        # Default cap for the initial-optimization stage: a generous safe
+        # ceiling, since the Bayesian stopping rule normally halts the stage
+        # well before it. (If early stopping is disabled via
+        # undiscovered_threshold=0, set this explicitly.)
         if n_initial_optimizations is None:
-            if config['basin_detection']['enabled']:
-                n_initial_optimizations = min(
-                    DEFAULT_BASIN_CAP_MAX,
-                    DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
-                )
-            else:
-                n_initial_optimizations = min(
-                    DEFAULT_INITIAL_OPT_MAX,
-                    DEFAULT_INITIAL_OPT_MULTIPLIER * self.dims,
-                )
+            n_initial_optimizations = min(
+                DEFAULT_BASIN_CAP_MAX,
+                DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
+            )
 
         # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
@@ -611,7 +604,6 @@ class ProfileProjector:
 
         # Basin-detection configuration for the initial-optimization stage.
         bd = config['basin_detection']
-        self.basin_detection_enabled = bd['enabled']
         self.basin_batch_size = bd['batch_size']
         # merge_tol is a fixed internal constant (not a user knob); see the
         # DEFAULT_BASIN_MERGE_TOL sensitivity note above.
@@ -1393,23 +1385,6 @@ class ProfileProjector:
             start_params_full=start_point,     # Full vector
             seed_history=None,
         )
-
-    def create_initial_optimization_jobs(self, next_job_id):
-        """All L-BFGS-B jobs from LHS starts at once, to seed the initial-maxima
-        list. Used when basin detection is disabled; otherwise the master drives
-        a rolling multistart via :meth:`create_one_initial_optimization_job`.
-        """
-        self.logger.info(f"--- Generating {self.n_initial_optimizations} initial optimization jobs ---")
-        jobs = []
-        sampler = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
-        unit_samples = sampler.random(n=self.n_initial_optimizations)
-        start_points = self.bounds[:, 0] + unit_samples * (self.bounds[:, 1] - self.bounds[:, 0])
-
-        for start_point in start_points:
-            jobs.append(self._make_initial_opt_job(next_job_id, start_point))
-            next_job_id += 1
-
-        return jobs, next_job_id
 
     def init_initial_opt_lhs(self, n_points):
         """Pre-generate the LHS start-point pool (sized to the hard cap) for the

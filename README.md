@@ -114,7 +114,7 @@ Common constructor arguments:
 
 - `roi_threshold` — region-of-interest cutoff in log-likelihood; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 3.0.
 - `pop_per_grid_point` — DE population size per cell. Default 3.
-- `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)` with basin detection on (a safe ceiling — the stopping rule controls the actual spend, so set it generously); `min(100, 20 * n_dims)` when basin detection is off (a fixed count).
+- `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)`: a safe ceiling, since the Bayesian stopping rule controls the actual spend, so set it generously. (If you disable early stopping with `basin_detection.undiscovered_threshold = 0`, this becomes a fixed count, so set it explicitly.)
 - `max_patching_waves` — cap on patching iterations. Default 10.
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
@@ -167,9 +167,8 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `suspect_recheck.seeds_k_ring`                | `3`                | Max Chebyshev radius for extended-neighbour seeds. |
 | `suspect_recheck.seeds_from_pool`             | `3`                | Cross-projection pool seeds tested per suspect cell. |
 | `suspect_recheck.polish_threshold`            | `1e-4`             | Min logL improvement to trigger the L-BFGS-B polish. |
-| `basin_detection.enabled`                     | `True`             | Rolling multistart + online basin clustering + Bayesian stop for the initial-optimization stage. `False` reverts to firing all `n_initial_optimizations` starts at once. |
-| `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once. `None` = one per worker. |
-| `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner. |
+| `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once for the initial-optimization stage's rolling multistart. `None` = one per worker. |
+| `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
