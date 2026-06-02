@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state: `initial_optima_registry` (the discovered distinct optima with hit
   counts) plus the `register_initial_optimum`, `basin_detection_roi_stats`, and
   `basin_detection_should_stop` helpers.
+
+### Changed
+- The default `n_initial_optimizations` now depends on the basin-detection
+  toggle. With basin detection on (the default) it is a generous safe ceiling,
+  `min(400, 50 * n_dims)`, since the stopping rule controls the actual spend; a
+  benchmark across Ackley/Schwefel/Himmelblau shows the adaptive run matches the
+  full-budget recall of distinct ROI optima while only spending what each target
+  warrants. With basin detection off it stays the modest fixed `min(100, 20 *
+  n_dims)`. An explicit `n_initial_optimizations` overrides both.
 - **User-supplied gradient support** via the new `grad_func` constructor
   argument on `ProfileProjector`. When provided, the L-BFGS-B paths
   request `grad_func(params)` from workers alongside the target evaluation

@@ -52,6 +52,20 @@ class TestConfig:
         # auto min_starts would be 10 but is capped at the cap.
         assert s.basin_min_starts == 4
 
+    def test_default_cap_depends_on_toggle(self, simple_2d_function, simple_bounds_2d,
+                                           basic_projection_2d):
+        # Basin detection on (default): generous ceiling min(400, 50*n_dims).
+        on = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        assert on.n_initial_optimizations == 100  # min(400, 50*2)
+        # Off: modest fixed count min(100, 20*n_dims).
+        off = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
+                            advanced_config={'basin_detection': {'enabled': False}})
+        assert off.n_initial_optimizations == 40  # min(100, 20*2)
+        # An explicit value overrides the toggle-dependent default.
+        explicit = _make_sampler(simple_2d_function, simple_bounds_2d,
+                                 basic_projection_2d, n_initial_optimizations=7)
+        assert explicit.n_initial_optimizations == 7
+
 
 class TestRegistry:
     def test_distinct_optima_registered_separately(self, simple_2d_function,

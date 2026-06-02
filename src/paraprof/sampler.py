@@ -12,10 +12,12 @@ from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
 
 
-# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims).
-# With basin detection enabled (the default), this acts as the *maximum*
-# number of global L-BFGS-B starts; the Bayesian stopping rule usually
-# halts the stage well before reaching it.
+# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). With basin
+# detection enabled (the default) the cap is a safe ceiling — the Bayesian
+# stopping rule controls the actual spend — so it is generous. Without basin
+# detection the cap is the fixed number of starts, so it is kept modest.
+DEFAULT_BASIN_CAP_MULTIPLIER = 50
+DEFAULT_BASIN_CAP_MAX = 400
 DEFAULT_INITIAL_OPT_MULTIPLIER = 20
 DEFAULT_INITIAL_OPT_MAX = 100
 
@@ -162,12 +164,13 @@ class ProfileProjector:
             Apply L-BFGS-B polishing step after DE optimization (default: True)
             Refines solutions found by DE using gradient-based optimization
         n_initial_optimizations : int, optional
-            Number of global L-BFGS-B optimizations to find initial maxima (default: None)
-            If None, auto-configured as min(100, 20 * n_dims)
-            Typical values: 20-100. Higher = better initial coverage but slower startup.
-            With basin detection enabled (the default) this acts as the *maximum*
-            number of starts; the Bayesian stopping rule usually halts the stage
-            earlier. See ``advanced_config['basin_detection']``.
+            Number of global L-BFGS-B optimizations to find initial maxima (default: None).
+            With basin detection enabled (the default) this is a *cap*, not a fixed
+            spend: the Bayesian stopping rule halts early on easy targets and uses
+            the full budget only when optima remain, so set it generously. If None,
+            auto-configured as min(400, 50 * n_dims) with basin detection on, or the
+            modest min(100, 20 * n_dims) when it is off (where it is the fixed number
+            of starts). See ``advanced_config['basin_detection']``.
         initial_points : array-like, shape (n_points, n_dims), optional
             Initial points in full parameter space to activate corresponding grid points (default: None)
             Each point will activate its nearest grid point, independent of optimization
@@ -428,13 +431,6 @@ class ProfileProjector:
         # --- Build configuration with smart defaults ---
         max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
-        # Set n_initial_optimizations with smart default if not provided
-        if n_initial_optimizations is None:
-            n_initial_optimizations = min(
-                DEFAULT_INITIAL_OPT_MAX,
-                DEFAULT_INITIAL_OPT_MULTIPLIER * self.dims
-            )
-
         config = {
             'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
             'convergence_threshold': DEFAULT_CONVERGENCE_THRESHOLD,
@@ -485,6 +481,21 @@ class ProfileProjector:
         # Merge with advanced_config if provided
         if advanced_config:
             self._deep_update(config, advanced_config)
+
+        # Default cap for the initial-optimization stage, chosen once the
+        # basin-detection toggle is known: a generous ceiling when stopping is
+        # active, a modest fixed count when it is not.
+        if n_initial_optimizations is None:
+            if config['basin_detection']['enabled']:
+                n_initial_optimizations = min(
+                    DEFAULT_BASIN_CAP_MAX,
+                    DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
+                )
+            else:
+                n_initial_optimizations = min(
+                    DEFAULT_INITIAL_OPT_MAX,
+                    DEFAULT_INITIAL_OPT_MULTIPLIER * self.dims,
+                )
 
         # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point

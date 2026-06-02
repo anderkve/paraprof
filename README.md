@@ -114,7 +114,7 @@ Common constructor arguments:
 
 - `roi_threshold` — region-of-interest cutoff in log-likelihood; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 3.0.
 - `pop_per_grid_point` — DE population size per cell. Default 3.
-- `n_initial_optimizations` — global L-BFGS-B starts before grid optimization. Default `min(100, 20 * n_dims)`.
+- `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)` with basin detection on (a safe ceiling — the stopping rule controls the actual spend, so set it generously); `min(100, 20 * n_dims)` when basin detection is off (a fixed count).
 - `max_patching_waves` — cap on patching iterations. Default 10.
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
@@ -172,6 +172,8 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.merge_tol`                   | `0.02`             | RMS bounds-normalized parameter distance below which two converged optima are treated as the same basin. |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner. |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
+
+**Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
 
 See the `ProfileProjector` docstring for the full structure. Several DE knobs that did not change ROI quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and are intentionally not user-tunable.
 
