@@ -1,7 +1,8 @@
 """
 Minimal example: profile-likelihood scan of the Himmelblau-4D test function.
 
-Demonstrates the core ProfileProjector API. Run with MPI:
+Demonstrates the core ProfileProjector API, saving samples to an HDF5 file
+(requires the optional dependency: ``pip install paraprof[hdf5]``). Run with MPI:
 
     mpiexec -n <ncores> python run_himmelblau_4d.py
 
@@ -40,7 +41,12 @@ PROJECTIONS = [
 ]
 
 if myrank == 0:
-    output_file = f"samples_rank_{myrank}.csv"
+    # HDF5 binary samples (the format follows the extension; use ".csv" for text).
+    output_file = f"samples_rank_{myrank}.h5"
+    # Warm-start from a *previous* run's samples, kept in a separate file from
+    # the one we write now. It is absent on the first run, so warm-start is
+    # skipped; to chain runs, rename a prior output_file to this path and re-run.
+    warm_start_file = f"warm_start_rank_{myrank}.h5"
 
     with ProfileProjector(
         target_func=log_likelihood,
@@ -54,8 +60,12 @@ if myrank == 0:
         max_patching_waves=20,        # cap on patching iterations
         lbfgsb_max_iter=20,           # L-BFGS-B iterations per polish
 
-        # I/O
+        # I/O. Reading and writing use different files, so the same HDF5 file is
+        # never open for read and write at once. (On some shared/HPC filesystems
+        # HDF5 file locking can fail; export HDF5_USE_FILE_LOCKING=FALSE if you
+        # hit an "unable to lock file" error.)
         samples_output_file=output_file,
+        warm_start_file=warm_start_file,
     ) as sampler:
 
         # run_scan handles broadcasting target_func, running every projection

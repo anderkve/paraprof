@@ -120,8 +120,8 @@ Common constructor arguments:
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
-- `samples_output_file` — CSV path to log every evaluation.
-- `warm_start_file` — CSV read at the start of each projection to pre-populate `initial_maxima`. Set this equal to `samples_output_file` to feed a run's samples into the next one.
+- `samples_output_file` — path to log every evaluation. The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency; see [Sample file formats](#sample-file-formats)).
+- `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
 
 ### User-supplied gradients
@@ -143,6 +143,33 @@ sampler = ProfileProjector(target_func=target, grad_func=grad, ...)
 You can return either a length-`n_dims` array or a `{dim_index: value}` dict for partial gradients. Entries that are `NaN`/`±inf` (or dims missing from the dict) fall back to finite differences using `lbfgsb.gradient_method`.
 
 Only the L-BFGS-B paths use the gradient; DE is gradient-free. `sampler.target_calls_saved_by_user_gradient` and `sampler.user_gradient_errors` track usage and fallbacks.
+
+### Sample file formats
+
+Each evaluated point — `n_dims` parameter values plus its target value — is one row of the sample file. The format follows the `samples_output_file` extension:
+
+| Extension        | Format      | Notes                                                                 |
+|------------------|-------------|-----------------------------------------------------------------------|
+| `.csv` (default) | plain text  | Headerless, `%.10e` columns. No extra dependencies.                   |
+| `.h5` / `.hdf5`  | HDF5 binary | ~Half the size and faster I/O. Requires `h5py` (`pip install paraprof[hdf5]`). |
+
+Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file. They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
+
+To pool several independent runs (or convert between formats), use `combine_samples`. It streams chunk by chunk and may mix formats:
+
+```python
+import glob
+from paraprof import combine_samples, read_samples, write_samples
+
+combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
+
+samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 1) array
+params, target = samples[:, :-1], samples[:, -1]
+
+write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
+```
+
+`read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
 
 ### Advanced configuration
 

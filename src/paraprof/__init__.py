@@ -24,6 +24,12 @@ from .nuisance_wrapper import (
     create_nuisance_wrapped_function,
     register_nuisance_wrapped_test_functions,
 )
+from .sample_io import (
+    read_samples,
+    write_samples,
+    combine_samples,
+    create_sample_writer,
+)
 
 __all__ = [
     'ProfileProjector',
@@ -46,6 +52,10 @@ __all__ = [
     'NuisanceParameterWrapper',
     'create_nuisance_wrapped_function',
     'register_nuisance_wrapped_test_functions',
+    'read_samples',
+    'write_samples',
+    'combine_samples',
+    'create_sample_writer',
 ]
 
 __version__ = '1.0.0'

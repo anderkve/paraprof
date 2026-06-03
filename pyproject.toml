@@ -55,6 +55,11 @@ clustering = [
     "scikit-learn>=1.3.0",
 ]
 
+# HDF5 binary sample files (optional)
+hdf5 = [
+    "h5py>=3.0",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0",
@@ -74,7 +79,7 @@ docs = [
 
 # All optional dependencies
 all = [
-    "paraprof[viz,clustering,dev,docs]",
+    "paraprof[viz,clustering,hdf5,dev,docs]",
 ]
 
 [project.urls]
