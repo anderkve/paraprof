@@ -81,15 +81,12 @@ def run_projection(comm, sampler, projection_config,
     ``refined_target_calls`` if applicable, ``total_target_calls``,
     ``global_max``).
     """
-    # Extract refinement configuration
     refinement_factor = projection_config.get('grid_refinement_factor', None)
-    # Auto-determine if refinement should be enabled based on refinement_factor
     use_grid_refinement = refinement_factor is not None and refinement_factor > 1
     dims_str = "_".join(map(str, projection_config['dims']))
 
     logger = setup_logger(rank=myrank)
 
-    # Initialize results structure
     results = {
         'coarse_solution': None,
         'refined_solution': None,
@@ -129,20 +126,15 @@ def run_projection(comm, sampler, projection_config,
         logger.info("=== Starting Grid Refinement ===")
         logger.info("=" * 80)
 
-        # Setup refined projection config
         refined_config = projection_config.copy()
         refined_config['grid_points'] = [
             n * refinement_factor for n in projection_config['grid_points']
         ]
-
-        # Get refinement method from config (default to 'linear')
         refinement_method = projection_config.get('refinement_method', 'linear')
 
-        # Configure sampler for refinement
         sampler.setup_refinement_run(coarse_solution, refinement_factor, refinement_method)
         sampler._reset_for_new_projection(refined_config)
 
-        # Run refinement workflow
         master_main(
             comm=comm,
             sampler=sampler,

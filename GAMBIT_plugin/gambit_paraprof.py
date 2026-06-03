@@ -139,8 +139,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
                 f"{self.print_prefix} The required scanner option 'projections' "
                 "is missing from the 'run:' block."
             )
-        # Defensive copy so downstream mutation (string-dim resolution etc.)
-        # doesn't disturb the YAML dict.
+        # Copy so downstream mutation (string-dim resolution etc.) doesn't
+        # disturb the YAML dict.
         self.projections = [dict(p) for p in ra["projections"]]
         for p in self.projections:
             for k in ('dims', 'grid_points'):

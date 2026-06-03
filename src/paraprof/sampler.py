@@ -14,9 +14,8 @@ from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
 
 
-# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). It is a safe
-# ceiling — the Bayesian stopping rule controls the actual spend — so it is
-# generous.
+# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). A safe ceiling
+# — the Bayesian stopping rule controls the actual spend.
 DEFAULT_BASIN_CAP_MULTIPLIER = 50
 DEFAULT_BASIN_CAP_MAX = 400
 
@@ -24,10 +23,10 @@ DEFAULT_BASIN_CAP_MAX = 400
 # ProfileProjector docstring). Online single-linkage clustering of converged
 # optima feeds a Boender-Rinnooy Kan Bayesian stopping rule over ROI optima.
 DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve_initial_opt_batch_size)
-# merge_tol is fixed, not a user knob: a sensitivity sweep showed a wide safe
-# plateau at/below 0.02, while larger values over-merge distinct optima and bias
-# the W count the rule depends on. The right value tracks internal scales
-# (bounds-normalization, L-BFGS-B tolerance), not the target.
+# merge_tol is fixed, not a user knob. A sensitivity sweep showed a safe plateau
+# at/below 0.02; larger values over-merge distinct optima and bias the W count
+# the rule depends on. The right value tracks internal scales (bounds-
+# normalization, L-BFGS-B tolerance), not the target.
 DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
 DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5  # stop when E[undiscovered ROI optima] < this
 DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
@@ -84,11 +83,11 @@ DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
 
 class ProfileProjector:
     """
-    Profile Likelihood Projector for computing profile likelihood projections.
+    Profile-likelihood projector over a grid.
 
-    This class primarily holds state and configuration for grid-based profile
-    likelihood computation. It supports differential evolution (DE) and L-BFGS-B
-    optimization. The execution logic is in the Job classes and master_main.
+    Holds the state and configuration for a grid-based scan with differential
+    evolution (DE) and L-BFGS-B. The execution logic lives in the Job classes
+    and master_main.
     """
     def __init__(self,
                  target_func,
@@ -116,7 +115,7 @@ class ProfileProjector:
                  # Advanced configuration (optional)
                  advanced_config=None):
         """
-        Initializes the ProfileProjector with simplified interface.
+        Set up a projection run.
 
         Parameters
         ----------

@@ -22,18 +22,15 @@ class DEGridPointJob(Job):
         self.grid_idx = grid_idx
         self.grid_state = self.sampler.population[self.grid_idx]
 
-        # Shared resources from master
+        # Shared with the master, mutated in place
         self.parent_pool = parent_pool
         self.pbest_archive = pbest_archive
-
-        # Shared lists to append successful mutations to
         self.successful_F_list = successful_F_list
         self.successful_CR_list = successful_CR_list
 
         self.pop_size = self.sampler.pop_per_grid_point
         self.evals_remaining = self.pop_size
 
-        # Store trial info to process results
         self.trial_info = {} # {point_idx: (trial_params, F_i, CR_i)}
 
 
