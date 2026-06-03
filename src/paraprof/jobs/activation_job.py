@@ -18,7 +18,7 @@ class ActivationJob(Job):
         self.grid_idx = grid_idx
         self.warm_start_params = warm_start_params
         # Optional first-order continuation seed; see
-        # ProfileProjector._secant_predicted_params.
+        # ProfileProjector._jacobian_predicted_params.
         self.predicted_params = predicted_params
         self.mark_converged = mark_converged
 

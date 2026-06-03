@@ -35,20 +35,37 @@ statements about those fields.
 
 ## A. Sample efficiency
 
-### A1. Predictor–corrector continuation (highest payoff)
+### A1. Predictor–corrector continuation (highest payoff) — *implemented*
 A newly-activated cell currently starts its inner optimization from a neighbour's
-φ, with **no use of the direction of travel**. Region-growing always expands
-outward along known frontiers, so for a colinear chain G→P→C we can predict
+φ, with **no use of the local trend of the φ\* field**. Since φ\*(θ) is
+piecewise-smooth, we fit its local Jacobian `J = dφ*/dθ` at the source cell by
+least squares over *all* in-population neighbours of the source and predict
 
-    φ*_C ≈ φ*_P + (φ*_P − φ*_G)          # secant predictor, zero extra evals
+    φ*_target ≈ φ*_source + J · (θ_target − θ_source)    # zero extra evals
 
-instead of `φ*_C ≈ φ*_P`. On curved ridges (Rosenbrock-style valleys) this drops
-warm-start error from O(Δθ) to O(Δθ²) and should roughly halve corrector
-iterations per cell. A second tier reuses the stored L-BFGS inverse-Hessian
-(`optimizer_state['s'/'y']`) plus a cheap `H_φθ` estimate to form the full
-`−H_φφ⁻¹ H_φθ` predictor. Classic numerical continuation; no new dependencies.
-Plugs into `ActivationJob` (warm-start vector) and the `NEEDS_NEIGHBOR_TEST`
-seed.
+instead of `φ*_target ≈ φ*_source`. On curved ridges (Rosenbrock-style valleys)
+this drops warm-start error from O(Δθ) to O(Δθ²).
+
+**Design note — why a neighbourhood fit rather than a single "grandparent".**
+An earlier version extrapolated along a single colinear chain G→P→C
+(`φ*_C ≈ φ*_P + (φ*_P − φ*_G)`). That works but depends on the *activation
+travel direction*, which is stochastic / MPI-order-dependent, and only captures
+the slope along one line. The least-squares fit over the whole neighbourhood is
+direction-free (it predicts any target direction from one local model),
+reduces to the secant when only one neighbour is available, and becomes a robust
+plane fit with several. This is exactly the "φ\* field viewed as a smooth vector
+field on the grid" (matrix view).
+
+**Why not just reuse the L-BFGS Hessian?** The stored `optimizer_state['s'/'y']`
+gives only `H_φφ⁻¹` (the profiled-subspace inverse Hessian) — the inner
+optimization never varies θ, so the history carries *no* `H_φθ` cross term and
+cannot supply the projection-direction slope on its own. `H_φφ⁻¹` reuse is
+already wired into the corrector via the `NEEDS_NEIGHBOR_TEST` path; the slope
+is the new information A1 adds. A true `−H_φφ⁻¹ H_φθ` predictor would need a
+gradient evaluation at the target (≈ what the corrector's first step already
+does) and only becomes cheap when the user supplies an analytic `grad_func` —
+left as an optional follow-up. Plugs into `ActivationJob` (warm-start vector);
+extending it to the `NEEDS_NEIGHBOR_TEST` seed is a further follow-up.
 
 ### A2. Analytic profiling of declared Gaussian/quadratic nuisances
 `nuisance_wrapper.py` shows the real use case: a few POIs plus many
