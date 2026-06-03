@@ -1,7 +1,8 @@
 """
 Minimal example: profile-likelihood scan of the Himmelblau-4D test function.
 
-Demonstrates the core ProfileProjector API. Run with MPI:
+Demonstrates the core ProfileProjector API, saving samples to an HDF5 file
+(requires the optional dependency: ``pip install paraprof[hdf5]``). Run with MPI:
 
     mpiexec -n <ncores> python run_himmelblau_4d.py
 
@@ -40,7 +41,8 @@ PROJECTIONS = [
 ]
 
 if myrank == 0:
-    output_file = f"samples_rank_{myrank}.csv"
+    # HDF5 binary samples (the format follows the extension; use ".csv" for text).
+    output_file = f"samples_rank_{myrank}.h5"
 
     with ProfileProjector(
         target_func=log_likelihood,
@@ -54,8 +56,11 @@ if myrank == 0:
         max_patching_waves=20,        # cap on patching iterations
         lbfgsb_max_iter=20,           # L-BFGS-B iterations per polish
 
-        # I/O
+        # I/O: write every evaluation to the HDF5 file, and warm-start each
+        # projection from the same file so later projections reuse the samples
+        # already found. (warm_start reads gracefully skip a not-yet-existing file.)
         samples_output_file=output_file,
+        warm_start_file=output_file,
     ) as sampler:
 
         # run_scan handles broadcasting target_func, running every projection
