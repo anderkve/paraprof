@@ -43,6 +43,10 @@ PROJECTIONS = [
 if myrank == 0:
     # HDF5 binary samples (the format follows the extension; use ".csv" for text).
     output_file = f"samples_rank_{myrank}.h5"
+    # Warm-start from a *previous* run's samples, kept in a separate file from
+    # the one we write now. It is absent on the first run, so warm-start is
+    # skipped; to chain runs, rename a prior output_file to this path and re-run.
+    warm_start_file = f"warm_start_rank_{myrank}.h5"
 
     with ProfileProjector(
         target_func=log_likelihood,
@@ -56,11 +60,12 @@ if myrank == 0:
         max_patching_waves=20,        # cap on patching iterations
         lbfgsb_max_iter=20,           # L-BFGS-B iterations per polish
 
-        # I/O: write every evaluation to the HDF5 file, and warm-start each
-        # projection from the same file so later projections reuse the samples
-        # already found. (warm_start reads gracefully skip a not-yet-existing file.)
+        # I/O. Reading and writing use different files, so the same HDF5 file is
+        # never open for read and write at once. (On some shared/HPC filesystems
+        # HDF5 file locking can fail; export HDF5_USE_FILE_LOCKING=FALSE if you
+        # hit an "unable to lock file" error.)
         samples_output_file=output_file,
-        warm_start_file=output_file,
+        warm_start_file=warm_start_file,
     ) as sampler:
 
         # run_scan handles broadcasting target_func, running every projection
