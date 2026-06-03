@@ -181,6 +181,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
 | `convergence_threshold`            | `1e-6`                         | DE per-cell convergence cutoff                                   |
 | `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
+| `de.smooth_certify`                | `False`                        | Opt-in: reuse neighbour argmax agreement to confirm convergence on a 1-generation window for smooth-interior cells (see below) |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
@@ -200,6 +201,8 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
+
+**Smooth-certified fast convergence (`de.smooth_certify`, opt-in).** Every active grid cell normally spends at least `de.convergence_window` DE generations just *confirming* it has converged. When the parameters you profile out enter smoothly (e.g. Gaussian-constrained nuisances), the profiled argmax field is locally smooth and that confirmation budget is largely wasted on the ROI interior. With `de.smooth_certify=True`, a freshly activated cell whose in-population neighbours agree on the profiled argmax (and whose neighbour warm-start was the best activation seed) confirms convergence on a **single** generation instead of the full window. The cell still runs DE, so the early exit is self-correcting — a cell that improves in that generation keeps evolving. A/B benchmarks (`examples/run_smooth_certify_benchmark*.py`) show ~10–15% fewer target calls with negligible ROI grid error on Himmelblau-4D and Rosenbrock-4D. It is **off by default** because on a genuinely multimodal *inner* problem (e.g. Rastrigin-4D) one generation is too little exploration and ROI grid quality degrades — enable it only when the profiled dimensions are smooth.
 
 See the `ProfileProjector` docstring for the full structure. Several DE knobs that did not change ROI quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and are intentionally not user-tunable.
 

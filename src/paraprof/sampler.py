@@ -57,6 +57,33 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
+# Neighbour-certified fast DE convergence (idea: reuse the already-stored
+# profiled-argmax vectors of a fresh cell's neighbours to decide how much of
+# DE's per-cell confirmation budget is actually needed). Every active cell
+# normally spends >= `de.convergence_window` generations just proving it has
+# converged. When a cell's neighbours agree on the profiled argmax -- i.e. the
+# local argmax field is smooth/single-valued -- and the neighbour warm-start
+# was the best activation seed, the cell sits on a unimodal patch and a single
+# flat generation is enough to confirm convergence. The cell still runs DE, so
+# the early exit is *measured*, not predicted: a cell that turns out to improve
+# in that generation simply keeps evolving.
+#
+# Off by default. A/B benchmarking (examples/run_smooth_certify_benchmark*.py)
+# shows ~10-15% fewer target calls with negligible ROI grid error on targets
+# whose profiled (inner) problem is smooth or stiff-but-unimodal -- Himmelblau-
+# 4D (-15%, mean |dlogL| ~5e-5) and Rosenbrock-4D (-10%, mean ~7e-3). But on a
+# genuinely multimodal inner problem (Rastrigin-4D) one DE generation is too
+# little exploration and ROI grid quality degrades, so the feature is opt-in:
+# enable it when you know the parameters being profiled out enter smoothly
+# (e.g. Gaussian-constrained nuisances), which is the common case.
+DEFAULT_DE_SMOOTH_CERTIFY = False
+# Reduced per-cell convergence window applied to smooth-certified cells.
+SMOOTH_CERTIFY_WINDOW = 1
+# Max per-profiled-dim deviation of the neighbours' argmax from their mean
+# (as a fraction of the profiled-dim bounds extent) for a cell to count as
+# smooth-certifiable. Hidden constant, not a user knob.
+SMOOTH_CERTIFY_PHI_SPREAD = 0.05
+
 DEFAULT_LBFGSB_FTOL = 1e-9
 
 DEFAULT_PATCHING_N_NEIGHBORS = 1
@@ -235,6 +262,7 @@ class ProfileProjector:
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
+                    'smooth_certify': bool,        # Default: False (opt-in)
                 },
 
                 'lbfgsb': {
@@ -454,6 +482,7 @@ class ProfileProjector:
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
+                'smooth_certify': DEFAULT_DE_SMOOTH_CERTIFY,
             },
 
             'lbfgsb': {
@@ -523,6 +552,7 @@ class ProfileProjector:
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
+        self.de_smooth_certify = config['de']['smooth_certify']
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -575,6 +605,9 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
+        # Count of cells that skipped the DE global phase via neighbour
+        # smooth-certification (cumulative across projections; for diagnostics).
+        self.de_cells_smooth_certified = 0
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
@@ -1937,6 +1970,39 @@ class ProfileProjector:
         return jobs, next_job_id
 
 
+    def _is_smooth_certifiable(self, grid_idx):
+        """True if ``grid_idx``'s in-population neighbours agree on the profiled
+        argmax, so the local argmax field is smooth/single-valued and the cell
+        can confirm convergence on a reduced DE window.
+
+        Reuses the neighbours' already-stored best profiled-params vectors --
+        no new target evaluations. Returns False whenever the evidence is thin
+        (fewer than two neighbours), so the safe default is the full window.
+        """
+        if self.n_prof_dims == 0:
+            return False
+
+        # Multimodality guard: only stand down DE's global search if the
+        # neighbour warm-start was the best seed at activation. If a cold
+        # random/pool seed beat it, a better inner mode sits nearby and DE's
+        # global phase is doing real work here -- keep it.
+        if not self.population[grid_idx].get('warm_start_best', False):
+            return False
+
+        neigh_phis = [
+            self._best_profiled_params(n_idx)
+            for n_idx in self._get_valid_neighbors(grid_idx)
+            if n_idx in self.population
+        ]
+        if len(neigh_phis) < 2:
+            return False
+
+        phis = np.asarray(neigh_phis)
+        extent = self._profiled_extent()
+        # Normalised spread: largest per-dim deviation from the neighbour mean.
+        spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
+        return spread < SMOOTH_CERTIFY_PHI_SPREAD
+
     def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
         """Generates all DEGridPointJobs for one generation."""
 
@@ -2002,6 +2068,20 @@ class ProfileProjector:
         # --- Create a job for each selected grid point ---
         jobs = []
         for grid_idx in indices_to_process:
+            state = self.population[grid_idx]
+            # Neighbour-certified fast convergence: a freshly activated cell (no
+            # DE generation run yet) whose neighbours agree on the profiled
+            # argmax sits on a smooth, single-valued patch, so one flat
+            # generation suffices to confirm convergence instead of the full
+            # `convergence_window`. The cell still evolves, so the early exit is
+            # self-correcting -- if it improves it keeps going.
+            if (self.de_smooth_certify
+                    and len(state['improvement_history']) == 0
+                    and state.get('conv_window') is None
+                    and self._is_smooth_certifiable(grid_idx)):
+                state['conv_window'] = SMOOTH_CERTIFY_WINDOW
+                self.de_cells_smooth_certified += 1
+
             job = DEGridPointJob(
                 job_id=next_job_id,
                 sampler=self,

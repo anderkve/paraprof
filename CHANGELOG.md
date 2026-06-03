@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Smooth-certified fast DE convergence** (`advanced_config['de']['smooth_certify']`,
+  **opt-in, default off**). Every active grid cell normally spends at least
+  `de.convergence_window` DE generations confirming it has converged. This
+  feature reuses information already on hand — the profiled-argmax vectors of a
+  fresh cell's in-population neighbours — to detect cells sitting on a smooth,
+  single-valued patch of the argmax field (neighbours agree on the argmax *and*
+  the neighbour warm-start was the best activation seed). Such cells confirm
+  convergence on a **single** generation instead of the full window. The cell
+  still evolves, so the early exit is *measured*, not predicted: a cell that
+  improves in that generation keeps going, which preserves quality on stiff
+  unimodal valleys. A/B benchmarks (`examples/run_smooth_certify_benchmark.py`
+  and its `_driver`) show ~15% fewer target calls on Himmelblau-4D
+  (mean ROI `|ΔlogL|` ~5e-5) and ~10% on Rosenbrock-4D (mean ~7e-3), both with
+  the global maximum and ROI contours unchanged. Left **off by default**
+  because a genuinely multimodal *inner* problem (Rastrigin-4D) needs more than
+  one generation of exploration and its ROI grid quality degrades; enable it
+  when the profiled-out parameters enter smoothly (e.g. Gaussian-constrained
+  nuisances). No new constructor argument and no change to the default code
+  path. New diagnostics counter `sampler.de_cells_smooth_certified` and a
+  matching end-of-run summary line. The neighbour-agreement tolerance and the
+  reduced window are fixed internal constants, not user knobs.
+
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a
   few. It steers the initial-optimization basin-detection stage: a known
