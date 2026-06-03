@@ -157,7 +157,7 @@ global max. On unimodal targets at adequate convergence
 the rule already stops at the `min_starts` floor, so the prior is a no-op there
 (see the basin-detection robustness note below).
 
-### Basin-detection robustness: under-converged optima inflate W
+### Basin-detection robustness: under-converged optima inflate W — *fixed (convergence-gated registration)*
 Found while benchmarking C1. On a *stiff* target with too small an
 `lbfgsb_max_iter`, the initial global L-BFGS truncates mid-descent, so its
 endpoints scatter along the valley more than `merge_tol` apart and register as
@@ -171,11 +171,20 @@ stage runs to the cap — ~3× wasted evals (27.8k vs 8.3k at `max_iter=50`, whe
 tolerance large enough to also merge genuine, closely-spaced modes on
 multimodal targets → undercount → premature stop → missed modes (the dangerous
 direction; the 0.02 default was chosen by a sweep for exactly this reason). The
-right fixes target convergence quality: (a) gate distinct-optimum registration
-on whether the optimizer actually converged (small gradient / ftol-hit, not
-max_iter-hit), so truncated runs still update the max/pool but don't mint
-basins; (b) give the one-time initial global stage an adequate (or decoupled,
-larger) iteration budget. The `n_optima` prior also masks the symptom.
+right fixes target convergence quality, not `merge_tol`.
+
+**Fix shipped (convergence-gated registration):** an initial-optimization run is
+counted as a distinct optimum only if it terminates on the L-BFGS-B function
+tolerance, not by exhausting `lbfgsb_max_iter`; truncated runs still update the
+max/pool/`initial_maxima` but don't mint a basin. A/B benchmark: registry
+collapses to the true count (Rosenbrock-4D 29→1, Himmelblau-4D 17→16) with no
+change to adequate-budget behaviour (Rosenbrock at `max_iter=50` still stops at
+the floor, ~8.4k calls; Himmelblau still finds all 16 modes, identical grid),
+and it makes `n_optima=1` wait for a *converged* optimum (global max −2e-5 vs
+−1.6e-2 ungated). Where the budget is too small for any run to converge it
+safely falls back to the cap. Always on, no knob. A complementary option not
+taken: give the one-time initial global stage a larger/decoupled iteration
+budget than the per-cell polish.
 
 ### C2. Periodic boundaries → toroidal grid
 For angular/phase parameters. Localized changes:

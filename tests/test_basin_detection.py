@@ -377,3 +377,42 @@ class TestGlobalOptimaPrior:
         assert s.basin_detection_should_stop(10) is False   # below min=2
         self._register_distinct(s, 2)                        # now 2 distinct
         assert s.basin_detection_should_stop(10) is True    # max=2 reached
+
+
+class TestConvergenceGating:
+    """Only converged initial-optimization runs feed the distinct-optima
+    registry; truncated runs still update the max / pool / initial_maxima."""
+
+    def _initial_opt_job(self, s, converged, params, fitness):
+        from paraprof.jobs.lbfgsb_job import LBFGSBJob
+        params = np.asarray(params, dtype=float)
+        job = LBFGSBJob(
+            job_id=0, job_type='INITIAL_OPTIMIZATION', sampler=s,
+            opt_dims=tuple(range(s.dims)), start_params=params,
+            grid_idx=None, start_params_full=params,
+        )
+        job.success = True
+        job.converged = converged
+        job.current_params = params
+        job.current_fitness = fitness
+        return job
+
+    def test_converged_run_registers(self, simple_2d_function, simple_bounds_2d,
+                                     basic_projection_2d):
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        self._initial_opt_job(s, True, [1.0, 1.0], -0.1).on_finish(99)
+        assert len(s.initial_optima_registry) == 1
+        assert s.global_max_target_val == pytest.approx(-0.1)
+        assert len(s.global_solution_pool) == 1
+        assert len(s.initial_maxima) == 1
+
+    def test_truncated_run_skips_registry(self, simple_2d_function, simple_bounds_2d,
+                                          basic_projection_2d):
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
+        self._initial_opt_job(s, False, [1.0, 1.0], -0.1).on_finish(99)
+        # Not counted as a distinct optimum...
+        assert len(s.initial_optima_registry) == 0
+        # ...but still a valid evaluation everywhere else.
+        assert s.global_max_target_val == pytest.approx(-0.1)
+        assert len(s.global_solution_pool) == 1
+        assert len(s.initial_maxima) == 1

@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constant, not user-tunable. New sampler state `initial_optima_registry` plus
   the `register_initial_optimum`, `basin_detection_roi_stats`,
   `basin_detection_should_stop`, and `resolve_initial_opt_batch_size` helpers.
+- **Convergence-gated basin registration.** Only initial-optimization runs that
+  actually converge (terminate on the L-BFGS-B function tolerance, not by
+  exhausting `lbfgsb_max_iter`) are counted as distinct optima for the stopping
+  rule. A truncated descent still updates the global maximum, the solution
+  pool, and `initial_maxima` — it just doesn't mint a spurious basin. This
+  restores the Boender-Rinnooy Kan rule's precondition (local searches run to
+  convergence); without it, a stiff target under a too-small `lbfgsb_max_iter`
+  registered many pseudo-optima strewn along a valley (Rosenbrock-4D: 29 for a
+  one-optimum function), inflating `W` so the rule ran to the cap. Gating
+  collapses that to the true count (Rosenbrock 29→1, Himmelblau-4D 17→16) with
+  no change to adequate-budget behaviour or grid quality, and makes `n_optima`
+  wait for a genuinely converged optimum. Always on; no knob.
 
 ### Changed
 - The default `n_initial_optimizations` is now a generous safe ceiling,
