@@ -172,19 +172,16 @@ class ProfileProjector:
             modest min(100, 20 * n_dims) when it is off (where it is the fixed number
             of starts). See ``advanced_config['basin_detection']``.
         n_optima : int or dict, optional
-            Prior on the number of optima the target has *globally* (default:
-            None). Use it only when confident the function has one or a few
-            optima. It steers the initial-optimization basin-detection stage: a
-            known **maximum** stops the rolling multistart once that many
-            distinct optima have been found -- the global maximum is then
-            necessarily among them, so the ``basin_detection.min_starts`` floor
-            is skipped (e.g. ``n_optima=1`` stops after the first converged
-            start); a known **minimum** keeps the stage running until at least
-            that many are found. Pass an ``int`` for an exact count or
-            ``{'min': int, 'max': int}`` for an asymmetric bound; all distinct
-            optima count, ROI-competitive or not. If the true count exceeds the
-            ``maximum`` the stage may stop before locating the global maximum,
-            so set it only when sure.
+            Prior on the number of optima the target has *globally*; use only
+            when confident it has one or a few (default: None). A known
+            **maximum** stops the initial multistart once that many distinct
+            optima are found (the global max is then among them, so the
+            ``basin_detection.min_starts`` floor is skipped -- ``n_optima=1``
+            stops after the first converged start); a known **minimum** keeps it
+            running until that many are found. Pass an ``int`` (exact) or
+            ``{'min': int, 'max': int}``. If the true count exceeds the maximum
+            the stage may stop before finding the global maximum, so set it only
+            when sure.
         initial_points : array-like, shape (n_points, n_dims), optional
             Initial points in full parameter space to activate corresponding grid points (default: None)
             Each point will activate its nearest grid point, independent of optimization
@@ -1490,17 +1487,13 @@ class ProfileProjector:
         """
         n_distinct = len(self.initial_optima_registry)
 
-        # Lower bound on the global optima count: keep searching until met.
+        # n_optima prior takes precedence (see docstring).
         if self.basin_min_optima is not None and n_distinct < self.basin_min_optima:
             return False
-
-        # Upper bound: all declared global optima found, so the global maximum
-        # is among them -> stop, no min-starts floor needed.
         if self.basin_max_optima is not None and n_distinct >= self.basin_max_optima:
             return True
 
-        # No applicable prior: fall back to the Bayesian rule over ROI optima,
-        # which needs the min-starts floor for a settled global-max estimate.
+        # Otherwise the Bayesian rule, gated by the min-starts floor.
         if n_completed < self.basin_min_starts:
             return False
         W, n_roi = self.basin_detection_roi_stats()
@@ -1543,12 +1536,6 @@ class ProfileProjector:
                 )
             lo = _check('min', n_optima.get('min'))
             hi = _check('max', n_optima.get('max'))
-        elif isinstance(n_optima, bool) or not isinstance(n_optima, (int, np.integer)):
-            raise ConfigurationError(
-                "n_optima must be a positive integer or a "
-                "{'min': int, 'max': int} dict",
-                parameter="n_optima", value=n_optima,
-            )
         else:
             lo = hi = _check('value', n_optima)
 

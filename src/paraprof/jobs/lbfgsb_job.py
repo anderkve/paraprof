@@ -56,8 +56,8 @@ class LBFGSBJob(Job):
             self.y_hist.extend(seed_history['y'])
 
         self.iteration = 0
-        # True once the run terminates by the function-tolerance criterion (a
-        # genuine stationary point) rather than by exhausting lbfgsb_max_iter.
+        # True if the run hit the function tolerance (a real stationary point),
+        # not just lbfgsb_max_iter.
         self.converged = False
         self._eps_array = np.empty(self.n_opt_dims)
 
@@ -378,8 +378,7 @@ class LBFGSBJob(Job):
                 self.status = 'FINISHED'
                 self._is_finished = True
                 self.success = True
-                # Converged only if the function tolerance was met -- a run that
-                # merely ran out of iterations is still mid-descent.
+                # Converged only via the tolerance, not by running out of iterations.
                 self.converged = bool(reached_ftol)
                 self.current_params = x_new_bounded
                 self.current_fitness = -f_new
@@ -429,10 +428,9 @@ class LBFGSBJob(Job):
 
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
-            # Online basin detection: cluster this endpoint into the distinct-optima
-            # registry that drives the rolling multistart's stopping rule. Only
-            # converged runs count -- a truncated descent isn't a basin minimizer,
-            # and counting it inflates W (the BRK rule assumes runs converge).
+            # Cluster this endpoint into the distinct-optima registry driving
+            # the stopping rule -- but only if it converged: a truncated descent
+            # isn't a basin minimizer and would inflate W.
             if self.converged:
                 self.sampler.register_initial_optimum(final_params, final_target_val)
 
