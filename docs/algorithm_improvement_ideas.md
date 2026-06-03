@@ -145,10 +145,34 @@ Lower bound / exact count: refuse to stop early until `W ≥ known_min`. Both
 honor the `basin_min_starts` floor so the global-max estimate that ROI
 membership depends on settles first (stopping before it could miss the true
 global optimum and shift the whole ROI). Zero extra evaluations — it only
-removes starts or adds a safety floor. Measured win on multimodal targets where
-the Bayesian rule otherwise runs to the `n_initial_optimizations` cap:
-Himmelblau-4D (16 ROI modes) with `n_roi_optima=16` cut total target calls ~54%
-(19.9k → 9.2k), all 16 modes found, identical global max.
+removes starts or adds a safety floor. The win is specific to *genuinely*
+multimodal targets, where the Bayesian rule needs ~`W²` repeat hits to
+confidently enumerate `W` modes and so runs to the `n_initial_optimizations`
+cap: Himmelblau-4D (16 ROI modes) with `n_roi_optima=16` cut total target calls
+~62% (19.0k → 7.2k at default `lbfgsb_max_iter=50`), all 16 modes found,
+identical global max. On unimodal targets at adequate convergence the rule
+already stops at the `min_starts` floor, so the prior is a no-op there (see the
+basin-detection robustness note below).
+
+### Basin-detection robustness: under-converged optima inflate W
+Found while benchmarking C1. On a *stiff* target with too small an
+`lbfgsb_max_iter`, the initial global L-BFGS truncates mid-descent, so its
+endpoints scatter along the valley more than `merge_tol` apart and register as
+many spurious "distinct optima" (Rosenbrock-4D: **22** for a one-optimum
+function at `max_iter=20`). `W` then grows with the start count, so
+`expected_undiscovered = W²/(n_roi−W−1)` never drops below threshold and the
+stage runs to the cap — ~3× wasted evals (27.8k vs 8.3k at `max_iter=50`, where
+`W` collapses to 1–2 and the rule stops at the floor on its own).
+
+`merge_tol` is the **wrong** lever: collapsing 22 valley points needs a
+tolerance large enough to also merge genuine, closely-spaced modes on
+multimodal targets → undercount → premature stop → missed modes (the dangerous
+direction; the 0.02 default was chosen by a sweep for exactly this reason). The
+right fixes target convergence quality: (a) gate distinct-optimum registration
+on whether the optimizer actually converged (small gradient / ftol-hit, not
+max_iter-hit), so truncated runs still update the max/pool but don't mint
+basins; (b) give the one-time initial global stage an adequate (or decoupled,
+larger) iteration budget. The `n_roi_optima` prior also masks the symptom.
 
 ### C2. Periodic boundaries → toroidal grid
 For angular/phase parameters. Localized changes:
