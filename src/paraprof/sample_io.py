@@ -20,6 +20,7 @@ import numpy as np
 __all__ = [
     "create_sample_writer",
     "read_samples",
+    "write_samples",
     "iter_sample_batches",
     "combine_samples",
     "infer_format",
@@ -251,6 +252,28 @@ def read_samples(path, fmt=None):
     if result.ndim == 1:
         result = result.reshape(1, -1)
     return result
+
+
+def write_samples(samples, path, fmt=None, chunk_size=DEFAULT_CHUNK_SIZE):
+    """Write a sample array to ``path`` in one call, replacing any existing file.
+
+    The one-shot inverse of :func:`read_samples`. ``samples`` is a 2D array of
+    shape (n_samples, n_dims + 1); format follows the extension unless ``fmt``
+    is given. Returns the number of samples written.
+    """
+    data = np.asarray(samples, dtype=float)
+    if data.ndim != 2:
+        raise ValueError(f"samples must be 2D (n_samples, n_dims + 1); got shape {data.shape}.")
+    out_dir = os.path.dirname(path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    # Replace rather than append, so the file ends up holding exactly `samples`.
+    if os.path.exists(path):
+        os.remove(path)
+    with create_sample_writer(path, fmt=fmt) as w:
+        for start in range(0, len(data), chunk_size):
+            w.write_batch(data[start : start + chunk_size])
+    return len(data)
 
 
 # --------------------------------------------------------------------------- #

@@ -6,6 +6,7 @@ import pytest
 from paraprof.sample_io import (
     create_sample_writer,
     read_samples,
+    write_samples,
     iter_sample_batches,
     combine_samples,
     infer_format,
@@ -155,6 +156,42 @@ def test_iter_chunks_respects_chunk_size(tmp_path, fmt, ext):
     batches = list(iter_sample_batches(path, chunk_size=100))
     assert [len(b) for b in batches] == [100, 100, 50]
     np.testing.assert_allclose(np.vstack(batches), data, rtol=1e-9, atol=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# write_samples (one-shot inverse of read_samples)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("fmt,ext", FORMATS)
+def test_write_samples_round_trip(tmp_path, fmt, ext):
+    path = str(tmp_path / f"out{ext}")
+    data = _make_samples(120, 3)
+    n = write_samples(data, path, chunk_size=50)
+    assert n == 120
+    np.testing.assert_allclose(read_samples(path), data, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("fmt,ext", FORMATS)
+def test_write_samples_replaces_existing(tmp_path, fmt, ext):
+    path = str(tmp_path / f"out{ext}")
+    write_samples(_make_samples(40, 2, seed=1), path)
+    data2 = _make_samples(10, 2, seed=2)
+    write_samples(data2, path)  # must replace, not append
+    np.testing.assert_allclose(read_samples(path), data2, rtol=1e-9, atol=1e-12)
+
+
+def test_write_samples_fmt_override(tmp_path):
+    # .csv extension but force HDF5 output.
+    path = str(tmp_path / "out.csv")
+    data = _make_samples(8, 4)
+    write_samples(data, path, fmt="hdf5")
+    with h5py.File(path, "r") as f:
+        assert "samples" in f
+    np.testing.assert_allclose(read_samples(path, fmt="hdf5"), data, rtol=1e-9, atol=1e-12)
+
+
+def test_write_samples_rejects_non_2d(tmp_path):
+    with pytest.raises(ValueError, match="2D"):
+        write_samples(np.arange(5.0), str(tmp_path / "out.csv"))
 
 
 # --------------------------------------------------------------------------- #

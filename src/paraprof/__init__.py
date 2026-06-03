@@ -26,6 +26,7 @@ from .nuisance_wrapper import (
 )
 from .sample_io import (
     read_samples,
+    write_samples,
     combine_samples,
     create_sample_writer,
 )
@@ -52,6 +53,7 @@ __all__ = [
     'create_nuisance_wrapped_function',
     'register_nuisance_wrapped_test_functions',
     'read_samples',
+    'write_samples',
     'combine_samples',
     'create_sample_writer',
 ]

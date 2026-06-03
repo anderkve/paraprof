@@ -159,15 +159,17 @@ To pool several independent runs (or convert between formats), use `combine_samp
 
 ```python
 import glob
-from paraprof import combine_samples, read_samples
+from paraprof import combine_samples, read_samples, write_samples
 
 combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
 
 samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 1) array
 params, target = samples[:, :-1], samples[:, -1]
+
+write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
 ```
 
-For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
+`read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` replaces the target file). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
 
 ### Advanced configuration
 

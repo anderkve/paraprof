@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half
   the size and faster, via the optional `h5py` extra — `pip install
   paraprof[hdf5]`). Both `samples_output_file` and `warm_start_file` accept any
-  supported format. New public helpers: `read_samples`, `combine_samples`
-  (stream-merges files, mixing formats), and `create_sample_writer`.
+  supported format. New public helpers: `read_samples`/`write_samples`
+  (one-shot load/save), `combine_samples` (stream-merges files, mixing
+  formats), and `create_sample_writer`.
 - **Basin detection for the initial-optimization stage**, on by default.
   Replaces the fixed all-at-once batch of Latin-hypercube global L-BFGS-B
   starts with a *rolling* multistart: each converged optimum is clustered
