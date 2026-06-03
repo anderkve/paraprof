@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`n_optima` prior** — optional `ProfileProjector` argument giving the number
+  of optima the target has *globally*; use only when confident it has one or a
+  few. It steers the initial-optimization basin-detection stage: a known
+  **maximum** stops the rolling multistart once that many distinct optima are
+  found — the global maximum is then necessarily among them, so the
+  `basin_detection.min_starts` floor is skipped (`n_optima=1` stops after the
+  first converged start) — while a known **minimum** keeps the stage running
+  until at least that many are found. Pass an `int` (exact) or
+  `{'min': int, 'max': int}`. On genuinely multimodal targets, where the
+  Bayesian rule needs ~`W²` repeat hits to enumerate `W` modes and so runs to
+  the `n_initial_optimizations` cap, this saves substantially (Himmelblau-4D,
+  16 modes: ~62% fewer target calls, all modes found, identical global
+  maximum); on unimodal targets at adequate convergence the rule already stops
+  early, so the prior is a no-op there.
 - **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
   goes through a format layer (`paraprof.sample_io`) that dispatches on the
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half
@@ -31,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constant, not user-tunable. New sampler state `initial_optima_registry` plus
   the `register_initial_optimum`, `basin_detection_roi_stats`,
   `basin_detection_should_stop`, and `resolve_initial_opt_batch_size` helpers.
+- **Convergence-gated basin registration.** Only initial-optimization runs that
+  actually converge (terminate on the L-BFGS-B function tolerance, not by
+  exhausting `lbfgsb_max_iter`) are counted as distinct optima for the stopping
+  rule. A truncated descent still updates the global maximum, the solution
+  pool, and `initial_maxima` — it just doesn't mint a spurious basin. This
+  restores the Boender-Rinnooy Kan rule's precondition (local searches run to
+  convergence); without it, a stiff target under a too-small `lbfgsb_max_iter`
+  registered many pseudo-optima strewn along a valley (Rosenbrock-4D: 29 for a
+  one-optimum function), inflating `W` so the rule ran to the cap. Gating
+  collapses that to the true count (Rosenbrock 29→1, Himmelblau-4D 17→16) with
+  no change to adequate-budget behaviour or grid quality, and makes `n_optima`
+  wait for a genuinely converged optimum. Always on; no knob.
 
 ### Changed
 - The default `n_initial_optimizations` is now a generous safe ceiling,

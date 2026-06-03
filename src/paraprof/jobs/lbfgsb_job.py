@@ -56,6 +56,9 @@ class LBFGSBJob(Job):
             self.y_hist.extend(seed_history['y'])
 
         self.iteration = 0
+        # True if the run hit the function tolerance (a real stationary point),
+        # not just lbfgsb_max_iter.
+        self.converged = False
         self._eps_array = np.empty(self.n_opt_dims)
 
         self.search_direction = None
@@ -370,10 +373,13 @@ class LBFGSBJob(Job):
         if f_new <= f_old + c1 * alpha * np.dot(g_old, x_new_bounded - x_old):
             self.iteration += 1
 
-            if self.iteration >= self.lbfgsb_max_iter or np.abs(f_old - f_new) < self.lbfgsb_ftol:
+            reached_ftol = np.abs(f_old - f_new) < self.lbfgsb_ftol
+            if self.iteration >= self.lbfgsb_max_iter or reached_ftol:
                 self.status = 'FINISHED'
                 self._is_finished = True
                 self.success = True
+                # Converged only via the tolerance, not by running out of iterations.
+                self.converged = bool(reached_ftol)
                 self.current_params = x_new_bounded
                 self.current_fitness = -f_new
                 return []
@@ -422,9 +428,11 @@ class LBFGSBJob(Job):
 
             self.sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
-            # Online basin detection: cluster this endpoint into the distinct-optima
-            # registry that drives the rolling multistart's stopping rule.
-            self.sampler.register_initial_optimum(final_params, final_target_val)
+            # Cluster this endpoint into the distinct-optima registry driving
+            # the stopping rule -- but only if it converged: a truncated descent
+            # isn't a basin minimizer and would inflate W.
+            if self.converged:
+                self.sampler.register_initial_optimum(final_params, final_target_val)
 
         elif self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB']:
             grid_idx = self.grid_idx
