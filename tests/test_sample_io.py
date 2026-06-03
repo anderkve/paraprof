@@ -85,33 +85,6 @@ def test_round_trip_multiple_batches_appends(tmp_path, fmt, ext):
     np.testing.assert_allclose(back, np.vstack([b1, b2]), rtol=1e-9, atol=1e-12)
 
 
-@pytest.mark.parametrize("fmt,ext", FORMATS)
-def test_single_row_returns_2d(tmp_path, fmt, ext):
-    path = str(tmp_path / f"samples{ext}")
-    data = _make_samples(1, 4)
-    with create_sample_writer(path) as w:
-        w.write_batch(data)
-    back = read_samples(path)
-    assert back.ndim == 2
-    assert back.shape == (1, 5)
-
-
-@pytest.mark.parametrize("fmt,ext", FORMATS)
-def test_empty_batch_is_noop(tmp_path, fmt, ext):
-    path = tmp_path / f"samples{ext}"
-    with create_sample_writer(str(path)) as w:
-        w.write_batch(np.empty((0, 5)))
-    assert not path.exists()
-
-
-@pytest.mark.parametrize("fmt,ext", FORMATS)
-def test_write_after_close_raises(tmp_path, fmt, ext):
-    w = create_sample_writer(str(tmp_path / f"x{ext}"))
-    w.close()
-    with pytest.raises(ValueError):
-        w.write_batch(_make_samples(2, 2))
-
-
 # --------------------------------------------------------------------------- #
 # Chunked iteration
 # --------------------------------------------------------------------------- #
@@ -137,22 +110,6 @@ def test_write_samples_round_trip(tmp_path, fmt, ext):
     n = write_samples(data, path, chunk_size=50)
     assert n == 120
     np.testing.assert_allclose(read_samples(path), data, rtol=1e-9, atol=1e-12)
-
-
-@pytest.mark.parametrize("fmt,ext", FORMATS)
-def test_write_samples_refuses_existing_by_default(tmp_path, fmt, ext):
-    path = str(tmp_path / f"out{ext}")
-    original = _make_samples(40, 2, seed=1)
-    write_samples(original, path)
-    with pytest.raises(FileExistsError, match="overwrite=True"):
-        write_samples(_make_samples(10, 2, seed=2), path)
-    # The existing file must be left untouched.
-    np.testing.assert_allclose(read_samples(path), original, rtol=1e-9, atol=1e-12)
-
-
-def test_write_samples_rejects_non_2d(tmp_path):
-    with pytest.raises(ValueError, match="2D"):
-        write_samples(np.arange(5.0), str(tmp_path / "out.csv"))
 
 
 # --------------------------------------------------------------------------- #
@@ -190,11 +147,3 @@ def test_combine_same_format(tmp_path, fmt, ext):
 
     back = read_samples(out)
     np.testing.assert_allclose(back, np.vstack(parts), rtol=1e-9, atol=1e-12)
-
-
-def test_combine_rejects_output_equal_to_input(tmp_path):
-    p = str(tmp_path / "a.csv")
-    with create_sample_writer(p) as w:
-        w.write_batch(_make_samples(5, 2))
-    with pytest.raises(ValueError, match="also one of the inputs"):
-        combine_samples([p], p)

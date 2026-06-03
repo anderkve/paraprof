@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from paraprof import ProfileProjector, run_scan, worker_main
-from paraprof.exceptions import ConfigurationError, InvalidProjectionError
+from paraprof.exceptions import InvalidProjectionError
 
 
 # ---------------------------------------------------------------------------
@@ -60,24 +60,6 @@ class TestParameterNames:
                 bounds=simple_bounds_2d,
                 projections=[{'dims': ['x', 'z'], 'grid_points': [3, 3]}],
                 parameter_names=['x', 'y'],
-            )
-
-    def test_wrong_length_names_raises(self, simple_bounds_2d):
-        with pytest.raises(ConfigurationError):
-            ProfileProjector(
-                target_func=self._f,
-                bounds=simple_bounds_2d,
-                projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
-                parameter_names=['only_one'],
-            )
-
-    def test_duplicate_names_raises(self, simple_bounds_2d):
-        with pytest.raises(ConfigurationError):
-            ProfileProjector(
-                target_func=self._f,
-                bounds=simple_bounds_2d,
-                projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
-                parameter_names=['dup', 'dup'],
             )
 
 

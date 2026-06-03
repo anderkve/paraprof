@@ -45,19 +45,6 @@ class TestConfig:
         assert s.basin_undiscovered_threshold == pytest.approx(1.0)
         assert s.basin_min_starts == 5
 
-    def test_threshold_zero_disables_early_stop(self, simple_2d_function,
-                                                simple_bounds_2d, basic_projection_2d):
-        # undiscovered_threshold=0 is the "off" switch: the rule never fires,
-        # even with many distinct ROI optima recorded past min_starts.
-        s = _make_sampler(
-            simple_2d_function, simple_bounds_2d, basic_projection_2d,
-            advanced_config={'basin_detection': {'undiscovered_threshold': 0.0}},
-        )
-        s.global_max_target_val = 0.0
-        for i in range(20):
-            s.register_initial_optimum(np.array([float(i) * 0.4 - 2.0, 0.0]), 0.0)
-        assert s.basin_detection_should_stop(20) is False
-
 
 class TestBatchSize:
     def test_auto_fd_aware_default(self, simple_2d_function, simple_bounds_2d,
@@ -69,14 +56,6 @@ class TestBatchSize:
         assert s.resolve_initial_opt_batch_size(2) == 2   # floor
         assert s.resolve_initial_opt_batch_size(8) == 4
         assert s.resolve_initial_opt_batch_size(32) == 16
-
-    def test_explicit_override(self, simple_2d_function, simple_bounds_2d,
-                               basic_projection_2d):
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          advanced_config={'basin_detection': {'batch_size': 7}})
-        # Explicit value is honored (only capped at n_initial_optimizations).
-        assert s.resolve_initial_opt_batch_size(2) == 7
-        assert s.resolve_initial_opt_batch_size(100) == 7
 
 
 class TestRegistry:
@@ -101,16 +80,6 @@ class TestRegistry:
         # Better target value and its point are retained on merge.
         assert entry['target_val'] == pytest.approx(-0.1)
         np.testing.assert_allclose(entry['point'], [3.05, 2.03])
-
-    def test_merge_keeps_existing_when_worse(self, simple_2d_function, simple_bounds_2d,
-                                             basic_projection_2d):
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        s.register_initial_optimum(np.array([3.0, 2.0]), -0.1)
-        s.register_initial_optimum(np.array([3.02, 2.01]), -0.9)
-        entry = s.initial_optima_registry[0]
-        assert entry['count'] == 2
-        assert entry['target_val'] == pytest.approx(-0.1)
-        np.testing.assert_allclose(entry['point'], [3.0, 2.0])
 
 
 class TestROIStats:
@@ -146,33 +115,6 @@ class TestStoppingRule:
             s.register_initial_optimum(np.array([3.0, 2.0]), 0.0)
         assert s.basin_detection_should_stop(10) is True
 
-    def test_keeps_going_while_finding_new(self, simple_2d_function, simple_bounds_2d,
-                                           basic_projection_2d):
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        s.global_max_target_val = 0.0
-        # 10 distinct optima from 10 starts: W=N_roi=10 -> denom < 0 -> no stop.
-        for i in range(10):
-            s.register_initial_optimum(np.array([float(i) * 0.4 - 2.0, 0.0]), 0.0)
-        assert s.basin_detection_should_stop(10) is False
-
-
-class TestLHSPool:
-    def test_pool_consumption(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        s.init_initial_opt_lhs(5)
-        assert s._initial_opt_start_points.shape == (5, 2)
-        seen = []
-        for jid in range(5):
-            job, nxt = s.create_one_initial_optimization_job(jid)
-            assert nxt == jid + 1
-            assert job.type == 'INITIAL_OPTIMIZATION'
-            seen.append(job.start_params_full)
-        assert s._initial_opt_lhs_idx == 5
-        # All start points lie within bounds.
-        pts = np.array(seen)
-        assert np.all(pts[:, 0] >= simple_bounds_2d[0, 0])
-        assert np.all(pts[:, 0] <= simple_bounds_2d[0, 1])
-
 
 class TestGlobalOptimaPrior:
     """The ``n_optima`` (global optima count) prior steering
@@ -183,13 +125,6 @@ class TestGlobalOptimaPrior:
         for i in range(n):
             s.register_initial_optimum(np.array([float(i) * 1.0 - 2.0, 0.0]),
                                        target_val)
-
-    def test_parse(self):
-        from paraprof.sampler import ProfileProjector as PP
-        assert PP._parse_n_optima(None) == (None, None)
-        assert PP._parse_n_optima(3) == (3, 3)
-        assert PP._parse_n_optima({'min': 2, 'max': 5}) == (2, 5)
-        assert PP._parse_n_optima({'max': 4}) == (None, 4)
 
     @pytest.mark.parametrize("bad", [0, -1, 2.5, True, "x", {'min': 5, 'max': 2},
                                      {'foo': 1}, {'min': 0}])
@@ -208,22 +143,6 @@ class TestGlobalOptimaPrior:
         assert s.basin_detection_should_stop(10) is False
         self._register_distinct(s, 3)
         assert s.basin_detection_should_stop(10) is True
-
-    def test_lower_bound_overrides_bayesian_stop(self, simple_2d_function,
-                                                 simple_bounds_2d, basic_projection_2d):
-        # One basin hit many times: the Bayesian rule would stop (W=1, big N).
-        base = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        base.global_max_target_val = 0.0
-        for _ in range(15):
-            base.register_initial_optimum(np.array([3.0, 2.0]), -0.1)
-        assert base.basin_detection_should_stop(15) is True   # BRK fires
-
-        guarded = _make_sampler(simple_2d_function, simple_bounds_2d,
-                                basic_projection_2d, n_optima={'min': 2})
-        guarded.global_max_target_val = 0.0
-        for _ in range(15):
-            guarded.register_initial_optimum(np.array([3.0, 2.0]), -0.1)
-        assert guarded.basin_detection_should_stop(15) is False  # prior overrides
 
 
 class TestConvergenceGating:

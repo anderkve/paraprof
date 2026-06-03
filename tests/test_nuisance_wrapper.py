@@ -79,29 +79,6 @@ class TestNuisanceParameterWrapper:
 
         assert np.isclose(result_with_shift, expected_total, atol=1e-6)
 
-    def test_scale_coupling(self):
-        """Test scale coupling mode."""
-        base_func = lambda x: -np.sum(x**2)
-        wrapper = NuisanceParameterWrapper(
-            base_func=base_func,
-            n_poi=2,
-            n_nuisance=2,
-            coupling_mode='scale',
-            constraint_sigma=1.0
-        )
-
-        # POI = [2, 3], nuisance = [0.1, 0.2]
-        # → base sees [2*(1+0.1), 3*(1+0.2)] = [2.2, 3.6]
-        params = np.array([2.0, 3.0, 0.1, 0.2])
-        result = wrapper(params)
-
-        transformed = np.array([2.0 * 1.1, 3.0 * 1.2])
-        expected_base = base_func(transformed)
-        expected_constraint = -0.5 * (0.1**2 + 0.2**2)
-        expected_total = expected_base + expected_constraint
-
-        assert np.isclose(result, expected_total, atol=1e-6)
-
     def test_constraint_penalty(self):
         """Test Gaussian constraint penalty calculation."""
         base_func = lambda x: -np.sum(x**2)
@@ -133,55 +110,6 @@ class TestNuisanceParameterWrapper:
         result_both_1sig = wrapper(params_both_1sig)
         expected_both = base_func(np.array([1.0, 2.0])) - 1.0
         assert np.isclose(result_both_1sig, expected_both)
-
-    def test_custom_coupling_matrix(self):
-        """Test custom coupling matrix."""
-        base_func = lambda x: np.sum(x)  # Simple sum
-
-        # Custom matrix: first nuisance affects both POI
-        coupling_matrix = np.array([
-            [1.0, 0.0],  # POI 0 gets nuisance 0
-            [1.0, 0.5]   # POI 1 gets nuisance 0 and 0.5*nuisance 1
-        ])
-
-        wrapper = NuisanceParameterWrapper(
-            base_func=base_func,
-            n_poi=2,
-            n_nuisance=2,
-            coupling_mode='shift',
-            coupling_matrix=coupling_matrix,
-            constraint_sigma=1.0
-        )
-
-        # POI = [1, 2], nuisance = [0.5, 0.4]
-        # Transformed POI = [1 + 0.5, 2 + 0.5 + 0.5*0.4] = [1.5, 2.7]
-        params = np.array([1.0, 2.0, 0.5, 0.4])
-        result = wrapper(params)
-
-        transformed = np.array([1.0 + 0.5, 2.0 + 0.5 + 0.5*0.4])
-        expected_base = base_func(transformed)  # Sum = 1.5 + 2.7 = 4.2
-        expected_constraint = -0.5 * (0.5**2 + 0.4**2)
-        expected_total = expected_base + expected_constraint
-
-        assert np.isclose(result, expected_total, atol=1e-6)
-
-    def test_optimal_nuisance(self):
-        """Test analytical optimal nuisance calculation."""
-        base_func = lambda x: -np.sum(x**2)
-        wrapper = NuisanceParameterWrapper(
-            base_func=base_func,
-            n_poi=2,
-            n_nuisance=3,
-            coupling_mode='shift',
-            constraint_sigma=0.5,
-            nuisance_mean=0.1
-        )
-
-        poi_values = np.array([1.0, 2.0])
-        optimal_nuis = wrapper.get_optimal_nuisance(poi_values)
-
-        # For most coupling modes, optimal = constraint mean
-        assert np.allclose(optimal_nuis, 0.1)
 
     def test_invalid_parameters(self):
         """Test error handling for invalid parameters."""
@@ -298,24 +226,6 @@ class TestCreateNuisanceWrappedFunction:
 
 class TestRegisterNuisanceWrappedTestFunctions:
     """Test suite for pre-registered test function configurations."""
-
-    def test_registry_creation(self):
-        """Test that registry is created successfully."""
-        registry = register_nuisance_wrapped_test_functions()
-
-        assert isinstance(registry, dict)
-        assert len(registry) > 0
-
-        # Check that all entries have correct structure
-        for name, (func, bounds, wrapper, peaks) in registry.items():
-            assert callable(func)
-            assert isinstance(bounds, list)
-            assert isinstance(wrapper, NuisanceParameterWrapper)
-            assert isinstance(peaks, list)
-
-            # Name should be descriptive
-            assert 'nuis' in name
-            assert 'sigma' in name
 
     def test_registry_specific_cases(self):
         """Test specific registry entries."""

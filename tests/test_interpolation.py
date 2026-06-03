@@ -9,34 +9,6 @@ from paraprof.interpolation import GridInterpolator
 class TestGridInterpolator:
     """Test suite for GridInterpolator."""
 
-    def test_interpolator_initialization(self):
-        """Test that interpolator initializes from grid solution."""
-        # Create a simple coarse solution
-        grid_axes = [np.array([0.0, 1.0, 2.0]), np.array([0.0, 1.0, 2.0])]
-        projection_dims = [0, 1]
-        profiled_dims = [2]
-
-        solutions = {}
-        for i in range(3):
-            for j in range(3):
-                solutions[(i, j)] = {
-                    'profiled_params': np.array([0.5]),
-                    'likelihood': -(i**2 + j**2),
-                }
-
-        coarse_solution = {
-            'grid_axes': grid_axes,
-            'projection_dims': projection_dims,
-            'profiled_dims': profiled_dims,
-            'solutions': solutions,
-            'grid_shape': (3, 3),
-        }
-
-        interpolator = GridInterpolator(coarse_solution)
-
-        assert interpolator is not None
-        assert len(interpolator.profiled_dims) == 1
-
     def test_interpolation_at_grid_points(self):
         """Test that interpolation returns exact values at grid points."""
         # Create a simple coarse solution

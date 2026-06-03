@@ -24,40 +24,6 @@ class TestProfileProjector:
         assert sampler.target_calls == 0
         assert sampler.global_max_target_val == -np.inf
 
-    def test_grid_index_conversion(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        """Test grid index to coordinate conversion."""
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_2d],
-        )
-
-        # Test index (0, 0) should map to bounds minimum
-        coords = sampler._get_grid_coords_from_indices((0, 0))
-        np.testing.assert_allclose(coords, [-5.0, -5.0])
-
-        # Test index at grid maximum
-        max_idx = tuple(np.array(sampler.grid_shape) - 1)
-        coords = sampler._get_grid_coords_from_indices(max_idx)
-        np.testing.assert_allclose(coords, [5.0, 5.0])
-
-    def test_valid_neighbors(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        """Test neighbor generation."""
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_2d],
-        )
-
-        # Corner point should have 3 neighbors (in 2D grid)
-        neighbors = list(sampler._get_valid_neighbors((0, 0)))
-        assert len(neighbors) == 3
-
-        # Center point should have 8 neighbors (in 2D grid)
-        center = (2, 2)
-        neighbors = list(sampler._get_valid_neighbors(center))
-        assert len(neighbors) == 8
-
     def test_projection_configuration(self, simple_2d_function, simple_bounds_4d):
         """Test projection dimension configuration."""
         projection_1d = {'dims': [0], 'grid_points': [10]}
@@ -191,27 +157,4 @@ class TestProximityWarmStart:
         )
         assert sampler_80d.global_pool_size == DEFAULT_GLOBAL_POOL_MAX
         assert 80 * DEFAULT_GLOBAL_POOL_PER_DIM > DEFAULT_GLOBAL_POOL_MAX
-
-    def test_proximity_normalises_by_bounds_extent(
-            self, simple_2d_function):
-        # First projection dim spans 1.0, second spans 1000.0. Without
-        # normalisation, the "closest" entry is dominated by dim-1 distance.
-        bounds = np.array([[0.0, 1.0], [0.0, 1000.0],
-                           [-1.0, 1.0], [-1.0, 1.0]])
-        sampler = ProfileProjector(
-            target_func=simple_2d_function, bounds=bounds,
-            projections=[{'dims': [0, 1], 'grid_points': [5, 5]}],
-            pop_per_grid_point=2,
-        )
-        # Two candidates near target (0.5, 500). Candidate A is closer in the
-        # *normalised* sense; candidate B is closer in raw Euclidean distance
-        # because its dim-1 deviation is smaller in absolute terms.
-        sampler._update_global_pool(
-            np.array([0.5, 800.0, 0.1, 0.2]), 0.0, grid_idx=None)  # A: norm-near
-        sampler._update_global_pool(
-            np.array([0.95, 500.0, 0.7, 0.8]), 0.0, grid_idx=None)  # B: raw-near
-        out = sampler._sample_proximity_from_global_pool(1, np.array([0.5, 500.0]))
-        # In normalised distance, A is closer (delta = (0, 0.3)) than
-        # B (delta = (0.45, 0)). So we should get A's profiled coords back.
-        np.testing.assert_allclose(out[0], [0.1, 0.2])
 

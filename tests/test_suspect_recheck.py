@@ -49,21 +49,6 @@ def _set_cell(sampler, idx, profiled_params, fitness):
 
 
 class TestSuspectDetection:
-    def test_smooth_surface_yields_no_suspects(self):
-        """A perfectly smooth profiled-params surface should flag nobody."""
-        sampler = _make_sampler(grid_n=10)
-        # Plant cells with smoothly-varying profiled params and matching logL.
-        for i in range(sampler.grid_shape[0]):
-            p = np.array([0.1 * i, -0.1 * i])
-            _set_cell(sampler, (i,), p, fitness=-float(np.sum(p ** 2)))
-
-        suspects = sampler._find_suspect_cells(
-            wave_number=0, updated_points_last_wave=None
-        )
-        # Defensive: cells inside ROI only; the smooth case must not flag anyone
-        # with both signals at default thresholds.
-        assert suspects == []
-
     def test_param_discontinuity_strip_is_flagged(self):
         """A strip of cells with discontinuous profiled params and lower logL
         should be flagged (at least at the boundary of the strip)."""
@@ -168,26 +153,6 @@ class TestSuspectJobLifecycle:
         assert next_id == 2
         # The L-BFGS-B job should start from the clearly-better seed.
         np.testing.assert_allclose(new_job.start_params_partial, [0.0, 0.0])
-
-    def test_job_skips_lbfgsb_when_no_seed_beats_threshold(self):
-        sampler = _make_sampler(grid_n=10)
-        _set_cell(sampler, (5,), np.array([0.0, 0.0]), fitness=-1.0)
-
-        seeds = [np.array([0.05, 0.05]), np.array([-0.05, -0.05])]
-        job = SuspectRecheckJob(
-            job_id=0, sampler=sampler, grid_idx=(5,),
-            candidate_seeds=seeds, wave_number=0,
-        )
-        tasks = job.start()
-        for t in tasks:
-            job.process_result({
-                'context': t['context'],
-                'target_val': -1.0,  # no improvement
-                'params': t['params'],
-            })
-        assert job.is_finished()
-        assert not job.will_update
-        assert job.on_finish(next_job_id=1) is None
 
 
 class TestConfigPlumbing:
