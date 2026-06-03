@@ -774,12 +774,13 @@ def master_main(comm, sampler,
                             )
                         elif sampler.basin_detection_should_stop(initial_opt_completed):
                             W, n_roi = sampler.basin_detection_roi_stats()
+                            n_distinct = len(sampler.initial_optima_registry)
                             initial_opt_stopped = True
                             # Attribute the stop to the prior vs the Bayesian rule.
                             reason = (
                                 "known-optima prior met"
-                                if (sampler.basin_max_roi_optima is not None
-                                    and W >= sampler.basin_max_roi_optima)
+                                if (sampler.basin_max_optima is not None
+                                    and n_distinct >= sampler.basin_max_optima)
                                 else "stopping rule met"
                             )
                             # Abort the still-running optimizations -- their
@@ -795,7 +796,7 @@ def master_main(comm, sampler,
                             logger.info(
                                 f"--- Basin detection: {reason} after "
                                 f"{initial_opt_completed} optimizations "
-                                f"({W} distinct ROI optima from {n_roi} ROI hits); "
+                                f"({n_distinct} distinct optima, {W} in ROI); "
                                 f"aborted {len(aborted)} in-flight run(s) ---"
                             )
 

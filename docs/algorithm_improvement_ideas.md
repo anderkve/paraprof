@@ -138,21 +138,24 @@ knowledge transfer.
 ## C. Priors / adaptability
 
 ### C1. Known mode count → basin detection — *implemented*
-Hook on `basin_detection_should_stop` / `basin_detection_roi_stats`, exposed as
-the `n_roi_optima` constructor argument (int, or `{'min', 'max'}`). Upper bound:
-stop the rolling multistart the moment `W` distinct ROI optima are registered.
-Lower bound / exact count: refuse to stop early until `W ≥ known_min`. Both
-honor the `basin_min_starts` floor so the global-max estimate that ROI
-membership depends on settles first (stopping before it could miss the true
-global optimum and shift the whole ROI). Zero extra evaluations — it only
+Hook on `basin_detection_should_stop`, exposed as the `n_optima` constructor
+argument (int, or `{'min', 'max'}`) — a prior on the *global* optima count.
+Upper bound: stop the rolling multistart the moment that many distinct optima
+(ROI or not) are registered; since the count is global, the global maximum is
+necessarily among them, so the `basin_min_starts` floor is skipped (`n_optima=1`
+stops after the first converged start). Lower bound / exact count: refuse to
+stop until that many are found. (An earlier version counted *ROI* optima and
+kept the floor as a guard against anchoring to a sub-global local optimum; the
+global-count semantics remove that trap, at the cost of trusting the user's
+count.) Zero extra evaluations — it only
 removes starts or adds a safety floor. The win is specific to *genuinely*
 multimodal targets, where the Bayesian rule needs ~`W²` repeat hits to
 confidently enumerate `W` modes and so runs to the `n_initial_optimizations`
-cap: Himmelblau-4D (16 ROI modes) with `n_roi_optima=16` cut total target calls
-~62% (19.0k → 7.2k at default `lbfgsb_max_iter=50`), all 16 modes found,
-identical global max. On unimodal targets at adequate convergence the rule
-already stops at the `min_starts` floor, so the prior is a no-op there (see the
-basin-detection robustness note below).
+cap: Himmelblau-4D (16 modes) with `n_optima=16` cut total target calls ~62%
+(19.0k → 7.2k at default `lbfgsb_max_iter=50`), all 16 modes found, identical
+global max. On unimodal targets at adequate convergence
+the rule already stops at the `min_starts` floor, so the prior is a no-op there
+(see the basin-detection robustness note below).
 
 ### Basin-detection robustness: under-converged optima inflate W
 Found while benchmarking C1. On a *stiff* target with too small an
@@ -172,7 +175,7 @@ right fixes target convergence quality: (a) gate distinct-optimum registration
 on whether the optimizer actually converged (small gradient / ftol-hit, not
 max_iter-hit), so truncated runs still update the max/pool but don't mint
 basins; (b) give the one-time initial global stage an adequate (or decoupled,
-larger) iteration budget. The `n_roi_optima` prior also masks the symptom.
+larger) iteration budget. The `n_optima` prior also masks the symptom.
 
 ### C2. Periodic boundaries → toroidal grid
 For angular/phase parameters. Localized changes:

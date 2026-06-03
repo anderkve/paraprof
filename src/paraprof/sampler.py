@@ -101,7 +101,7 @@ class ProfileProjector:
                  lbfgsb_max_iter=50,
                  lbfgsb_polish=True,
                  n_initial_optimizations=None,
-                 n_roi_optima=None,
+                 n_optima=None,
                  initial_points=None,
                  # Optional user-supplied gradient
                  grad_func=None,
@@ -171,16 +171,20 @@ class ProfileProjector:
             auto-configured as min(400, 50 * n_dims) with basin detection on, or the
             modest min(100, 20 * n_dims) when it is off (where it is the fixed number
             of starts). See ``advanced_config['basin_detection']``.
-        n_roi_optima : int or dict, optional
-            Prior on the number of distinct ROI optima (optima within
-            ``roi_threshold`` of the global maximum). Steers the
-            initial-optimization basin-detection stage: a known **maximum**
-            stops the multistart once that many are found (aborting in-flight
-            runs); a known **minimum** blocks the Bayesian rule from stopping
-            until that many are found. Both still honor the
-            ``basin_detection.min_starts`` floor. Pass an ``int`` for an exact
-            count or ``{'min': int, 'max': int}`` for an asymmetric bound; ROI
-            membership uses the best optimum found so far. Default: None.
+        n_optima : int or dict, optional
+            Prior on the number of optima the target has *globally* (default:
+            None). Use it only when confident the function has one or a few
+            optima. It steers the initial-optimization basin-detection stage: a
+            known **maximum** stops the rolling multistart once that many
+            distinct optima have been found -- the global maximum is then
+            necessarily among them, so the ``basin_detection.min_starts`` floor
+            is skipped (e.g. ``n_optima=1`` stops after the first converged
+            start); a known **minimum** keeps the stage running until at least
+            that many are found. Pass an ``int`` for an exact count or
+            ``{'min': int, 'max': int}`` for an asymmetric bound; all distinct
+            optima count, ROI-competitive or not. If the true count exceeds the
+            ``maximum`` the stage may stop before locating the global maximum,
+            so set it only when sure.
         initial_points : array-like, shape (n_points, n_dims), optional
             Initial points in full parameter space to activate corresponding grid points (default: None)
             Each point will activate its nearest grid point, independent of optimization
@@ -624,10 +628,10 @@ class ProfileProjector:
             )
         else:
             self.basin_min_starts = int(bd['min_starts'])
-        # Optional ROI-optima-count prior, as (min, max) bounds that steer the
-        # stopping rule (see basin_detection_should_stop).
-        self.basin_min_roi_optima, self.basin_max_roi_optima = (
-            self._parse_n_roi_optima(n_roi_optima)
+        # Optional global-optima-count prior, as (min, max) bounds that steer
+        # the stopping rule (see basin_detection_should_stop).
+        self.basin_min_optima, self.basin_max_optima = (
+            self._parse_n_optima(n_optima)
         )
         # Pre-generated LHS start pool for rolling multistart (lazily filled).
         self._initial_opt_start_points = None
@@ -1473,31 +1477,33 @@ class ProfileProjector:
         return W, n_roi
 
     def basin_detection_should_stop(self, n_completed):
-        """Whether the rolling multistart should stop, combining the optional
-        ``n_roi_optima`` prior with the Boender-Rinnooy Kan Bayesian rule.
+        """Whether the rolling multistart should stop.
 
-        With ``W`` distinct ROI optima found so far over ``N`` ROI starts
-        (``n_completed`` total): a known max stops once ``W`` reaches it, a
-        known min blocks stopping until it does. Both honor the
-        ``basin_min_starts`` floor first, so the global-max estimate that ROI
-        membership depends on can settle. Failing a prior, the Bayesian rule
-        stops once the expected undiscovered ROI optima ``W**2/(N-W-1)`` fall
-        below ``basin_undiscovered_threshold``.
+        The ``n_optima`` prior (global optima count) takes precedence: a known
+        max stops once that many distinct optima have been found -- the global
+        maximum is then necessarily among them, so the ``basin_min_starts``
+        floor is skipped -- and a known min blocks stopping until that many are
+        found. Failing a max prior, the Boender-Rinnooy Kan rule applies once
+        ``n_completed`` reaches ``basin_min_starts``: with ``W`` distinct ROI
+        optima over ``N`` ROI starts it stops once the expected undiscovered
+        ROI optima ``W**2/(N-W-1)`` fall below ``basin_undiscovered_threshold``.
         """
-        W, n_roi = self.basin_detection_roi_stats()
+        n_distinct = len(self.initial_optima_registry)
 
-        # Known lower bound not yet met: keep searching (cap is the safety net).
-        if self.basin_min_roi_optima is not None and W < self.basin_min_roi_optima:
+        # Lower bound on the global optima count: keep searching until met.
+        if self.basin_min_optima is not None and n_distinct < self.basin_min_optima:
             return False
 
-        # Minimal global-search floor before any early stop.
-        if n_completed < self.basin_min_starts:
-            return False
-
-        # Known upper bound reached: nothing left to find.
-        if self.basin_max_roi_optima is not None and W >= self.basin_max_roi_optima:
+        # Upper bound: all declared global optima found, so the global maximum
+        # is among them -> stop, no min-starts floor needed.
+        if self.basin_max_optima is not None and n_distinct >= self.basin_max_optima:
             return True
 
+        # No applicable prior: fall back to the Bayesian rule over ROI optima,
+        # which needs the min-starts floor for a settled global-max estimate.
+        if n_completed < self.basin_min_starts:
+            return False
+        W, n_roi = self.basin_detection_roi_stats()
         if W < 1:
             return False
         denom = n_roi - W - 1
@@ -1507,14 +1513,14 @@ class ProfileProjector:
         return expected_undiscovered < self.basin_undiscovered_threshold
 
     @staticmethod
-    def _parse_n_roi_optima(n_roi_optima):
-        """Parse the ``n_roi_optima`` prior into ``(min, max)`` int bounds.
+    def _parse_n_optima(n_optima):
+        """Parse the ``n_optima`` prior into ``(min, max)`` int bounds.
 
         Accepts ``None`` (no prior), an ``int`` (exact: both bounds equal), or
         a dict ``{'min': int, 'max': int}`` with either key optional. Returns
         ``(None, None)`` when no prior is given.
         """
-        if n_roi_optima is None:
+        if n_optima is None:
             return None, None
 
         def _check(name, val):
@@ -1522,34 +1528,34 @@ class ProfileProjector:
                 return None
             if isinstance(val, bool) or not isinstance(val, (int, np.integer)) or val < 1:
                 raise ConfigurationError(
-                    f"n_roi_optima {name} must be a positive integer",
-                    parameter="n_roi_optima", value=n_roi_optima,
+                    f"n_optima {name} must be a positive integer",
+                    parameter="n_optima", value=n_optima,
                 )
             return int(val)
 
-        if isinstance(n_roi_optima, dict):
-            unknown = set(n_roi_optima) - {'min', 'max'}
+        if isinstance(n_optima, dict):
+            unknown = set(n_optima) - {'min', 'max'}
             if unknown:
                 raise ConfigurationError(
-                    f"n_roi_optima dict has unknown keys {sorted(unknown)}; "
+                    f"n_optima dict has unknown keys {sorted(unknown)}; "
                     f"only 'min' and 'max' are allowed",
-                    parameter="n_roi_optima", value=n_roi_optima,
+                    parameter="n_optima", value=n_optima,
                 )
-            lo = _check('min', n_roi_optima.get('min'))
-            hi = _check('max', n_roi_optima.get('max'))
-        elif isinstance(n_roi_optima, bool) or not isinstance(n_roi_optima, (int, np.integer)):
+            lo = _check('min', n_optima.get('min'))
+            hi = _check('max', n_optima.get('max'))
+        elif isinstance(n_optima, bool) or not isinstance(n_optima, (int, np.integer)):
             raise ConfigurationError(
-                "n_roi_optima must be a positive integer or a "
+                "n_optima must be a positive integer or a "
                 "{'min': int, 'max': int} dict",
-                parameter="n_roi_optima", value=n_roi_optima,
+                parameter="n_optima", value=n_optima,
             )
         else:
-            lo = hi = _check('value', n_roi_optima)
+            lo = hi = _check('value', n_optima)
 
         if lo is not None and hi is not None and lo > hi:
             raise ConfigurationError(
-                f"n_roi_optima min ({lo}) must not exceed max ({hi})",
-                parameter="n_roi_optima", value=n_roi_optima,
+                f"n_optima min ({lo}) must not exceed max ({hi})",
+                parameter="n_optima", value=n_optima,
             )
         return lo, hi
 

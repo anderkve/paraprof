@@ -8,18 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`n_roi_optima` prior** — optional `ProfileProjector` argument giving the
-  number of distinct ROI optima (optima within `roi_threshold` of the global
-  maximum). It steers the initial-optimization basin-detection stage: a known
-  **maximum** stops the rolling multistart once that many are found (aborting
-  in-flight runs), a known **minimum** blocks the Bayesian rule from stopping
-  until that many are found; both still honor the `basin_detection.min_starts`
-  floor. Pass an `int` (exact) or `{'min': int, 'max': int}`. On genuinely
-  multimodal targets, where the Bayesian rule needs ~`W²` repeat hits to
-  enumerate `W` modes and so runs to the `n_initial_optimizations` cap, this
-  saves substantially (Himmelblau-4D, 16 modes: ~62% fewer target calls, all
-  modes found, identical global maximum); on unimodal targets at adequate
-  convergence the rule already stops early, so the prior is a no-op there.
+- **`n_optima` prior** — optional `ProfileProjector` argument giving the number
+  of optima the target has *globally*; use only when confident it has one or a
+  few. It steers the initial-optimization basin-detection stage: a known
+  **maximum** stops the rolling multistart once that many distinct optima are
+  found — the global maximum is then necessarily among them, so the
+  `basin_detection.min_starts` floor is skipped (`n_optima=1` stops after the
+  first converged start) — while a known **minimum** keeps the stage running
+  until at least that many are found. Pass an `int` (exact) or
+  `{'min': int, 'max': int}`. On genuinely multimodal targets, where the
+  Bayesian rule needs ~`W²` repeat hits to enumerate `W` modes and so runs to
+  the `n_initial_optimizations` cap, this saves substantially (Himmelblau-4D,
+  16 modes: ~62% fewer target calls, all modes found, identical global
+  maximum); on unimodal targets at adequate convergence the rule already stops
+  early, so the prior is a no-op there.
 - **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
   goes through a format layer (`paraprof.sample_io`) that dispatches on the
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half

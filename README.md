@@ -117,7 +117,7 @@ Common constructor arguments:
 - `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)`: a safe ceiling, since the Bayesian stopping rule controls the actual spend, so set it generously. (If you disable early stopping with `basin_detection.undiscovered_threshold = 0`, this becomes a fixed count, so set it explicitly.)
 - `max_patching_waves` — cap on patching iterations. Default 10.
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
-- `n_roi_optima` — prior knowledge of how many distinct ROI optima the target has (optima within `roi_threshold` of the global max). Stops the initial multistart as soon as that many are found, or refuses to stop early until they are. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
+- `n_optima` — prior on how many optima the target has *globally*; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (the global max is then among them, so the `min_starts` floor is skipped — `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.

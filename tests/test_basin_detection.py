@@ -250,11 +250,12 @@ class TestLHSPool:
         assert s._initial_opt_start_points is not None
 
 
-class TestModeCountPrior:
-    """The ``n_roi_optima`` prior steering ``basin_detection_should_stop``."""
+class TestGlobalOptimaPrior:
+    """The ``n_optima`` (global optima count) prior steering
+    ``basin_detection_should_stop``."""
 
     def _register_distinct(self, s, n, target_val=-0.1):
-        """Register ``n`` well-separated ROI optima (count 1 each)."""
+        """Register ``n`` well-separated distinct optima (count 1 each)."""
         for i in range(n):
             s.register_initial_optimum(np.array([float(i) * 1.0 - 2.0, 0.0]),
                                        target_val)
@@ -262,17 +263,17 @@ class TestModeCountPrior:
     # --- parsing ---
     def test_parse_none(self):
         from paraprof.sampler import ProfileProjector as PP
-        assert PP._parse_n_roi_optima(None) == (None, None)
+        assert PP._parse_n_optima(None) == (None, None)
 
     def test_parse_int_is_exact(self):
         from paraprof.sampler import ProfileProjector as PP
-        assert PP._parse_n_roi_optima(3) == (3, 3)
+        assert PP._parse_n_optima(3) == (3, 3)
 
     def test_parse_dict(self):
         from paraprof.sampler import ProfileProjector as PP
-        assert PP._parse_n_roi_optima({'min': 2, 'max': 5}) == (2, 5)
-        assert PP._parse_n_roi_optima({'max': 4}) == (None, 4)
-        assert PP._parse_n_roi_optima({'min': 2}) == (2, None)
+        assert PP._parse_n_optima({'min': 2, 'max': 5}) == (2, 5)
+        assert PP._parse_n_optima({'max': 4}) == (None, 4)
+        assert PP._parse_n_optima({'min': 2}) == (2, None)
 
     @pytest.mark.parametrize("bad", [0, -1, 2.5, True, "x", {'min': 5, 'max': 2},
                                      {'foo': 1}, {'min': 0}])
@@ -280,61 +281,61 @@ class TestModeCountPrior:
         from paraprof.sampler import ProfileProjector as PP
         from paraprof.exceptions import ConfigurationError
         with pytest.raises(ConfigurationError):
-            PP._parse_n_roi_optima(bad)
+            PP._parse_n_optima(bad)
 
     def test_constructor_sets_bounds(self, simple_2d_function, simple_bounds_2d,
                                      basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima=3)
-        assert s.basin_min_roi_optima == 3
-        assert s.basin_max_roi_optima == 3
+                          n_optima=3)
+        assert s.basin_min_optima == 3
+        assert s.basin_max_optima == 3
         s2 = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                           n_roi_optima={'max': 4})
-        assert s2.basin_min_roi_optima is None
-        assert s2.basin_max_roi_optima == 4
+                           n_optima={'max': 4})
+        assert s2.basin_min_optima is None
+        assert s2.basin_max_optima == 4
 
     def test_default_no_prior(self, simple_2d_function, simple_bounds_2d,
                               basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
-        assert s.basin_min_roi_optima is None
-        assert s.basin_max_roi_optima is None
+        assert s.basin_min_optima is None
+        assert s.basin_max_optima is None
 
     # --- upper bound ---
     def test_upper_bound_stops_when_reached(self, simple_2d_function,
                                             simple_bounds_2d, basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima={'max': 3})
-        s.global_max_target_val = 0.0
-        self._register_distinct(s, 3)              # W == 3, each hit once
-        # BRK alone would not fire here (denom = n_roi - W - 1 = -1), so the
-        # stop is attributable to the prior.
-        assert s.basin_detection_should_stop(10) is True
-
-    def test_upper_bound_honors_min_starts(self, simple_2d_function,
-                                           simple_bounds_2d, basic_projection_2d):
-        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima={'max': 3})
+                          n_optima={'max': 3})
         s.global_max_target_val = 0.0
         self._register_distinct(s, 3)
-        # basin_min_starts defaults to 10; below it we keep searching.
-        assert s.basin_detection_should_stop(9) is False
+        assert s.basin_detection_should_stop(10) is True
+
+    def test_upper_bound_bypasses_min_starts(self, simple_2d_function,
+                                             simple_bounds_2d, basic_projection_2d):
+        # n_optima=1: stop after the very first converged start, well below the
+        # default min_starts floor (10) -- the global guarantee makes it moot.
+        s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
+                          n_optima=1)
+        s.global_max_target_val = 0.0
+        self._register_distinct(s, 1)
+        assert s.basin_detection_should_stop(1) is True
 
     def test_upper_bound_not_yet_reached(self, simple_2d_function, simple_bounds_2d,
                                          basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima={'max': 4})
+                          n_optima={'max': 4})
         s.global_max_target_val = 0.0
         self._register_distinct(s, 2)
         assert s.basin_detection_should_stop(10) is False
 
-    def test_upper_bound_ignores_non_roi_optima(self, simple_2d_function,
-                                                simple_bounds_2d, basic_projection_2d):
-        # Optima outside the ROI (target far below the max) don't count toward W.
+    def test_upper_bound_counts_non_roi_optima(self, simple_2d_function,
+                                               simple_bounds_2d, basic_projection_2d):
+        # Global count includes optima outside the ROI (unlike the Bayesian
+        # rule's W, which is ROI-restricted).
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima={'max': 2}, roi_threshold=3.0)
+                          n_optima={'max': 2}, roi_threshold=3.0)
         s.global_max_target_val = 0.0
         self._register_distinct(s, 2, target_val=-10.0)   # both below ROI cutoff
-        assert s.basin_detection_should_stop(10) is False
+        assert s.basin_detection_should_stop(10) is True
 
     # --- lower bound ---
     def test_lower_bound_overrides_bayesian_stop(self, simple_2d_function,
@@ -347,7 +348,7 @@ class TestModeCountPrior:
         assert base.basin_detection_should_stop(15) is True   # BRK fires
 
         guarded = _make_sampler(simple_2d_function, simple_bounds_2d,
-                                basic_projection_2d, n_roi_optima={'min': 2})
+                                basic_projection_2d, n_optima={'min': 2})
         guarded.global_max_target_val = 0.0
         for _ in range(15):
             guarded.register_initial_optimum(np.array([3.0, 2.0]), -0.1)
@@ -357,7 +358,7 @@ class TestModeCountPrior:
                                                         simple_bounds_2d,
                                                         basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima={'min': 2})
+                          n_optima={'min': 2})
         s.global_max_target_val = 0.0
         # Two distinct basins, each hit several times so BRK can fire.
         for _ in range(8):
@@ -370,9 +371,9 @@ class TestModeCountPrior:
     def test_exact_int_stops_exactly_at_count(self, simple_2d_function,
                                               simple_bounds_2d, basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d,
-                          n_roi_optima=2)
+                          n_optima=2)
         s.global_max_target_val = 0.0
         self._register_distinct(s, 1)
         assert s.basin_detection_should_stop(10) is False   # below min=2
-        self._register_distinct(s, 2)                        # now W == 2
+        self._register_distinct(s, 2)                        # now 2 distinct
         assert s.basin_detection_should_stop(10) is True    # max=2 reached
