@@ -775,8 +775,7 @@ def master_main(comm, sampler,
                         elif sampler.basin_detection_should_stop(initial_opt_completed):
                             W, n_roi = sampler.basin_detection_roi_stats()
                             initial_opt_stopped = True
-                            # Note when the user's known-optima-count prior, not
-                            # the Bayesian rule, triggered the stop.
+                            # Attribute the stop to the prior vs the Bayesian rule.
                             reason = (
                                 "known-optima prior met"
                                 if (sampler.basin_max_roi_optima is not None
