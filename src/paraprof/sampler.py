@@ -101,6 +101,7 @@ class ProfileProjector:
                  lbfgsb_max_iter=50,
                  lbfgsb_polish=True,
                  n_initial_optimizations=None,
+                 n_roi_optima=None,
                  initial_points=None,
                  # Optional user-supplied gradient
                  grad_func=None,
@@ -170,6 +171,28 @@ class ProfileProjector:
             auto-configured as min(400, 50 * n_dims) with basin detection on, or the
             modest min(100, 20 * n_dims) when it is off (where it is the fixed number
             of starts). See ``advanced_config['basin_detection']``.
+        n_roi_optima : int or dict, optional
+            Prior knowledge of how many distinct ROI-competitive optima the
+            target has, i.e. optima within ``roi_threshold`` of the global
+            maximum (default: None). Used only by the initial-optimization
+            basin-detection stage, where it overrides the Bayesian stopping
+            rule in two ways:
+
+            - **Upper bound** -- once that many distinct ROI optima have been
+              found, the rolling multistart stops immediately (even before
+              ``basin_detection.min_starts``) and aborts any in-flight runs:
+              more starts cannot find new ROI optima. This is the "stop as
+              soon as the known number of optima is found" case.
+            - **Lower bound** -- the stage refuses to stop early until at
+              least that many distinct ROI optima have been found, guarding
+              against the Bayesian rule halting prematurely on targets with
+              very unequal basin sizes. (Still bounded by the
+              ``n_initial_optimizations`` cap.)
+
+            Pass an ``int`` for an exact count (applies as both bounds), or a
+            dict ``{'min': int, 'max': int}`` (either key optional) for an
+            asymmetric bound. ROI membership is judged against the best
+            optimum found so far.
         initial_points : array-like, shape (n_points, n_dims), optional
             Initial points in full parameter space to activate corresponding grid points (default: None)
             Each point will activate its nearest grid point, independent of optimization
@@ -613,6 +636,12 @@ class ProfileProjector:
             )
         else:
             self.basin_min_starts = int(bd['min_starts'])
+        # Optional prior knowledge of the number of distinct ROI optima
+        # (n_roi_optima constructor arg), parsed into independent lower/upper
+        # bounds that steer the stopping rule (see basin_detection_should_stop).
+        self.basin_min_roi_optima, self.basin_max_roi_optima = (
+            self._parse_n_roi_optima(n_roi_optima)
+        )
         # Pre-generated LHS start pool for rolling multistart (lazily filled).
         self._initial_opt_start_points = None
         self._initial_opt_lhs_idx = 0
@@ -1457,19 +1486,49 @@ class ProfileProjector:
         return W, n_roi
 
     def basin_detection_should_stop(self, n_completed):
-        """Boender-Rinnooy Kan Bayesian stopping rule, restricted to ROI optima.
+        """Whether the rolling multistart should stop, combining the optional
+        ``n_roi_optima`` prior with the Boender-Rinnooy Kan Bayesian rule.
 
-        ``n_completed`` is the total number of finished optimizations; the rule
-        only applies once it reaches ``basin_min_starts``. Let ``N`` be the
-        starts that landed in ROI-competitive basins and ``W`` the distinct
-        optima among them. The estimated true number of ROI optima is
-        ``W*(N-1)/(N-W-1)``, so the expected number still undiscovered is
-        ``W**2/(N-W-1)``; stop once that falls below
+        ``n_completed`` is the total number of finished optimizations. Let
+        ``W`` be the distinct ROI-competitive optima found so far and ``N`` the
+        starts that landed in them.
+
+        Priors (``n_roi_optima``) take precedence over the Bayesian rule:
+
+        - a known **minimum**: never stop while ``W`` is below it (overrides
+          everything; the ``n_initial_optimizations`` cap is the safety net);
+        - a known **maximum**: once ``W`` has reached it, stop without waiting
+          for the Bayesian rule's repeat-count confidence -- there are no
+          further ROI optima to find.
+
+        Both still honor the ``basin_min_starts`` floor: a minimal global
+        search runs first, because ROI membership is judged against the
+        running global maximum and stopping before that estimate settles
+        could miss the true global optimum (which would shift the whole ROI).
+        Set ``basin_detection.min_starts`` lower for a more aggressive stop.
+
+        Otherwise the Bayesian rule applies: the estimated true number of ROI
+        optima is ``W*(N-1)/(N-W-1)``, so the expected number still
+        undiscovered is ``W**2/(N-W-1)``; stop once that falls below
         ``basin_undiscovered_threshold``.
         """
+        W, n_roi = self.basin_detection_roi_stats()
+
+        # Known lower bound not yet met: keep searching regardless of what the
+        # rules below would say (the cap is the safety net).
+        if self.basin_min_roi_optima is not None and W < self.basin_min_roi_optima:
+            return False
+
+        # Minimal global-search floor before any early stop, so the global-max
+        # estimate that ROI membership depends on is reasonably settled.
         if n_completed < self.basin_min_starts:
             return False
-        W, n_roi = self.basin_detection_roi_stats()
+
+        # Known upper bound reached: nothing left to find -> stop now, without
+        # waiting for the Bayesian rule's repeat-count confidence.
+        if self.basin_max_roi_optima is not None and W >= self.basin_max_roi_optima:
+            return True
+
         if W < 1:
             return False
         denom = n_roi - W - 1
@@ -1477,6 +1536,53 @@ class ProfileProjector:
             return False
         expected_undiscovered = (W * W) / denom
         return expected_undiscovered < self.basin_undiscovered_threshold
+
+    @staticmethod
+    def _parse_n_roi_optima(n_roi_optima):
+        """Parse the ``n_roi_optima`` prior into ``(min, max)`` int bounds.
+
+        Accepts ``None`` (no prior), an ``int`` (exact: both bounds equal), or
+        a dict ``{'min': int, 'max': int}`` with either key optional. Returns
+        ``(None, None)`` when no prior is given.
+        """
+        if n_roi_optima is None:
+            return None, None
+
+        def _check(name, val):
+            if val is None:
+                return None
+            if isinstance(val, bool) or not isinstance(val, (int, np.integer)) or val < 1:
+                raise ConfigurationError(
+                    f"n_roi_optima {name} must be a positive integer",
+                    parameter="n_roi_optima", value=n_roi_optima,
+                )
+            return int(val)
+
+        if isinstance(n_roi_optima, dict):
+            unknown = set(n_roi_optima) - {'min', 'max'}
+            if unknown:
+                raise ConfigurationError(
+                    f"n_roi_optima dict has unknown keys {sorted(unknown)}; "
+                    f"only 'min' and 'max' are allowed",
+                    parameter="n_roi_optima", value=n_roi_optima,
+                )
+            lo = _check('min', n_roi_optima.get('min'))
+            hi = _check('max', n_roi_optima.get('max'))
+        elif isinstance(n_roi_optima, bool) or not isinstance(n_roi_optima, (int, np.integer)):
+            raise ConfigurationError(
+                "n_roi_optima must be a positive integer or a "
+                "{'min': int, 'max': int} dict",
+                parameter="n_roi_optima", value=n_roi_optima,
+            )
+        else:
+            lo = hi = _check('value', n_roi_optima)
+
+        if lo is not None and hi is not None and lo > hi:
+            raise ConfigurationError(
+                f"n_roi_optima min ({lo}) must not exceed max ({hi})",
+                parameter="n_roi_optima", value=n_roi_optima,
+            )
+        return lo, hi
 
 
     def create_activation_jobs(self, next_job_id):

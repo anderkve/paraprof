@@ -137,11 +137,18 @@ knowledge transfer.
 
 ## C. Priors / adaptability
 
-### C1. Known mode count → basin detection
-Hook on `basin_detection_should_stop` / `basin_detection_roi_stats`. Upper bound:
+### C1. Known mode count → basin detection — *implemented*
+Hook on `basin_detection_should_stop` / `basin_detection_roi_stats`, exposed as
+the `n_roi_optima` constructor argument (int, or `{'min', 'max'}`). Upper bound:
 stop the rolling multistart the moment `W` distinct ROI optima are registered.
-Lower bound / exact count: refuse to stop early until `W ≥ known_min`. Or fold
-the count in as a Bayesian prior on the Boender–Rinnooy-Kan estimator.
+Lower bound / exact count: refuse to stop early until `W ≥ known_min`. Both
+honor the `basin_min_starts` floor so the global-max estimate that ROI
+membership depends on settles first (stopping before it could miss the true
+global optimum and shift the whole ROI). Zero extra evaluations — it only
+removes starts or adds a safety floor. Measured win on multimodal targets where
+the Bayesian rule otherwise runs to the `n_initial_optimizations` cap:
+Himmelblau-4D (16 ROI modes) with `n_roi_optima=16` cut total target calls ~54%
+(19.9k → 9.2k), all 16 modes found, identical global max.
 
 ### C2. Periodic boundaries → toroidal grid
 For angular/phase parameters. Localized changes:
@@ -171,7 +178,7 @@ Expose as a per-dimension `periodic` flag.
 | ~~**A1** Predictor–corrector warm starts~~ | efficiency | ~~High~~ tried → neutral, reverted | Med | Low |
 | **B1** Consistency residual → adaptive stop + quality bound | correctness + adapt | High | Low–Med | Low |
 | **B3** Cross-projection consistency + pool repair | correctness | High | Med | Low |
-| **C1** Known mode-count prior | adapt | Med | Low | Low |
+| **C1** Known mode-count prior ✅ done | adapt | Med (~54% on multimodal) | Low | Low |
 | **C2** Periodic boundaries | correctness + efficiency | Med–High* | Med | Low |
 | **B2** Matrix holes/components detection | correctness | Med | Low | Low |
 | **A2** Analytic Gaussian-nuisance profiling | efficiency | High* | Med | Low |

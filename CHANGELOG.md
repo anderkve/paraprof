@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`n_roi_optima` prior** — optional prior knowledge of how many distinct
+  ROI-competitive optima the target has (optima within `roi_threshold` of the
+  global maximum), passed to the `ProfileProjector` constructor. It steers the
+  initial-optimization basin-detection stage: a known **maximum** stops the
+  rolling multistart as soon as that many distinct ROI optima are found
+  (aborting in-flight runs — there are no more to find), and a known
+  **minimum** prevents the Bayesian rule from stopping early until that many
+  are found. Both still honor the `basin_detection.min_starts` floor so the
+  global-max estimate (which ROI membership depends on) settles first. Pass an
+  `int` for an exact count or a `{'min': int, 'max': int}` dict for an
+  asymmetric bound. On highly multimodal targets where the Bayesian rule runs
+  to the `n_initial_optimizations` cap, a correct prior cut initial-stage
+  spend substantially in testing (e.g. Himmelblau-4D, 16 modes: ~54% fewer
+  total target calls, all modes found, identical global maximum). New sampler
+  attributes `basin_min_roi_optima` / `basin_max_roi_optima` and the
+  `_parse_n_roi_optima` helper; `basin_detection_should_stop` now consults the
+  prior before the Boender-Rinnooy Kan rule.
 - **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
   goes through a format layer (`paraprof.sample_io`) that dispatches on the
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half
