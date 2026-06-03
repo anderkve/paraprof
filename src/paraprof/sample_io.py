@@ -1,29 +1,16 @@
 """Pluggable read/write layer for ParaProf sample files.
 
-A "sample" is a single evaluated point: ``n_dims`` parameter values followed
-by one target (log-likelihood) value, stored as one row of length
-``n_dims + 1``. This module hides the on-disk representation behind a small
-writer/reader interface so the rest of the codebase never has to know whether
-samples live in a CSV or an HDF5 file.
+A sample is one evaluated point: ``n_dims`` parameter values plus one target
+(log-likelihood) value, stored as a row of length ``n_dims + 1``. The format
+is chosen by file extension, so callers never handle it directly:
 
-Supported formats (selected by file extension):
+- ``.csv``                       -> plain text, ``%.10e`` columns
+- ``.h5`` / ``.hdf5`` / ``.he5``  -> HDF5 binary (needs ``h5py``)
 
-- ``.csv``                      -> plain text, ``%.10e`` scientific notation
-- ``.h5`` / ``.hdf5`` / ``.he5`` -> HDF5 binary (requires ``h5py``)
-
-Anything else is treated as CSV, preserving ParaProf's historical default.
-
-Design notes
-------------
-The writers are built for the sampler's streaming, crash-safe usage pattern:
-samples are buffered in memory and handed over one batch at a time via
-``write_batch``. The CSV writer re-opens the file in append mode for every
-batch (the OS flushes on close), so a hard crash loses at most the un-flushed
-in-memory buffer. The HDF5 writer keeps the file open on a resizable, chunked
-dataset and flushes after every batch for the same reason.
-
-HDF5 files carry minimal metadata: an ``n_dims`` attribute on the ``samples``
-dataset. CSV files are headerless, matching the existing format.
+Other extensions default to CSV. Writers take one batch at a time and flush
+per batch, so a crash loses at most the caller's still-buffered samples, and
+they append when the file exists, so a run can extend and re-read its own file
+(the warm-start round trip).
 """
 
 import os
@@ -55,10 +42,9 @@ _HDF5_EXTENSIONS = (".h5", ".hdf5", ".he5")
 
 
 def infer_format(path):
-    """Return the format key (``'csv'`` or ``'hdf5'``) for a file path.
+    """Return the format key (``'csv'`` or ``'hdf5'``) for ``path``, by extension.
 
-    Selection is by extension. Unknown or missing extensions fall back to
-    ``'csv'``, which preserves ParaProf's historical default behaviour.
+    Unknown or missing extensions fall back to ``'csv'``.
     """
     ext = os.path.splitext(str(path))[1].lower()
     if ext in _HDF5_EXTENSIONS:
@@ -83,23 +69,21 @@ def _import_h5py():
 # Writers
 # --------------------------------------------------------------------------- #
 class SampleWriter:
-    """Abstract streaming writer. Subclasses persist one batch at a time.
+    """Streaming writer base: write batches, then close (idempotent).
 
-    Lifecycle: construct (no file touched), then call ``write_batch`` zero or
-    more times, then ``close`` (idempotent). The backing file is created
-    lazily on the first non-empty batch, so a run that produces no samples
-    leaves no file behind -- matching the legacy CSV behaviour.
+    The file is opened lazily on the first non-empty batch, so a run that
+    records nothing leaves no file behind.
     """
 
     def write_batch(self, rows):
-        """Append ``rows`` (a 2D array-like of shape (n, n_dims + 1))."""
+        """Append ``rows``, a 2D array of shape (n, n_dims + 1)."""
         raise NotImplementedError
 
     def flush(self):
-        """Flush buffered data to disk. Optional for subclasses."""
+        """Flush buffered data to disk."""
 
     def close(self):
-        """Flush and release the backing file. Must be idempotent."""
+        """Flush and release the file; idempotent."""
         raise NotImplementedError
 
     def __enter__(self):
@@ -111,12 +95,7 @@ class SampleWriter:
 
 
 class CSVSampleWriter(SampleWriter):
-    """Append samples as scientific-notation text, re-opening per batch.
-
-    Re-opening in append mode for every batch (rather than holding the handle
-    open) means the OS flushes completed batches to disk on each close, so an
-    abrupt termination can only lose the caller's still-buffered samples.
-    """
+    """Append samples as ``%.10e`` text, re-opening the file per batch."""
 
     def __init__(self, path):
         self.path = path
@@ -139,13 +118,7 @@ class CSVSampleWriter(SampleWriter):
 
 
 class HDF5SampleWriter(SampleWriter):
-    """Append samples to a resizable, chunked HDF5 dataset.
-
-    The file is opened in append mode on the first batch: an existing dataset
-    is extended (so output files round-trip into warm starts just like CSV),
-    otherwise a new resizable dataset is created. The file is flushed after
-    every batch to bound data loss on an abrupt termination.
-    """
+    """Append samples to a resizable, chunked ``samples`` dataset (float64)."""
 
     def __init__(self, path):
         self.path = path
@@ -157,7 +130,7 @@ class HDF5SampleWriter(SampleWriter):
     def _ensure_open(self, n_cols):
         if self._file is not None:
             return
-        # 'a' = read/write, create if missing; extends a prior run's dataset.
+        # Append mode: extend an existing dataset, else create a resizable one.
         self._file = self._h5py.File(self.path, "a")
         if _HDF5_DATASET in self._file:
             self._dset = self._file[_HDF5_DATASET]
@@ -176,7 +149,6 @@ class HDF5SampleWriter(SampleWriter):
                 chunks=(DEFAULT_CHUNK_SIZE, n_cols),
                 dtype="float64",
             )
-            # Minimal metadata: number of parameter dimensions.
             self._dset.attrs["n_dims"] = n_cols - 1
 
     def write_batch(self, rows):
@@ -214,16 +186,7 @@ _WRITERS = {
 
 
 def create_sample_writer(path, fmt=None):
-    """Create a :class:`SampleWriter` for ``path``.
-
-    Parameters
-    ----------
-    path : str
-        Destination file. The format is inferred from the extension unless
-        ``fmt`` is given.
-    fmt : str, optional
-        Explicit format key (``'csv'`` or ``'hdf5'``), overriding inference.
-    """
+    """Return a writer for ``path``; ``fmt`` overrides extension inference."""
     fmt = fmt or infer_format(path)
     try:
         writer_cls = _WRITERS[fmt]
@@ -264,11 +227,10 @@ def _iter_hdf5_batches(path, chunk_size):
 
 
 def iter_sample_batches(path, chunk_size=DEFAULT_CHUNK_SIZE, fmt=None):
-    """Iterate over a sample file in chunks of up to ``chunk_size`` rows.
+    """Yield 2D arrays of up to ``chunk_size`` rows from a sample file.
 
-    Yields 2D float arrays of shape ``(<=chunk_size, n_dims + 1)``. This is the
-    streaming primitive used by warm-start loading and :func:`combine_samples`
-    so that large binary files never have to be held in memory at once.
+    The streaming primitive behind warm-start loading and combination; lets
+    large files be processed without loading them whole.
     """
     fmt = fmt or infer_format(path)
     if fmt == "hdf5":
@@ -295,37 +257,14 @@ def read_samples(path, fmt=None):
 # Combination
 # --------------------------------------------------------------------------- #
 def combine_samples(inputs, output, chunk_size=DEFAULT_CHUNK_SIZE, fmt=None):
-    """Concatenate several sample files into one, streaming chunk by chunk.
+    """Concatenate sample files into ``output``, streaming chunk by chunk.
 
-    Each input is read in batches and written straight to ``output`` without
-    ever materialising every input in memory, so this scales to large binary
-    files. Inputs and output are dispatched on their own extensions
-    independently, so formats may be mixed freely (e.g. combine several CSV
-    files into a single HDF5 file).
+    Scales to large files (nothing is held whole in memory) and may mix
+    formats, since each path is dispatched on its own extension -- e.g.
+    several CSVs into one HDF5. Missing inputs are skipped.
 
-    Parameters
-    ----------
-    inputs : iterable of str
-        Paths to existing sample files. Missing files are skipped with no
-        error; the caller is responsible for globbing per-rank/per-run files.
-    output : str
-        Destination path. Its extension selects the output format unless
-        ``fmt`` is given. Must not be one of the inputs.
-    chunk_size : int, optional
-        Rows transferred per read/write step.
-    fmt : str, optional
-        Explicit output format key, overriding extension inference.
-
-    Returns
-    -------
-    int
-        Total number of samples written.
-
-    Raises
-    ------
-    ValueError
-        If inputs disagree on the number of columns, or ``output`` is also an
-        input path.
+    Returns the number of samples written. Raises ValueError if ``output`` is
+    also an input or the inputs disagree on column count.
     """
     inputs = list(inputs)
     out_abs = os.path.abspath(output)

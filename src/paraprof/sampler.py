@@ -189,10 +189,9 @@ class ProfileProjector:
         ---
         samples_output_file : str, optional
             Path to save all evaluated points (default: None). Write-only
-            during the scan. The file format is chosen from the extension:
-            ``.csv`` for plain text, or ``.h5``/``.hdf5`` for HDF5 binary
-            (requires the optional ``h5py`` dependency). Unknown extensions
-            default to CSV.
+            during the scan. Format follows the extension: ``.csv`` (text) or
+            ``.h5``/``.hdf5`` (HDF5 binary, needs ``h5py``); anything else is
+            treated as CSV.
         warm_start_file : str, optional
             Path to a sample file produced by a previous run (any supported
             format; the extension selects the reader). When set and warm-start
@@ -547,11 +546,8 @@ class ProfileProjector:
         self.samples_buffer = []
         self.sample_buffer_size = 1000
 
-        # The on-disk format (CSV, HDF5, ...) is selected from the output file
-        # extension and handled entirely by the sample_io writer; the sampler
-        # only ever hands it batches of rows. The writer opens its backing file
-        # lazily on the first flush, so a run that records nothing leaves no
-        # file behind.
+        # Format is picked from the file extension; the writer opens its file
+        # lazily on the first flush (see sample_io).
         if self.samples_output_file:
             # Create the target directory up front so the first flush succeeds
             # even when the user points at a not-yet-existing subdirectory.
@@ -1044,8 +1040,7 @@ class ProfileProjector:
             return
 
         try:
-            # Flush any remaining buffered samples, then release the writer's
-            # backing file (closing the HDF5 handle, no-op for CSV).
+            # Flush remaining samples, then release the writer's file.
             self._flush_samples_buffer()
             if self._sample_writer is not None:
                 self._sample_writer.close()
@@ -1304,7 +1299,6 @@ class ProfileProjector:
 
         self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
-            # Format (CSV, HDF5, ...) is inferred from the file extension.
             samples = read_samples(warm_start_file)
         except Exception as e:
             self.logger.info(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")

@@ -146,34 +146,28 @@ Only the L-BFGS-B paths use the gradient; DE is gradient-free. `sampler.target_c
 
 ### Sample file formats
 
-Each evaluated point — `n_dims` parameter values plus its target value — is written as one row of the sample file. The format is selected from the `samples_output_file` extension:
+Each evaluated point — `n_dims` parameter values plus its target value — is one row of the sample file. The format follows the `samples_output_file` extension:
 
-| Extension          | Format     | Notes                                                                 |
-|--------------------|------------|-----------------------------------------------------------------------|
-| `.csv` (default)   | plain text | Headerless, `%.10e` columns. No extra dependencies.                   |
-| `.h5` / `.hdf5`    | HDF5 binary| Resizable `samples` dataset (float64) with an `n_dims` attribute. ~half the size of CSV and faster to read/write. Requires `h5py`. |
+| Extension        | Format      | Notes                                                                 |
+|------------------|-------------|-----------------------------------------------------------------------|
+| `.csv` (default) | plain text  | Headerless, `%.10e` columns. No extra dependencies.                   |
+| `.h5` / `.hdf5`  | HDF5 binary | ~Half the size and faster I/O. Requires `h5py` (`pip install paraprof[hdf5]`). |
 
-Install the HDF5 extra with `pip install paraprof[hdf5]`. Both formats stream during the scan (samples are buffered and flushed in batches) and round-trip through `warm_start_file`, so a run can append to and re-read its own file.
+Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file. They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
 
-> **Crash safety:** the CSV writer re-opens the file in append mode per flush, so an abrupt termination loses at most the un-flushed in-memory buffer. The HDF5 writer keeps the file open and flushes after every batch — robust, but a kill mid-write can in principle truncate the final chunk. Prefer CSV if maximal crash resilience matters more than file size.
-
-#### Combining sample files
-
-A scan writes a single sample file (the master process). To pool several independent runs — or convert between formats — use `combine_samples`, which streams chunk by chunk so it scales to large binary files and can mix formats freely:
+To pool several independent runs (or convert between formats), use `combine_samples`. It streams chunk by chunk and may mix formats:
 
 ```python
-from paraprof import combine_samples, read_samples
 import glob
+from paraprof import combine_samples, read_samples
 
-# Merge per-run files (any mix of .csv/.h5) into one HDF5 file.
-n = combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
+combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
 
-# Feed the pooled file into the next run as a warm start, or load it for analysis.
-samples = read_samples("all_samples.h5")   # -> (n_samples, n_dims + 1) array
+samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 1) array
 params, target = samples[:, :-1], samples[:, -1]
 ```
 
-`read_samples` loads a whole file into a 2D array; for very large files iterate with `paraprof.sample_io.iter_sample_batches(path)` instead.
+For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
 
 ### Advanced configuration
 
