@@ -234,3 +234,6 @@ results_*/
 # Local sensitivity / scratch scripts (Claude Code agent)
 /_*.py
 /_*.sh
+
+# Smooth-certify replicate-study output
+smooth_certify_replicate_report.json

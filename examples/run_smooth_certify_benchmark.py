@@ -89,6 +89,8 @@ def main():
     parser.add_argument('--mode', required=True, choices=['baseline', 'certify'])
     parser.add_argument('--out', required=True,
                         help='Path to write the JSON summary on rank 0.')
+    parser.add_argument('--seed', type=int, default=750123,
+                        help='Master RNG seed (vary it for replicate runs).')
     args = parser.parse_args()
 
     set_log_level('WARNING')
@@ -96,9 +98,10 @@ def main():
     comm = MPI.COMM_WORLD
     myrank = comm.Get_rank()
 
-    # Same RNG seed for both modes -> the only difference is whether the
-    # neighbour-certified DE skip is allowed to fire.
-    np.random.seed(750123)
+    # Master RNG seed. For a single A/B the same seed is used for both modes so
+    # the only intended difference is whether the certified DE skip fires; the
+    # replicate study varies it to sample independent scans.
+    np.random.seed(args.seed)
 
     log_likelihood, bounds, _ = get_test_function(args.target)
     cfg = TARGET_KWARGS[args.target]
@@ -126,6 +129,7 @@ def main():
         summary = {
             'target': args.target,
             'mode': args.mode,
+            'seed': args.seed,
             'elapsed_s': elapsed,
             'n_ranks': comm.Get_size(),
             'cells_smooth_certified': int(certified),
