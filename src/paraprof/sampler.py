@@ -81,12 +81,6 @@ DEFAULT_ACTIVATION_MIX_RATIOS = {
 DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
 DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
 
-# First-order continuation warm start for region-growing activation: seed a
-# newly-activated cell from a local linear fit of the profiled-optimum field
-# over the source cell's neighbourhood, instead of copying the neighbour's
-# params. Toggleable for A/B benchmarking.
-DEFAULT_CONTINUATION_PREDICTOR = True
-
 
 class ProfileProjector:
     """
@@ -247,10 +241,6 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
-                },
-
-                'continuation': {
-                    'enabled': bool,                     # Default: True
                 },
 
                 'suspect_recheck': {
@@ -472,10 +462,6 @@ class ProfileProjector:
                 'pool_seeded_initial_maxima': True,
             },
 
-            'continuation': {
-                'enabled': DEFAULT_CONTINUATION_PREDICTOR,
-            },
-
             'suspect_recheck': {
                 'enabled': DEFAULT_SUSPECT_RECHECK_ENABLED,
                 'max_waves': DEFAULT_SUSPECT_MAX_WAVES,
@@ -599,10 +585,6 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
-
-        # First-order continuation warm start for region-growing activation
-        # (see _jacobian_predicted_params). Default on; toggle for benchmarking.
-        self.continuation_enabled = config['continuation']['enabled']
 
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
@@ -2010,65 +1992,6 @@ class ProfileProjector:
         )
         return (job, next_job_id + 1)
 
-    def _jacobian_predicted_params(self, target_idx, source_idx, source_params):
-        """First-order continuation estimate of the profiled optimum at
-        ``target_idx``, via a direction-free local linear fit.
-
-        Region-growing activates ``target_idx`` from an adjacent in-population
-        cell ``source_idx``. The profiled argmax field phi*(theta) is
-        piecewise-smooth, so we fit its local Jacobian ``J = dphi*/dtheta`` at
-        the source by least squares over *all* in-population neighbours of the
-        source (regressing each neighbour's phi* offset against its grid offset
-        from the source), then predict
-
-            phi*_target ~= phi*_source + J . (theta_target - theta_source).
-
-        Using every neighbour rather than a single colinear "grandparent" makes
-        the estimate independent of which neighbour happened to activate the
-        cell -- i.e. of the stochastic, MPI-order-dependent activation
-        direction. With one usable neighbour it reduces to a secant along that
-        direction; with several it is a robust plane fit. (This is the
-        ``phi*`` field viewed as a smooth vector field on the grid.)
-
-        Index-space offsets are used throughout; because the same units appear
-        in both the fit and the prediction the result is identical to using
-        physical projection coordinates. Returns the bounded prediction, or
-        ``None`` when there are no profiled dims, the step is degenerate, or no
-        usable neighbour exists -- the caller then falls back to the
-        zeroth-order ``source_params``.
-        """
-        if source_params is None or self.n_prof_dims == 0:
-            return None
-        src = np.asarray(source_idx, dtype=float)
-        step = np.asarray(target_idx, dtype=float) - src
-        if not np.any(step):
-            return None
-
-        # Collect (grid offset, profiled-param offset) pairs from in-population
-        # neighbours of the source that carry a usable solution.
-        source_params = np.asarray(source_params, dtype=float)
-        d_theta, d_phi = [], []
-        for n_idx in self._get_valid_neighbors(source_idx):
-            state = self.population.get(n_idx)
-            if state is None or not np.isfinite(state['best_fitness']):
-                continue
-            d_theta.append(np.asarray(n_idx, dtype=float) - src)
-            d_phi.append(self._best_profiled_params(n_idx) - source_params)
-        if not d_theta:
-            return None
-
-        # Solve d_phi ~= d_theta @ Jt for Jt (n_proj, n_prof) in a least-squares
-        # sense; min-norm solution when the offsets are rank-deficient (e.g. a
-        # single neighbour, in which case this reduces to the secant step).
-        A = np.array(d_theta)   # (K, n_proj)
-        B = np.array(d_phi)     # (K, n_prof)
-        Jt, *_ = np.linalg.lstsq(A, B, rcond=None)
-
-        predicted = source_params + Jt.T @ step
-        if not np.all(np.isfinite(predicted)):
-            return None
-        return self._ensure_bounds(predicted, self.profiled_dims)
-
     def create_dynamic_activation_jobs(self, next_job_id):
         """ActivationJobs for un-activated neighbors of high-likelihood grid points."""
         new_jobs = []
@@ -2087,7 +2010,6 @@ class ProfileProjector:
                     # Find best warm_start_params from neighbor's neighbors (incl. self)
                     best_warm_start_params = None
                     best_warm_start_fitness = -np.inf
-                    best_source_idx = None
 
                     for potential_source_idx in self._get_valid_neighbors(neighbor_idx, include_center=True):
                         if potential_source_idx in self.population:
@@ -2096,24 +2018,12 @@ class ProfileProjector:
                                 best_warm_start_fitness = source_state['best_fitness']
                                 source_best_idx = np.argmax(source_state['fitnesses'])
                                 best_warm_start_params = source_state['profiled_params'][source_best_idx]
-                                best_source_idx = potential_source_idx
-
-                    # First-order continuation: predict the profiled optimum at
-                    # the cell from a local linear fit of the phi* field around
-                    # the source. None when unavailable -> ActivationJob falls
-                    # back to the zeroth-order neighbour warm start.
-                    predicted_params = None
-                    if self.continuation_enabled and best_source_idx is not None:
-                        predicted_params = self._jacobian_predicted_params(
-                            neighbor_idx, best_source_idx, best_warm_start_params
-                        )
 
                     job = ActivationJob(
                         job_id=next_job_id,
                         sampler=self,
                         grid_idx=neighbor_idx,
-                        warm_start_params=best_warm_start_params,
-                        predicted_params=predicted_params,
+                        warm_start_params=best_warm_start_params
                     )
                     new_jobs.append(job)
                     self.pending_activation_indices.add(neighbor_idx)

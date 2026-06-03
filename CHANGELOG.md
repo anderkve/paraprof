@@ -8,26 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **First-order continuation warm start** for region-growing activation, on by
-  default. Region-growing activates a cell from an adjacent in-population cell;
-  since the profiled argmax field `phi*(theta)` is piecewise-smooth, the new
-  cell is now seeded from a *direction-free* local linear fit of that field
-  rather than by copying the neighbour's profiled params. The source cell's
-  local Jacobian `J = dphi*/dtheta` is estimated by least squares over all
-  in-population neighbours of the source, and the cell is predicted as
-  `phi_target ~= phi_source + J . (theta_target - theta_source)`. Using every
-  neighbour (rather than a single colinear "grandparent") makes the estimate
-  independent of which neighbour happened to activate the cell -- i.e. of the
-  stochastic, MPI-order-dependent activation direction; with one usable
-  neighbour it reduces to a secant step, with several it is a robust plane fit.
-  The zeroth-order neighbour params are kept as a second un-perturbed
-  population seed so the population still brackets the correct optimum branch
-  near mode crossings; the prediction falls back to the neighbour params when
-  no usable neighbour exists. Zero extra target evaluations. New
-  `ProfileProjector._jacobian_predicted_params` helper, a `predicted_params`
-  argument on `ActivationJob`, and a toggle
-  `advanced_config['continuation']['enabled']` (default `True`), surfaced as
-  `sampler.continuation_enabled` for A/B benchmarking.
 - **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
   goes through a format layer (`paraprof.sample_io`) that dispatches on the
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half
