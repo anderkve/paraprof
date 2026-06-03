@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **First-order (secant) continuation warm start** for region-growing
+  activation, on by default. Region-growing activates a cell from an adjacent
+  in-population cell; since the profiled argmax field is piecewise-smooth, the
+  new cell is now seeded with a secant extrapolation along the travel
+  direction (`phi_target ~= phi_source + (phi_source - phi_grandparent)`, using
+  the colinear grandparent cell) instead of just copying the neighbour's
+  profiled params. The zeroth-order neighbour params are kept as a second
+  un-perturbed population seed so the population still brackets the correct
+  optimum branch near mode crossings; the prediction falls back to the old
+  behaviour when no colinear grandparent with a usable solution exists. Zero
+  extra target evaluations. New `ProfileProjector._secant_predicted_params`
+  helper, a `predicted_params` argument on `ActivationJob`, and a toggle
+  `advanced_config['continuation']['secant_predictor']` (default `True`),
+  surfaced as `sampler.secant_predictor` for A/B benchmarking.
 - **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
   goes through a format layer (`paraprof.sample_io`) that dispatches on the
   file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half

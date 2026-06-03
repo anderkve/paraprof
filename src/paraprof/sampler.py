@@ -81,6 +81,11 @@ DEFAULT_ACTIVATION_MIX_RATIOS = {
 DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
 DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
 
+# First-order (secant) continuation warm start for region-growing activation.
+# Extrapolates the profiled optimum along the activation direction instead of
+# copying the neighbour's params. Toggleable for A/B benchmarking.
+DEFAULT_SECANT_PREDICTOR = True
+
 
 class ProfileProjector:
     """
@@ -241,6 +246,10 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
+                },
+
+                'continuation': {
+                    'secant_predictor': bool,            # Default: True
                 },
 
                 'suspect_recheck': {
@@ -462,6 +471,10 @@ class ProfileProjector:
                 'pool_seeded_initial_maxima': True,
             },
 
+            'continuation': {
+                'secant_predictor': DEFAULT_SECANT_PREDICTOR,
+            },
+
             'suspect_recheck': {
                 'enabled': DEFAULT_SUSPECT_RECHECK_ENABLED,
                 'max_waves': DEFAULT_SUSPECT_MAX_WAVES,
@@ -585,6 +598,10 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
+
+        # First-order continuation warm start for region-growing activation
+        # (see _secant_predicted_params). Default on; toggle for benchmarking.
+        self.secant_predictor = config['continuation']['secant_predictor']
 
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
@@ -1992,6 +2009,40 @@ class ProfileProjector:
         )
         return (job, next_job_id + 1)
 
+    def _secant_predicted_params(self, target_idx, source_idx, source_params):
+        """First-order continuation estimate of the profiled optimum at
+        ``target_idx``.
+
+        Region-growing activates ``target_idx`` from an adjacent in-population
+        cell ``source_idx``. The profiled argmax field phi*(theta) is
+        piecewise-smooth, so a secant extrapolation along the travel direction
+        ``source -> target`` is a better seed than copying the source params:
+
+            phi*_target ~= phi*_source + (phi*_source - phi*_grandparent)
+
+        where the grandparent is the colinear cell on the far side of the
+        source (``grandparent = source - (target - source)``). Returns the
+        bounded prediction, or ``None`` when there are no profiled dims, the
+        step is degenerate, the grandparent is out of bounds, or it has no
+        usable solution -- the caller then falls back to the zeroth-order
+        ``source_params``.
+        """
+        if source_params is None or self.n_prof_dims == 0:
+            return None
+        step = np.asarray(target_idx) - np.asarray(source_idx)
+        if not np.any(step):
+            return None
+        grand_idx = tuple(np.asarray(source_idx) - step)
+        if not all(0 <= i < s for i, s in zip(grand_idx, self.grid_shape)):
+            return None
+        grand_state = self.population.get(grand_idx)
+        if grand_state is None or not np.isfinite(grand_state['best_fitness']):
+            return None
+        grand_params = self._best_profiled_params(grand_idx)
+        source_params = np.asarray(source_params)
+        predicted = source_params + (source_params - grand_params)
+        return self._ensure_bounds(predicted, self.profiled_dims)
+
     def create_dynamic_activation_jobs(self, next_job_id):
         """ActivationJobs for un-activated neighbors of high-likelihood grid points."""
         new_jobs = []
@@ -2010,6 +2061,7 @@ class ProfileProjector:
                     # Find best warm_start_params from neighbor's neighbors (incl. self)
                     best_warm_start_params = None
                     best_warm_start_fitness = -np.inf
+                    best_source_idx = None
 
                     for potential_source_idx in self._get_valid_neighbors(neighbor_idx, include_center=True):
                         if potential_source_idx in self.population:
@@ -2018,12 +2070,24 @@ class ProfileProjector:
                                 best_warm_start_fitness = source_state['best_fitness']
                                 source_best_idx = np.argmax(source_state['fitnesses'])
                                 best_warm_start_params = source_state['profiled_params'][source_best_idx]
+                                best_source_idx = potential_source_idx
+
+                    # First-order (secant) continuation: extrapolate the
+                    # profiled optimum along the activation direction
+                    # source->cell. None when unavailable -> ActivationJob
+                    # falls back to the zeroth-order neighbour warm start.
+                    predicted_params = None
+                    if self.secant_predictor and best_source_idx is not None:
+                        predicted_params = self._secant_predicted_params(
+                            neighbor_idx, best_source_idx, best_warm_start_params
+                        )
 
                     job = ActivationJob(
                         job_id=next_job_id,
                         sampler=self,
                         grid_idx=neighbor_idx,
-                        warm_start_params=best_warm_start_params
+                        warm_start_params=best_warm_start_params,
+                        predicted_params=predicted_params,
                     )
                     new_jobs.append(job)
                     self.pending_activation_indices.add(neighbor_idx)

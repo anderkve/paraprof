@@ -12,10 +12,14 @@ LHS_SEED_MAX = 1_000_000_000_000
 
 class ActivationJob(Job):
     """Evaluate the initial population for one grid cell (optionally warm-started)."""
-    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None, mark_converged=False):
+    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None,
+                 mark_converged=False, predicted_params=None):
         super().__init__(job_id, 'ACTIVATE_GRID_POINT', sampler)
         self.grid_idx = grid_idx
         self.warm_start_params = warm_start_params
+        # Optional first-order continuation seed; see
+        # ProfileProjector._secant_predicted_params.
+        self.predicted_params = predicted_params
         self.mark_converged = mark_converged
 
         if self.sampler.direct_eval_mode:
@@ -42,13 +46,28 @@ class ActivationJob(Job):
 
         samples_list = []
 
-        if self.warm_start_params is not None and n_from_neighbors > 0:
-            samples_list.append(self.warm_start_params)
-            for _ in range(n_from_neighbors - 1):
+        # Neighbour bucket: when a first-order continuation prediction is
+        # available, seed it un-perturbed as the primary seed and keep the
+        # zeroth-order neighbour params as a second un-perturbed seed, so the
+        # population brackets the true optimum branch even if the prediction
+        # overshoots (e.g. near a mode crossing). Remaining slots are
+        # perturbations around the prediction. Falls back to the old behaviour
+        # (perturbations around warm_start_params) when no prediction is given.
+        neighbor_center = (self.predicted_params
+                           if self.predicted_params is not None
+                           else self.warm_start_params)
+        if neighbor_center is not None and n_from_neighbors > 0:
+            neighbor_seeds = [neighbor_center]
+            if (self.predicted_params is not None
+                    and self.warm_start_params is not None
+                    and n_from_neighbors > 1):
+                neighbor_seeds.append(self.warm_start_params)
+            while len(neighbor_seeds) < n_from_neighbors:
                 perturbation = np.random.normal(0, WARM_START_PERTURBATION_STD, size=self.n_prof_dims)
-                perturbed = self.warm_start_params + perturbation * (prof_bounds[:, 1] - prof_bounds[:, 0])
+                perturbed = neighbor_center + perturbation * (prof_bounds[:, 1] - prof_bounds[:, 0])
                 perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.profiled_dims)
-                samples_list.append(perturbed)
+                neighbor_seeds.append(perturbed)
+            samples_list.extend(neighbor_seeds[:n_from_neighbors])
         else:
             n_from_random += n_from_neighbors
 
