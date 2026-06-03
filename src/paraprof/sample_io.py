@@ -254,22 +254,27 @@ def read_samples(path, fmt=None):
     return result
 
 
-def write_samples(samples, path, fmt=None, chunk_size=DEFAULT_CHUNK_SIZE):
-    """Write a sample array to ``path`` in one call, replacing any existing file.
+def write_samples(samples, path, fmt=None, overwrite=False, chunk_size=DEFAULT_CHUNK_SIZE):
+    """Write a sample array to ``path`` in one call.
 
     The one-shot inverse of :func:`read_samples`. ``samples`` is a 2D array of
     shape (n_samples, n_dims + 1); format follows the extension unless ``fmt``
     is given. Returns the number of samples written.
+
+    Refuses to clobber an existing file unless ``overwrite=True``, in which case
+    the file is replaced so it holds exactly ``samples`` (rather than the append
+    behaviour of the streaming writers). Raises FileExistsError otherwise.
     """
     data = np.asarray(samples, dtype=float)
     if data.ndim != 2:
         raise ValueError(f"samples must be 2D (n_samples, n_dims + 1); got shape {data.shape}.")
+    if os.path.exists(path):
+        if not overwrite:
+            raise FileExistsError(f"'{path}' already exists; pass overwrite=True to replace it.")
+        os.remove(path)
     out_dir = os.path.dirname(path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    # Replace rather than append, so the file ends up holding exactly `samples`.
-    if os.path.exists(path):
-        os.remove(path)
     with create_sample_writer(path, fmt=fmt) as w:
         for start in range(0, len(data), chunk_size):
             w.write_batch(data[start : start + chunk_size])

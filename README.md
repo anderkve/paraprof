@@ -169,7 +169,7 @@ params, target = samples[:, :-1], samples[:, -1]
 write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
 ```
 
-`read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` replaces the target file). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
+`read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
 
 ### Advanced configuration
 

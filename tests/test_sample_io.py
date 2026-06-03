@@ -171,11 +171,22 @@ def test_write_samples_round_trip(tmp_path, fmt, ext):
 
 
 @pytest.mark.parametrize("fmt,ext", FORMATS)
-def test_write_samples_replaces_existing(tmp_path, fmt, ext):
+def test_write_samples_refuses_existing_by_default(tmp_path, fmt, ext):
+    path = str(tmp_path / f"out{ext}")
+    original = _make_samples(40, 2, seed=1)
+    write_samples(original, path)
+    with pytest.raises(FileExistsError, match="overwrite=True"):
+        write_samples(_make_samples(10, 2, seed=2), path)
+    # The existing file must be left untouched.
+    np.testing.assert_allclose(read_samples(path), original, rtol=1e-9, atol=1e-12)
+
+
+@pytest.mark.parametrize("fmt,ext", FORMATS)
+def test_write_samples_overwrite_replaces(tmp_path, fmt, ext):
     path = str(tmp_path / f"out{ext}")
     write_samples(_make_samples(40, 2, seed=1), path)
     data2 = _make_samples(10, 2, seed=2)
-    write_samples(data2, path)  # must replace, not append
+    write_samples(data2, path, overwrite=True)  # replaces, does not append
     np.testing.assert_allclose(read_samples(path), data2, rtol=1e-9, atol=1e-12)
 
 
