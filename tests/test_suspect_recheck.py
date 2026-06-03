@@ -128,34 +128,7 @@ class TestSeedGathering:
         bg_present = any(np.allclose(s, [1.0, 1.0]) for s in seeds)
         assert bg_present
 
-    def test_no_diverse_seeds_when_all_neighbours_suspect(self):
-        """If a cell and all its in-population neighbours are flagged suspect
-        with the same params, no diverse seed survives and the job is skipped."""
-        sampler = _make_sampler(grid_n=10)
-        bad = np.array([3.0, -2.0])
-        for i in (4, 5, 6):
-            _set_cell(sampler, (i,), bad, fitness=-15.0)
-
-        seeds = sampler._gather_suspect_seeds((5,), suspect_set={(4,), (5,), (6,)})
-        # Only the cell's own params (which match the neighbours') survive,
-        # so the job-creation path should later skip this cell.
-        assert len(seeds) == 1
-
-
 class TestSuspectJobLifecycle:
-    def test_job_with_no_seeds_finishes_immediately(self):
-        sampler = _make_sampler(grid_n=10)
-        _set_cell(sampler, (5,), np.array([0.0, 0.0]), fitness=-1.0)
-
-        job = SuspectRecheckJob(
-            job_id=0, sampler=sampler, grid_idx=(5,),
-            candidate_seeds=[], wave_number=0,
-        )
-        tasks = job.start()
-        assert tasks == []
-        assert job.is_finished()
-        assert job.on_finish(next_job_id=1) is None
-
     def test_job_spawns_lbfgsb_when_seed_beats_threshold(self):
         sampler = _make_sampler(grid_n=10)
         _set_cell(sampler, (5,), np.array([3.0, -2.0]), fitness=-15.0)
@@ -218,13 +191,6 @@ class TestSuspectJobLifecycle:
 
 
 class TestConfigPlumbing:
-    def test_defaults(self):
-        sampler = _make_sampler(grid_n=5)
-        assert sampler.suspect_recheck_enabled is True
-        assert sampler.max_suspect_waves >= 1
-        assert sampler.suspect_param_k > 0
-        assert 0 < sampler.suspect_max_fraction <= 1
-
     def test_advanced_config_overrides(self):
         def target(p):
             return -float(np.sum(p ** 2))

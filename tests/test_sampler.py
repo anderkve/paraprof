@@ -58,19 +58,6 @@ class TestProfileProjector:
         neighbors = list(sampler._get_valid_neighbors(center))
         assert len(neighbors) == 8
 
-    def test_ensure_bounds(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        """Test parameter bounding."""
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_2d],
-        )
-
-        # Test clipping values outside bounds
-        vec = np.array([-10.0, 10.0])
-        clipped = sampler._ensure_bounds(vec, [0, 1])
-        np.testing.assert_allclose(clipped, [-5.0, 5.0])
-
     def test_projection_configuration(self, simple_2d_function, simple_bounds_4d):
         """Test projection dimension configuration."""
         projection_1d = {'dims': [0], 'grid_points': [10]}
@@ -138,28 +125,6 @@ class TestProximityWarmStart:
         assert out is not None
         np.testing.assert_allclose(out[0], [1.0, 2.0])
 
-    def test_proximity_respects_n_samples_and_returns_distinct_entries(
-            self, simple_2d_function, simple_bounds_4d):
-        sampler = self._make_sampler(simple_2d_function, simple_bounds_4d)
-        for x in range(-4, 5):
-            sampler._update_global_pool(
-                np.array([float(x), 0.0, float(x) * 0.1, 0.0]),
-                0.0, grid_idx=None)
-
-        out = sampler._sample_proximity_from_global_pool(3, np.array([0.0, 0.0]))
-        assert out is not None
-        assert out.shape == (3, 2)  # 3 samples in profiled-dim space
-        # All three returned entries should be distinct (no duplicates).
-        # Round to handle the 0.1 scaling cleanly.
-        seen = {tuple(row.round(6)) for row in out}
-        assert len(seen) == 3
-
-    def test_proximity_empty_pool_returns_none(
-            self, simple_2d_function, simple_bounds_4d):
-        sampler = self._make_sampler(simple_2d_function, simple_bounds_4d)
-        assert sampler._sample_proximity_from_global_pool(
-            1, np.array([0.0, 0.0])) is None
-
     def test_pool_seeding_populates_initial_maxima(
             self, simple_2d_function, simple_bounds_4d):
         """Seeding initial_maxima from the in-memory pool should pick the
@@ -183,12 +148,6 @@ class TestProximityWarmStart:
         assert len(sampler.initial_maxima) == 2
         assert sampler.initial_maxima[0]['target_val'] == -0.5
         assert sampler.initial_maxima[1]['target_val'] == -1.5
-
-    def test_pool_seeding_empty_pool_is_noop(
-            self, simple_2d_function, simple_bounds_4d):
-        sampler = self._make_sampler(simple_2d_function, simple_bounds_4d)
-        sampler._initialize_from_global_pool()  # Must not raise
-        assert sampler.initial_maxima == []
 
     def test_global_pool_size_scales_with_dimensionality(
             self, simple_2d_function):

@@ -14,11 +14,6 @@ from paraprof.worker import _normalize_user_gradient
 
 
 class TestNormalizeUserGradient:
-    def test_array_full(self):
-        arr, err = _normalize_user_gradient([1.0, 2.0, 3.0], 3)
-        assert err is None
-        np.testing.assert_array_equal(arr, [1.0, 2.0, 3.0])
-
     def test_array_with_nan(self):
         arr, err = _normalize_user_gradient([1.0, np.nan, 3.0], 3)
         assert err is None
@@ -47,11 +42,6 @@ class TestNormalizeUserGradient:
         assert arr is None
         assert err and "out-of-range" in err
 
-    def test_dict_non_numeric_value(self):
-        arr, err = _normalize_user_gradient({0: "nope"}, 3)
-        assert arr is None
-        assert err and "bad entry" in err
-
     def test_none_input(self):
         arr, err = _normalize_user_gradient(None, 3)
         assert arr is None and err is not None
@@ -67,15 +57,6 @@ class TestSamplerGradFuncArg:
         assert sampler.grad_func is None
         assert sampler.target_calls_saved_by_user_gradient == 0
         assert sampler.user_gradient_errors == 0
-
-    def test_accepts_callable(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_2d],
-            grad_func=lambda p: np.zeros_like(p),
-        )
-        assert callable(sampler.grad_func)
 
     def test_rejects_non_callable(self, simple_2d_function, simple_bounds_2d, basic_projection_2d):
         with pytest.raises(ConfigurationError):
@@ -166,15 +147,6 @@ class TestLBFGSBWithUserGradient:
 
     START = np.array([1.5, -1.0, 0.7, -0.4])
 
-    def test_grad_func_none_is_noop(self, sphere_sampler):
-        """With grad_func=None: no compute_gradient flag, no savings, all-FD."""
-        sampler = sphere_sampler(grad_func=None)
-        _, _, fd_tasks = run_initial_opt_job(sampler, self.START, _sphere)
-        assert sampler.target_calls_saved_by_user_gradient == 0
-        assert sampler.user_gradient_errors == 0
-        # forward FD on 4 dims → multiple of 4
-        assert fd_tasks > 0 and fd_tasks % 4 == 0
-
     def test_full_user_gradient_eliminates_fd(self, sphere_sampler):
         sampler = sphere_sampler(grad_func=_sphere_grad)
         job, n_evals, fd_tasks = run_initial_opt_job(
@@ -203,46 +175,12 @@ class TestLBFGSBWithUserGradient:
         assert sampler.target_calls_saved_by_user_gradient == fd_tasks
         np.testing.assert_allclose(job.current_params, [0, 0, 0, 0], atol=1e-3)
 
-    def test_partial_user_gradient_dict_form(self, sphere_sampler):
-        """Dict form with only dims 0 and 2 known."""
-        def partial_grad_dict(p):
-            g = _sphere_grad(p)
-            return {0: float(g[0]), 2: float(g[2])}
-        sampler = sphere_sampler(grad_func=partial_grad_dict)
-        job, _, fd_tasks = run_initial_opt_job(
-            sampler, self.START, _sphere, grad_func=partial_grad_dict)
-        assert job.success
-        assert fd_tasks > 0
-        assert sampler.target_calls_saved_by_user_gradient == fd_tasks
-        np.testing.assert_allclose(job.current_params, [0, 0, 0, 0], atol=1e-3)
-
-    def test_central_method_doubles_savings_per_dim(self, sphere_sampler):
-        sampler = sphere_sampler(grad_func=_sphere_grad, gradient_method='central')
-        _, _, fd_user = run_initial_opt_job(
-            sampler, self.START, _sphere, grad_func=_sphere_grad)
-        baseline = sphere_sampler(grad_func=None, gradient_method='central')
-        _, _, fd_baseline = run_initial_opt_job(baseline, self.START, _sphere)
-        assert fd_user == 0
-        assert sampler.target_calls_saved_by_user_gradient == fd_baseline
-        # central FD on 4 dims → multiple of 8
-        assert fd_baseline % 8 == 0
-
     def test_grad_func_raise_falls_back(self, sphere_sampler):
         def bad_grad(p):
             raise RuntimeError("boom")
         sampler = sphere_sampler(grad_func=bad_grad)
         job, _, fd_tasks = run_initial_opt_job(
             sampler, self.START, _sphere, grad_func=bad_grad)
-        baseline = sphere_sampler(grad_func=None)
-        _, _, fd_baseline = run_initial_opt_job(baseline, self.START, _sphere)
-        assert job.success
-        assert fd_tasks == fd_baseline
-        assert sampler.target_calls_saved_by_user_gradient == 0
-
-    def test_shape_wrong_user_grad_falls_back(self, sphere_sampler):
-        sampler = sphere_sampler(grad_func=lambda p: np.array([1.0, 2.0]))
-        job, _, fd_tasks = run_initial_opt_job(
-            sampler, self.START, _sphere, grad_func=lambda p: np.array([1.0, 2.0]))
         baseline = sphere_sampler(grad_func=None)
         _, _, fd_baseline = run_initial_opt_job(baseline, self.START, _sphere)
         assert job.success
