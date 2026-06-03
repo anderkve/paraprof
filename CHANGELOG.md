@@ -18,21 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convergence on a **single** generation instead of the full window. The cell
   still evolves, so the early exit is *measured*, not predicted: a cell that
   improves in that generation keeps going, which preserves quality on stiff
-  unimodal valleys. A/B benchmarks (`examples/run_smooth_certify_benchmark.py`
-  and its `_driver`) show ~15% fewer target calls on Himmelblau-4D
-  (mean ROI `|ΔlogL|` ~5e-5) and ~10% on Rosenbrock-4D (mean ~7e-3), both with
-  the global maximum and ROI contours unchanged. Left **off by default** as a
-  conservative choice: on a genuinely multimodal *inner* problem (Rastrigin-4D)
-  the scan is itself nondeterministic -- a baseline-vs-baseline A/B shows
-  run-to-run ROI mean `|ΔlogL|` ~1 and ±10% call counts from MPI ordering -- so
-  the feature's quality effect there is within that noise floor rather than a
-  measurable gain or loss. Enable it when the profiled-out parameters enter
-  smoothly (e.g. Gaussian-constrained nuisances), where the scan is
-  near-deterministic and the win is clean. No new constructor argument and no
-  change to the default code
-  path. New diagnostics counter `sampler.de_cells_smooth_certified` and a
-  matching end-of-run summary line. The neighbour-agreement tolerance and the
-  reduced window are fixed internal constants, not user knobs.
+  unimodal valleys. A replicate study
+  (`examples/run_smooth_certify_replicate_study.py`, 6–8 seeds per mode, scoring
+  ROI quality with a noise-robust deficit metric built from the one-sided
+  lower-bound structure of profiling) settles the tradeoff. On unimodal-inner
+  targets it is a **robust win with no measurable quality cost**: Himmelblau-4D
+  −13.7% target calls and Rosenbrock-4D −10.9% (both Mann–Whitney *p* < 0.01),
+  with the ROI deficit statistically indistinguishable from baseline (*p* = 0.70
+  and 0.44) and full ROI coverage. Left **off by default** because on a
+  genuinely multimodal *inner* problem (Rastrigin-4D) it is a statistically
+  significant regression -- despite −29% calls, the ROI deficit rises
+  (*p* = 0.001) and ROI coverage falls from 68% to 59% (*p* = 0.018), since one
+  DE generation under-explores the competing inner modes. Enable it when the
+  profiled-out parameters enter smoothly (e.g. Gaussian-constrained nuisances),
+  where the win is clean. No new constructor argument and no change to the
+  default code path. New diagnostics counter `sampler.de_cells_smooth_certified`
+  and a matching end-of-run summary line. The neighbour-agreement tolerance and
+  the reduced window are fixed internal constants, not user knobs.
 
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a
