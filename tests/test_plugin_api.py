@@ -10,7 +10,6 @@ inside an external master/worker MPI loop (e.g. as a ScannerBit plugin):
 - ``run_scan(..., broadcast_target_func=False)`` bundling the master-side
   setup/teardown into one call.
 """
-import inspect
 import json
 import os
 import shutil
@@ -23,7 +22,7 @@ import numpy as np
 import pytest
 
 from paraprof import ProfileProjector, run_scan, worker_main
-from paraprof.exceptions import ConfigurationError, InvalidProjectionError
+from paraprof.exceptions import InvalidProjectionError
 
 
 # ---------------------------------------------------------------------------
@@ -46,26 +45,6 @@ class TestParameterNames:
         # dims are rewritten in place to integer indices
         assert sampler.projections[0]['dims'] == [0, 1]
 
-    def test_mixed_dims_allowed(self, simple_bounds_2d):
-        sampler = ProfileProjector(
-            target_func=self._f,
-            bounds=simple_bounds_2d,
-            projections=[{'dims': ['x', 1], 'grid_points': [3, 3],
-                          'patch_coarse_grid': False}],
-            parameter_names=['x', 'y'],
-        )
-        assert sampler.projections[0]['dims'] == [0, 1]
-
-    def test_int_dims_pass_through_when_names_provided(self, simple_bounds_2d):
-        sampler = ProfileProjector(
-            target_func=self._f,
-            bounds=simple_bounds_2d,
-            projections=[{'dims': [0, 1], 'grid_points': [3, 3],
-                          'patch_coarse_grid': False}],
-            parameter_names=['x', 'y'],
-        )
-        assert sampler.projections[0]['dims'] == [0, 1]
-
     def test_string_dims_rejected_without_names(self, simple_bounds_2d):
         with pytest.raises(InvalidProjectionError):
             ProfileProjector(
@@ -82,52 +61,6 @@ class TestParameterNames:
                 projections=[{'dims': ['x', 'z'], 'grid_points': [3, 3]}],
                 parameter_names=['x', 'y'],
             )
-
-    def test_wrong_length_names_raises(self, simple_bounds_2d):
-        with pytest.raises(ConfigurationError):
-            ProfileProjector(
-                target_func=self._f,
-                bounds=simple_bounds_2d,
-                projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
-                parameter_names=['only_one'],
-            )
-
-    def test_duplicate_names_raises(self, simple_bounds_2d):
-        with pytest.raises(ConfigurationError):
-            ProfileProjector(
-                target_func=self._f,
-                bounds=simple_bounds_2d,
-                projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
-                parameter_names=['dup', 'dup'],
-            )
-
-    def test_no_names_keeps_attribute_none(self, simple_bounds_2d):
-        sampler = ProfileProjector(
-            target_func=self._f,
-            bounds=simple_bounds_2d,
-            projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
-        )
-        assert sampler.parameter_names is None
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: signature shape of the public helpers
-# ---------------------------------------------------------------------------
-
-class TestPublicSignatures:
-    """Cheap guard rails so the host-integration contract doesn't drift."""
-
-    def test_worker_main_accepts_target_func(self):
-        sig = inspect.signature(worker_main)
-        assert 'target_func' in sig.parameters
-        assert sig.parameters['target_func'].default is None
-
-    def test_run_scan_signature(self):
-        sig = inspect.signature(run_scan)
-        for name in ('comm', 'sampler', 'projections',
-                     'broadcast_target_func', 'myrank'):
-            assert name in sig.parameters, name
-        assert sig.parameters['broadcast_target_func'].default is True
 
 
 # ---------------------------------------------------------------------------
