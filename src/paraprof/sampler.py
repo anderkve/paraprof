@@ -8,6 +8,7 @@ from .logger import get_logger
 from .exceptions import (
     InvalidBoundsError, InvalidProjectionError, ConfigurationError,
 )
+from .sample_io import create_sample_writer, read_samples
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
@@ -187,12 +188,15 @@ class ProfileProjector:
         I/O
         ---
         samples_output_file : str, optional
-            Path to save all evaluated points as CSV (default: None).
-            Write-only during the scan.
+            Path to save all evaluated points (default: None). Write-only
+            during the scan. The file format is chosen from the extension:
+            ``.csv`` for plain text, or ``.h5``/``.hdf5`` for HDF5 binary
+            (requires the optional ``h5py`` dependency). Unknown extensions
+            default to CSV.
         warm_start_file : str, optional
-            Path to a CSV produced by a previous run (same format as
-            ``samples_output_file``). When set and warm-start is allowed for
-            the current projection, the master pre-populates
+            Path to a sample file produced by a previous run (any supported
+            format; the extension selects the reader). When set and warm-start
+            is allowed for the current projection, the master pre-populates
             ``initial_maxima`` from this file and skips the global L-BFGS-B
             starts that would normally seed activation. Default: None (no
             warm start). To round-trip the current run's samples into the
@@ -543,18 +547,21 @@ class ProfileProjector:
         self.samples_buffer = []
         self.sample_buffer_size = 1000
 
-        # File handle and closed flag depend on whether output file is configured
+        # The on-disk format (CSV, HDF5, ...) is selected from the output file
+        # extension and handled entirely by the sample_io writer; the sampler
+        # only ever hands it batches of rows. The writer opens its backing file
+        # lazily on the first flush, so a run that records nothing leaves no
+        # file behind.
         if self.samples_output_file:
             # Create the target directory up front so the first flush succeeds
             # even when the user points at a not-yet-existing subdirectory.
             samples_dir = os.path.dirname(self.samples_output_file)
             if samples_dir:
                 os.makedirs(samples_dir, exist_ok=True)
-            # File handle is now None - open/close per flush for crash safety
-            self._samples_file_handle = None
+            self._sample_writer = create_sample_writer(self.samples_output_file)
             self._file_closed = False
         else:
-            self._samples_file_handle = None
+            self._sample_writer = None
             self._file_closed = True
 
         # --- Persistent State (across projections) ---
@@ -1037,8 +1044,11 @@ class ProfileProjector:
             return
 
         try:
-            # Flush any remaining buffered samples
+            # Flush any remaining buffered samples, then release the writer's
+            # backing file (closing the HDF5 handle, no-op for CSV).
             self._flush_samples_buffer()
+            if self._sample_writer is not None:
+                self._sample_writer.close()
             self._file_closed = True
             self.logger.debug(f"Closed sample file: {self.samples_output_file}")
         except Exception as e:
@@ -1047,25 +1057,17 @@ class ProfileProjector:
 
 
     def _flush_samples_buffer(self):
-        """Append buffered samples to the output file; re-opens per flush for crash safety."""
-        if not self.samples_output_file or not self.samples_buffer or self._file_closed:
+        """Hand buffered samples to the format writer (crash-safe per batch)."""
+        if not self._sample_writer or not self.samples_buffer or self._file_closed:
             return
 
         try:
-            with open(self.samples_output_file, 'a', buffering=1) as f:
-                if len(self.samples_buffer) > 100:
-                    data = np.array([(list(params) + [target_val])
-                                   for params, target_val in self.samples_buffer])
-                    np.savetxt(f, data, fmt='%.10e', delimiter=', ')
-                else:
-                    for params, target_val in self.samples_buffer:
-                        param_str = ", ".join([f"{p:.10e}" for p in params])
-                        f.write(f"{param_str}, {target_val:.10e}\n")
-                f.flush()
-
+            data = np.array([list(params) + [target_val]
+                             for params, target_val in self.samples_buffer])
+            self._sample_writer.write_batch(data)
             self.samples_buffer = []
 
-        except IOError as e:
+        except (OSError, ValueError) as e:
             self.logger.warning(f"Warning: Could not write to sample file: {e}")
 
 
@@ -1302,11 +1304,13 @@ class ProfileProjector:
 
         self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
-            samples = np.loadtxt(warm_start_file, delimiter=',')
-            if samples.ndim == 1:
-                samples = samples.reshape(1, -1)
+            # Format (CSV, HDF5, ...) is inferred from the file extension.
+            samples = read_samples(warm_start_file)
         except Exception as e:
             self.logger.info(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")
+            return
+        if samples.size == 0:
+            self.logger.info("  Warm-start file contained no samples. Skipping.")
             return
 
         best_candidates = {}

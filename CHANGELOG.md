@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Pluggable sample file formats with an HDF5 binary option.** Sample
+  reading/writing now goes through a small format layer (`paraprof.sample_io`)
+  that dispatches on the file extension: `.csv` (plain text, default, no new
+  dependencies) or `.h5`/`.hdf5` (HDF5 binary, ~half the size and faster I/O,
+  via the optional `h5py` dependency — `pip install paraprof[hdf5]`). HDF5
+  files use a resizable, chunked `samples` dataset carrying a minimal `n_dims`
+  attribute. Both `samples_output_file` and `warm_start_file` accept any
+  supported format. New public helpers `read_samples` (load a file into a 2D
+  array), `combine_samples` (stream-merge several files into one, mixing
+  formats freely), and `create_sample_writer`.
 - **Basin detection for the initial-optimization stage**, on by default.
   Replaces the fixed all-at-once batch of Latin-hypercube global L-BFGS-B
   starts with a *rolling* multistart: each converged optimum is clustered
