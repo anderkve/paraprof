@@ -83,6 +83,13 @@ SMOOTH_CERTIFY_WINDOW = 1
 # (as a fraction of the profiled-dim bounds extent) for a cell to count as
 # smooth-certifiable. Hidden constant, not a user knob.
 SMOOTH_CERTIFY_PHI_SPREAD = 0.05
+# Second smooth-certify trigger (cross-projection): when smooth_certify is on, a
+# fresh cell whose current best profiled argmax already agrees with an
+# ROI-competitive optimum that an earlier projection evaluated essentially at
+# this cell also confirms convergence on the reduced window. Part of the
+# smooth_certify option (no separate user knob); this internal flag exists only
+# so the A/B benchmark can isolate the trigger's marginal effect.
+DEFAULT_DE_POOL_CERTIFY_TRIGGER = True
 
 DEFAULT_LBFGSB_FTOL = 1e-9
 
@@ -553,6 +560,9 @@ class ProfileProjector:
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
         self.de_smooth_certify = config['de']['smooth_certify']
+        # Cross-projection second trigger for smooth-certify (part of the same
+        # option; internal flag, toggled only by the A/B benchmark).
+        self.de_pool_certify_trigger = DEFAULT_DE_POOL_CERTIFY_TRIGGER
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -605,9 +615,15 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
-        # Count of cells that skipped the DE global phase via neighbour
-        # smooth-certification (cumulative across projections; for diagnostics).
+        # Cells given the reduced smooth-certify window (cumulative across
+        # projections; for diagnostics). `..._pool_only` counts the subset that
+        # only the cross-projection trigger caught (the neighbour trigger
+        # missed), i.e. the marginal cells the second trigger adds.
         self.de_cells_smooth_certified = 0
+        self.de_cells_certified_pool_only = 0
+        # Per-projection cache {cell: best pool entry projecting into it},
+        # rebuilt lazily on first use each projection (see _pool_cell_best_map).
+        self._pool_cell_best = None
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
@@ -837,6 +853,8 @@ class ProfileProjector:
         # Invalidate the proximity-pool snapshot: projection_dims and
         # profiled_dims have changed, so the cached column slices are stale.
         self._proximity_pool_cache = None
+        # Pool->cell mapping is projection-specific; rebuild it next projection.
+        self._pool_cell_best = None
 
         # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
@@ -2003,6 +2021,56 @@ class ProfileProjector:
         spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
         return spread < SMOOTH_CERTIFY_PHI_SPREAD
 
+    def _pool_cell_best_map(self):
+        """{cell: highest-fitness pool entry projecting into it}, cached per
+        projection. Same-projection optima map back to their own (already
+        converged) cell, so for a *fresh* cell the only entries here come from
+        earlier projections -- making this a pure cross-projection signal.
+        """
+        if self._pool_cell_best is not None:
+            return self._pool_cell_best
+        best = {}
+        for _f, _c, entry in self.global_solution_pool:
+            params = entry['full_params']
+            if not np.all((params >= self.bounds[:, 0])
+                          & (params <= self.bounds[:, 1])):
+                continue
+            cell = self._get_grid_indices_from_point(params)
+            cur = best.get(cell)
+            if cur is None or entry['fitness'] > cur['fitness']:
+                best[cell] = entry
+        self._pool_cell_best = best
+        return best
+
+    def _is_pool_certifiable(self, grid_idx):
+        """Second smooth-certify trigger (cross-projection). True when an
+        ROI-competitive optimum that an earlier projection evaluated essentially
+        at this cell agrees with the cell's current best profiled argmax -- so
+        an overlapping projection has already pinned this cell's inner optimum
+        and DE's global phase has nothing to add.
+
+        Reuses ``global_solution_pool`` (and the activation evaluation that
+        already placed the proximity seed); no new target evaluations.
+        """
+        if (not self.de_pool_certify_trigger or self.n_prof_dims == 0
+                or not self.global_solution_pool):
+            return False
+        # Same multimodality guard as the neighbour trigger.
+        if not self.population[grid_idx].get('warm_start_best', False):
+            return False
+
+        entry = self._pool_cell_best_map().get(grid_idx)
+        if entry is None:
+            return False
+        if entry['fitness'] < self.global_max_target_val - self.roi_threshold:
+            return False
+
+        extent = self._profiled_extent()
+        pool_phi = np.asarray(entry['full_params'])[self.profiled_dims]
+        cell_phi = self._best_profiled_params(grid_idx)
+        spread = float(np.max(np.abs(cell_phi - pool_phi) / extent))
+        return spread < SMOOTH_CERTIFY_PHI_SPREAD
+
     def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
         """Generates all DEGridPointJobs for one generation."""
 
@@ -2069,18 +2137,26 @@ class ProfileProjector:
         jobs = []
         for grid_idx in indices_to_process:
             state = self.population[grid_idx]
-            # Neighbour-certified fast convergence: a freshly activated cell (no
-            # DE generation run yet) whose neighbours agree on the profiled
-            # argmax sits on a smooth, single-valued patch, so one flat
-            # generation suffices to confirm convergence instead of the full
-            # `convergence_window`. The cell still evolves, so the early exit is
-            # self-correcting -- if it improves it keeps going.
+            # Smooth-certified fast convergence: a freshly activated cell (no DE
+            # generation run yet) that is certifiably on a smooth, single-valued
+            # patch confirms convergence on one flat generation instead of the
+            # full `convergence_window`. The cell still evolves, so the early
+            # exit is self-correcting. Two triggers, OR'd:
+            #   1. neighbour argmax agreement (`_is_smooth_certifiable`);
+            #   2. cross-projection: an overlapping projection already pinned the
+            #      inner optimum here (`_is_pool_certifiable`). Evaluated only
+            #      when the neighbour trigger missed, so the pool-only counter
+            #      isolates the marginal cells the second trigger adds.
             if (self.de_smooth_certify
                     and len(state['improvement_history']) == 0
-                    and state.get('conv_window') is None
-                    and self._is_smooth_certifiable(grid_idx)):
-                state['conv_window'] = SMOOTH_CERTIFY_WINDOW
-                self.de_cells_smooth_certified += 1
+                    and state.get('conv_window') is None):
+                if self._is_smooth_certifiable(grid_idx):
+                    state['conv_window'] = SMOOTH_CERTIFY_WINDOW
+                    self.de_cells_smooth_certified += 1
+                elif self._is_pool_certifiable(grid_idx):
+                    state['conv_window'] = SMOOTH_CERTIFY_WINDOW
+                    self.de_cells_smooth_certified += 1
+                    self.de_cells_certified_pool_only += 1
 
             job = DEGridPointJob(
                 job_id=next_job_id,

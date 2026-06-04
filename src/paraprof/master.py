@@ -878,7 +878,8 @@ def master_main(comm, sampler,
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     if sampler.de_smooth_certify and sampler.de_cells_smooth_certified:
         logger.info(
-            f"  Cells fast-converged via neighbour smooth-certification: "
-            f"{sampler.de_cells_smooth_certified}"
+            f"  Cells fast-converged via smooth-certification: "
+            f"{sampler.de_cells_smooth_certified} "
+            f"({sampler.de_cells_certified_pool_only} only via cross-projection trigger)"
         )
     logger.info("=" * 80)
