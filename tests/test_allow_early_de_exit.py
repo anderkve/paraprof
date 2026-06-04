@@ -81,7 +81,7 @@ def test_gate_tags_skippable_and_counts():
     assert s.de_cells_skipped == 1
 
 
-def test_off_by_default_leaves_full_window():
+def test_disabled_leaves_full_window():
     s = _make_sampler(enabled=False)
     assert s.de_allow_early_DE_exit is False
     s.current_generation = 1

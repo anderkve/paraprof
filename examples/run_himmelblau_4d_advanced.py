@@ -78,9 +78,10 @@ if myrank == 0:
             'convergence_window': 3,              # Default: 3
             'num_generations': 100000,            # Default: 100000
             'max_num_to_evolve': None,            # Default: None (all grid points)
-            'allow_early_DE_exit': False,         # Default: False (opt-in). When True, a fresh,
-                                                  # skip-eligible cell whose seed population is
-                                                  # already converged may exit DE early.
+            'allow_early_DE_exit': True,          # Default: True. A fresh, skip-eligible cell
+                                                  # whose seed population is already converged
+                                                  # exits DE early. Set False for genuinely
+                                                  # multimodal inner problems.
         },
 
         'lbfgsb': {
@@ -128,7 +129,7 @@ if myrank == 0:
         # global solution pool.
         'suspect_recheck': {
             'enabled': True,                           # Default: True
-            'max_waves': 3,                            # Default: 3. Max recheck waves
+            'max_waves': 10,                           # Default: 10. Max recheck waves
             'param_k': 3.0,                            # Default: 3.0. MAD multiplier on the
                                                        # profiled-param discontinuity that
                                                        # flags a cell as suspect
@@ -137,7 +138,7 @@ if myrank == 0:
             'seeds_k_ring': 3,                         # Default: 3. Chebyshev radius for
                                                        # extended-neighbour seeds
             'seeds_from_pool': 3,                      # Default: 3. Number of pool seeds added
-            'polish_threshold': 1e-4,                  # Default: 1e-4. Min improvement over the
+            'polish_threshold': 1e-3,                  # Default: 1e-3. Min improvement over the
                                                        # current value to trigger an L-BFGS-B polish
         },
 

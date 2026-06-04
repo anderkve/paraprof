@@ -57,15 +57,16 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
-# allow_early_DE_exit (opt-in): when a fresh cell's in-population neighbours
+# allow_early_DE_exit: when a fresh cell's in-population neighbours
 # agree on the profiled argmax -- the local argmax field is smooth/single-valued
 # -- and the neighbour warm-start was the best activation seed, the cell runs a
 # single DE generation then goes straight to the L-BFGS-B polish instead of the
 # full `de.convergence_window`. The exit is measured (that one generation still
-# runs), so a cell that improves keeps evolving. Off by default: a win on
-# smooth/unimodal-inner targets, but one generation under-explores a multimodal
-# inner problem. README/CHANGELOG carry the benchmark numbers.
-DEFAULT_DE_ALLOW_EARLY_DE_EXIT = False
+# runs), so a cell that improves keeps evolving. On by default: a win on
+# smooth/unimodal-inner targets. Disable it when the profiled-out dimensions
+# enter a genuinely multimodal inner problem, where one generation
+# under-explores the modes. README/CHANGELOG carry the benchmark numbers.
+DEFAULT_DE_ALLOW_EARLY_DE_EXIT = True
 # Reduced per-cell convergence window applied to skip-DE-eligible cells.
 SKIP_DE_WINDOW = 1
 # Max per-profiled-dim deviation of the neighbours' argmax from their mean (as a
@@ -79,12 +80,12 @@ DEFAULT_PATCHING_N_NEIGHBORS = 1
 
 # Suspect-cell recheck defaults
 DEFAULT_SUSPECT_RECHECK_ENABLED = True
-DEFAULT_SUSPECT_MAX_WAVES = 3
+DEFAULT_SUSPECT_MAX_WAVES = 10
 DEFAULT_SUSPECT_PARAM_K = 3.0          # MAD multiplier on profiled-param discontinuity
 DEFAULT_SUSPECT_MAX_FRACTION = 0.25    # safety cap: max fraction of ROI cells per wave
 DEFAULT_SUSPECT_SEEDS_K_RING = 3       # Chebyshev radius for extended-neighbour seeds
 DEFAULT_SUSPECT_SEEDS_FROM_POOL = 3
-DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-4  # min improvement over current to trigger LBFGSB
+DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-3  # min improvement over current to trigger LBFGSB
 
 # Activation-population mix ratios (neighbours / global pool / random LHS).
 # Hidden — defaults dominate; tuning only degraded benchmarks.
@@ -111,7 +112,7 @@ class ProfileProjector:
                  bounds,
                  projections,
                  # Core tuning parameters (commonly adjusted)
-                 roi_threshold=3.0,
+                 roi_threshold=4.0,
                  pop_per_grid_point=3,
                  max_patching_waves=10,
                  lbfgsb_max_iter=50,
@@ -163,7 +164,7 @@ class ProfileProjector:
         Core Tuning Parameters
         ----------------------
         roi_threshold : float, optional
-            Region of interest threshold in chi-squared units (default: 3.0)
+            Region of interest threshold in chi-squared units (default: 4.0)
             Points with likelihood > global_max - roi_threshold are in the ROI
         pop_per_grid_point : int, optional
             Population size per grid point for DE (default: 3)
@@ -251,7 +252,7 @@ class ProfileProjector:
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
-                    'allow_early_DE_exit': bool,        # Default: False (opt-in)
+                    'allow_early_DE_exit': bool,        # Default: True
                 },
 
                 'lbfgsb': {
@@ -274,12 +275,12 @@ class ProfileProjector:
 
                 'suspect_recheck': {
                     'enabled': bool,                # Default: True
-                    'max_waves': int,               # Default: 3
+                    'max_waves': int,               # Default: 10
                     'param_k': float,               # Default: 3.0
                     'max_fraction': float,          # Default: 0.25
                     'seeds_k_ring': int,            # Default: 3
                     'seeds_from_pool': int,         # Default: 3
-                    'polish_threshold': float,      # Default: 1e-4
+                    'polish_threshold': float,      # Default: 1e-3
                 },
 
                 'basin_detection': {
