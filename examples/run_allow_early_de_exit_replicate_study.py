@@ -1,5 +1,5 @@
 """
-Replicate study for the allow_skip_DE feature (``de.allow_skip_DE``).
+Replicate study for the allow_early_DE_exit feature (``de.allow_early_DE_exit``).
 
 A single A/B run cannot settle whether the feature is a robust win because some
 targets' scans are nondeterministic (MPI ordering -> run-to-run variation). This
@@ -23,7 +23,7 @@ Two axes are measured per run:
   indistinguishable between modes.
 
 Usage:
-    python examples/run_allow_skip_de_replicate_study.py \\
+    python examples/run_allow_early_de_exit_replicate_study.py \\
         --targets himmelblau_4d rosenbrock_4d rastrigin_4d \\
         --ncores 4 --reps 6
 """
@@ -50,7 +50,7 @@ def _run(target, mode, seed, ncores, out_path):
     env['OMPI_ALLOW_RUN_AS_ROOT'] = '1'
     env['OMPI_ALLOW_RUN_AS_ROOT_CONFIRM'] = '1'
     script = os.path.join(os.path.dirname(__file__),
-                          'run_allow_skip_de_benchmark.py')
+                          'run_allow_early_de_exit_benchmark.py')
     cmd = ['mpiexec', '--oversubscribe', '-n', str(ncores),
            sys.executable, script,
            '--target', target, '--mode', mode,
@@ -143,7 +143,7 @@ def main():
     seeds = [BASE_SEED + 1000 * k for k in range(args.reps)]
 
     print("=" * 78)
-    print(f"allow_skip_DE replicate study  (reps={args.reps}, ncores={args.ncores})")
+    print(f"allow_early_DE_exit replicate study  (reps={args.reps}, ncores={args.ncores})")
     print("=" * 78)
 
     report = {}
@@ -197,7 +197,7 @@ def main():
     print("statistically indistinguishable on quality).")
     print("=" * 78)
 
-    out_json = os.path.join(os.getcwd(), 'allow_skip_DE_replicate_report.json')
+    out_json = os.path.join(os.getcwd(), 'allow_early_DE_exit_replicate_report.json')
     with open(out_json, 'w') as f:
         json.dump(report, f, indent=2)
     print(f"Wrote {out_json}")

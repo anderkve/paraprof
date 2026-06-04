@@ -1,7 +1,7 @@
 """
 Driver for the neighbour-certified DE-skip A/B benchmark.
 
-For each requested target it subprocesses ``run_allow_skip_de_benchmark.py``
+For each requested target it subprocesses ``run_allow_early_de_exit_benchmark.py``
 twice (baseline = skip off, certify = skip on) under mpiexec, then prints a
 per-target report:
 
@@ -12,7 +12,7 @@ per-target report:
     mode. A genuine win is a call reduction with ROI grid error ~ 0.
 
 Usage:
-    python examples/run_allow_skip_de_benchmark_driver.py \\
+    python examples/run_allow_early_de_exit_benchmark_driver.py \\
         --targets himmelblau_4d rosenbrock_4d --ncores 4
 """
 import argparse
@@ -30,7 +30,7 @@ def _run(target, mode, ncores, out_path):
     env['OMPI_ALLOW_RUN_AS_ROOT'] = '1'
     env['OMPI_ALLOW_RUN_AS_ROOT_CONFIRM'] = '1'
     script = os.path.join(os.path.dirname(__file__),
-                          'run_allow_skip_de_benchmark.py')
+                          'run_allow_early_de_exit_benchmark.py')
     cmd = ['mpiexec', '--oversubscribe', '-n', str(ncores),
            sys.executable, script,
            '--target', target, '--mode', mode, '--out', out_path]
@@ -54,7 +54,7 @@ def _roi_grid_error(base_proj, cert_proj, roi_threshold):
     return float(diff.max()), float(diff.mean())
 
 
-# ROI thresholds mirror run_allow_skip_de_benchmark.TARGET_KWARGS.
+# ROI thresholds mirror run_allow_early_de_exit_benchmark.TARGET_KWARGS.
 ROI_THRESHOLD = {
     'himmelblau_4d': 4.0,
     'rosenbrock_4d': 8.0,

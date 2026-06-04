@@ -57,7 +57,7 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
-# allow_skip_DE: let a fresh cell skip DE's global search (idea: reuse the
+# allow_early_DE_exit: let a fresh cell skip DE's global search (idea: reuse the
 # already-stored profiled-argmax vectors of its neighbours to decide how much of
 # DE's per-cell confirmation budget is actually needed). Every active cell
 # normally spends >= `de.convergence_window` generations just proving it has
@@ -69,7 +69,7 @@ DEFAULT_DE_NUM_GENERATIONS = 100000
 # *measured*, not predicted: a cell that turns out to improve simply keeps
 # evolving.
 #
-# Off by default. A/B benchmarking (examples/run_allow_skip_de_benchmark*.py)
+# Off by default. A/B benchmarking (examples/run_allow_early_de_exit_benchmark*.py)
 # shows ~10-15% fewer target calls with negligible ROI grid error on targets
 # whose profiled (inner) problem is smooth or stiff-but-unimodal -- Himmelblau-
 # 4D (-15%, mean |dlogL| ~5e-5) and Rosenbrock-4D (-10%, mean ~7e-3). But on a
@@ -77,7 +77,7 @@ DEFAULT_DE_NUM_GENERATIONS = 100000
 # little exploration and ROI grid quality degrades, so the feature is opt-in:
 # enable it when you know the parameters being profiled out enter smoothly
 # (e.g. Gaussian-constrained nuisances), which is the common case.
-DEFAULT_DE_ALLOW_SKIP_DE = False
+DEFAULT_DE_ALLOW_EARLY_DE_EXIT = False
 # Reduced per-cell convergence window applied to skip-DE-eligible cells.
 SKIP_DE_WINDOW = 1
 # Max per-profiled-dim deviation of the neighbours' argmax from their mean (as a
@@ -263,7 +263,7 @@ class ProfileProjector:
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
-                    'allow_skip_DE': bool,        # Default: False (opt-in)
+                    'allow_early_DE_exit': bool,        # Default: False (opt-in)
                 },
 
                 'lbfgsb': {
@@ -483,7 +483,7 @@ class ProfileProjector:
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
-                'allow_skip_DE': DEFAULT_DE_ALLOW_SKIP_DE,
+                'allow_early_DE_exit': DEFAULT_DE_ALLOW_EARLY_DE_EXIT,
             },
 
             'lbfgsb': {
@@ -553,7 +553,7 @@ class ProfileProjector:
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
-        self.de_allow_skip_DE = config['de']['allow_skip_DE']
+        self.de_allow_early_DE_exit = config['de']['allow_early_DE_exit']
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -606,7 +606,7 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
-        # Count of cells that skipped the DE global search via allow_skip_DE
+        # Count of cells that skipped the DE global search via allow_early_DE_exit
         # (cumulative across projections; for diagnostics).
         self.de_cells_skipped = 0
         # Counters for the grad_func feature (cumulative across projections).
@@ -2070,13 +2070,13 @@ class ProfileProjector:
         jobs = []
         for grid_idx in indices_to_process:
             state = self.population[grid_idx]
-            # allow_skip_DE: a freshly activated cell (no DE generation run yet)
+            # allow_early_DE_exit: a freshly activated cell (no DE generation run yet)
             # whose neighbours agree on the profiled argmax sits on a smooth,
             # single-valued patch, so it skips the DE global search -- one flat
             # generation then the L-BFGS-B polish, instead of the full
             # `convergence_window`. That one generation still runs, so the early
             # exit is self-correcting -- if it improves it keeps going.
-            if (self.de_allow_skip_DE
+            if (self.de_allow_early_DE_exit
                     and len(state['improvement_history']) == 0
                     and state.get('conv_window') is None
                     and self._is_de_skippable(grid_idx)):

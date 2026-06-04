@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Skip the DE global search on smooth cells** (`advanced_config['de']['allow_skip_DE']`,
+- **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **opt-in, default off**). Every active grid cell normally spends at least
   `de.convergence_window` DE generations confirming it has converged. This
   feature reuses information already on hand — the profiled-argmax vectors of a
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the full window. That one generation still runs, so the early exit is
   *measured*, not predicted: a cell that improves in it keeps going, which
   preserves quality on stiff unimodal valleys. A replicate study
-  (`examples/run_allow_skip_de_replicate_study.py`, 6–8 seeds per mode, scoring
+  (`examples/run_allow_early_de_exit_replicate_study.py`, 6–8 seeds per mode, scoring
   ROI quality with a noise-robust deficit metric built from the one-sided
   lower-bound structure of profiling) settles the tradeoff. On unimodal-inner
   targets it is a **robust win with no measurable quality cost**: Himmelblau-4D

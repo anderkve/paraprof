@@ -1,5 +1,5 @@
 """
-A/B runner for the neighbour-certified DE-skip feature (``de.allow_skip_DE``).
+A/B runner for the neighbour-certified DE-skip feature (``de.allow_early_DE_exit``).
 
 Runs every 2D projection of one N-D test target at 50x50 grids twice -- once
 with the DE-skip on, once off -- and writes a JSON summary
@@ -9,7 +9,7 @@ target-call delta together with a ROI grid-quality comparison, so a call-count
 win is only counted if grid quality is preserved.
 
 Run one configuration directly with:
-    mpiexec -n <ncores> python examples/run_allow_skip_de_benchmark.py \\
+    mpiexec -n <ncores> python examples/run_allow_early_de_exit_benchmark.py \\
         --target himmelblau_4d --mode certify --out /tmp/h_certify.json
 
 Required: at least 2 MPI ranks.
@@ -28,7 +28,7 @@ from paraprof import (
 
 # Same targets/settings as the proximity-warm-start benchmark, so the two
 # features are measured on comparable ground. Cross-projection transfer is left
-# at its default (on) -- allow_skip_DE should compose with it.
+# at its default (on) -- allow_early_DE_exit should compose with it.
 TARGET_KWARGS = {
     'himmelblau_4d': {
         'dims': 4,
@@ -109,7 +109,7 @@ def main():
 
     if myrank == 0:
         advanced_config = dict(cfg['advanced_config'] or {})
-        advanced_config['de'] = {'allow_skip_DE': (args.mode == 'certify')}
+        advanced_config['de'] = {'allow_early_DE_exit': (args.mode == 'certify')}
 
         t0 = time.time()
         with ProfileProjector(
