@@ -57,18 +57,19 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
-# Neighbour-certified fast DE convergence (idea: reuse the already-stored
-# profiled-argmax vectors of a fresh cell's neighbours to decide how much of
+# allow_skip_DE: let a fresh cell skip DE's global search (idea: reuse the
+# already-stored profiled-argmax vectors of its neighbours to decide how much of
 # DE's per-cell confirmation budget is actually needed). Every active cell
 # normally spends >= `de.convergence_window` generations just proving it has
 # converged. When a cell's neighbours agree on the profiled argmax -- i.e. the
 # local argmax field is smooth/single-valued -- and the neighbour warm-start
-# was the best activation seed, the cell sits on a unimodal patch and a single
-# flat generation is enough to confirm convergence. The cell still runs DE, so
-# the early exit is *measured*, not predicted: a cell that turns out to improve
-# in that generation simply keeps evolving.
+# was the best activation seed, the cell sits on a unimodal patch, so it runs a
+# single DE generation and goes straight to the L-BFGS-B polish instead of the
+# full window. DE still runs that one generation, so the early exit is
+# *measured*, not predicted: a cell that turns out to improve simply keeps
+# evolving.
 #
-# Off by default. A/B benchmarking (examples/run_smooth_certify_benchmark*.py)
+# Off by default. A/B benchmarking (examples/run_allow_skip_de_benchmark*.py)
 # shows ~10-15% fewer target calls with negligible ROI grid error on targets
 # whose profiled (inner) problem is smooth or stiff-but-unimodal -- Himmelblau-
 # 4D (-15%, mean |dlogL| ~5e-5) and Rosenbrock-4D (-10%, mean ~7e-3). But on a
@@ -76,13 +77,13 @@ DEFAULT_DE_NUM_GENERATIONS = 100000
 # little exploration and ROI grid quality degrades, so the feature is opt-in:
 # enable it when you know the parameters being profiled out enter smoothly
 # (e.g. Gaussian-constrained nuisances), which is the common case.
-DEFAULT_DE_SMOOTH_CERTIFY = False
-# Reduced per-cell convergence window applied to smooth-certified cells.
-SMOOTH_CERTIFY_WINDOW = 1
-# Max per-profiled-dim deviation of the neighbours' argmax from their mean
-# (as a fraction of the profiled-dim bounds extent) for a cell to count as
-# smooth-certifiable. Hidden constant, not a user knob.
-SMOOTH_CERTIFY_PHI_SPREAD = 0.05
+DEFAULT_DE_ALLOW_SKIP_DE = False
+# Reduced per-cell convergence window applied to skip-DE-eligible cells.
+SKIP_DE_WINDOW = 1
+# Max per-profiled-dim deviation of the neighbours' argmax from their mean (as a
+# fraction of the profiled-dim bounds extent) for a cell to be skip-DE-eligible.
+# Hidden constant, not a user knob.
+SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
 
@@ -262,7 +263,7 @@ class ProfileProjector:
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
-                    'smooth_certify': bool,        # Default: False (opt-in)
+                    'allow_skip_DE': bool,        # Default: False (opt-in)
                 },
 
                 'lbfgsb': {
@@ -482,7 +483,7 @@ class ProfileProjector:
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
-                'smooth_certify': DEFAULT_DE_SMOOTH_CERTIFY,
+                'allow_skip_DE': DEFAULT_DE_ALLOW_SKIP_DE,
             },
 
             'lbfgsb': {
@@ -552,7 +553,7 @@ class ProfileProjector:
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
-        self.de_smooth_certify = config['de']['smooth_certify']
+        self.de_allow_skip_DE = config['de']['allow_skip_DE']
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -605,9 +606,9 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
-        # Count of cells that skipped the DE global phase via neighbour
-        # smooth-certification (cumulative across projections; for diagnostics).
-        self.de_cells_smooth_certified = 0
+        # Count of cells that skipped the DE global search via allow_skip_DE
+        # (cumulative across projections; for diagnostics).
+        self.de_cells_skipped = 0
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
@@ -1970,7 +1971,7 @@ class ProfileProjector:
         return jobs, next_job_id
 
 
-    def _is_smooth_certifiable(self, grid_idx):
+    def _is_de_skippable(self, grid_idx):
         """True if ``grid_idx``'s in-population neighbours agree on the profiled
         argmax, so the local argmax field is smooth/single-valued and the cell
         can confirm convergence on a reduced DE window.
@@ -2001,7 +2002,7 @@ class ProfileProjector:
         extent = self._profiled_extent()
         # Normalised spread: largest per-dim deviation from the neighbour mean.
         spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
-        return spread < SMOOTH_CERTIFY_PHI_SPREAD
+        return spread < SKIP_DE_PHI_SPREAD
 
     def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
         """Generates all DEGridPointJobs for one generation."""
@@ -2069,18 +2070,18 @@ class ProfileProjector:
         jobs = []
         for grid_idx in indices_to_process:
             state = self.population[grid_idx]
-            # Neighbour-certified fast convergence: a freshly activated cell (no
-            # DE generation run yet) whose neighbours agree on the profiled
-            # argmax sits on a smooth, single-valued patch, so one flat
-            # generation suffices to confirm convergence instead of the full
-            # `convergence_window`. The cell still evolves, so the early exit is
-            # self-correcting -- if it improves it keeps going.
-            if (self.de_smooth_certify
+            # allow_skip_DE: a freshly activated cell (no DE generation run yet)
+            # whose neighbours agree on the profiled argmax sits on a smooth,
+            # single-valued patch, so it skips the DE global search -- one flat
+            # generation then the L-BFGS-B polish, instead of the full
+            # `convergence_window`. That one generation still runs, so the early
+            # exit is self-correcting -- if it improves it keeps going.
+            if (self.de_allow_skip_DE
                     and len(state['improvement_history']) == 0
                     and state.get('conv_window') is None
-                    and self._is_smooth_certifiable(grid_idx)):
-                state['conv_window'] = SMOOTH_CERTIFY_WINDOW
-                self.de_cells_smooth_certified += 1
+                    and self._is_de_skippable(grid_idx)):
+                state['conv_window'] = SKIP_DE_WINDOW
+                self.de_cells_skipped += 1
 
             job = DEGridPointJob(
                 job_id=next_job_id,

@@ -204,7 +204,7 @@ class DEGridPointJob(Job):
             full_params = self.sampler._construct_params(self.grid_idx, best_profiled_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
-        # Effective convergence window: smooth-certified cells use a reduced
+        # Effective convergence window: allow_skip_DE cells use a reduced
         # window (set in create_de_generation_jobs); everyone else uses the
         # configured one. `>=` is equivalent to the old `==` for the default
         # window since improvement_history is capped at convergence_window.

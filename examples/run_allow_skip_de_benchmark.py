@@ -1,15 +1,15 @@
 """
-A/B runner for the neighbour-certified DE-skip feature (``de.smooth_certify``).
+A/B runner for the neighbour-certified DE-skip feature (``de.allow_skip_DE``).
 
 Runs every 2D projection of one N-D test target at 50x50 grids twice -- once
-with the smooth-certification skip on, once off -- and writes a JSON summary
+with the DE-skip on, once off -- and writes a JSON summary
 (per-projection cumulative target_calls + the final coarse-grid profile values)
 to ``--out``. The driver subprocesses the two modes and reports the
 target-call delta together with a ROI grid-quality comparison, so a call-count
 win is only counted if grid quality is preserved.
 
 Run one configuration directly with:
-    mpiexec -n <ncores> python examples/run_smooth_certify_benchmark.py \\
+    mpiexec -n <ncores> python examples/run_allow_skip_de_benchmark.py \\
         --target himmelblau_4d --mode certify --out /tmp/h_certify.json
 
 Required: at least 2 MPI ranks.
@@ -28,7 +28,7 @@ from paraprof import (
 
 # Same targets/settings as the proximity-warm-start benchmark, so the two
 # features are measured on comparable ground. Cross-projection transfer is left
-# at its default (on) -- smooth-certify should compose with it.
+# at its default (on) -- allow_skip_DE should compose with it.
 TARGET_KWARGS = {
     'himmelblau_4d': {
         'dims': 4,
@@ -109,7 +109,7 @@ def main():
 
     if myrank == 0:
         advanced_config = dict(cfg['advanced_config'] or {})
-        advanced_config['de'] = {'smooth_certify': (args.mode == 'certify')}
+        advanced_config['de'] = {'allow_skip_DE': (args.mode == 'certify')}
 
         t0 = time.time()
         with ProfileProjector(
@@ -123,7 +123,7 @@ def main():
                 comm=comm, sampler=sampler, projections=projections,
                 save_plots=False, myrank=myrank,
             )
-            certified = sampler.de_cells_smooth_certified
+            certified = sampler.de_cells_skipped
         elapsed = time.time() - t0
 
         summary = {
@@ -132,7 +132,7 @@ def main():
             'seed': args.seed,
             'elapsed_s': elapsed,
             'n_ranks': comm.Get_size(),
-            'cells_smooth_certified': int(certified),
+            'cells_skipped': int(certified),
             'projections': [],
         }
         for i, r in enumerate(results):

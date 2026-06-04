@@ -876,9 +876,9 @@ def master_main(comm, sampler,
             )
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
-    if sampler.de_smooth_certify and sampler.de_cells_smooth_certified:
+    if sampler.de_allow_skip_DE and sampler.de_cells_skipped:
         logger.info(
-            f"  Cells fast-converged via neighbour smooth-certification: "
-            f"{sampler.de_cells_smooth_certified}"
+            f"  Cells that skipped the DE global search (allow_skip_DE): "
+            f"{sampler.de_cells_skipped}"
         )
     logger.info("=" * 80)

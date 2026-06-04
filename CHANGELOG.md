@@ -8,18 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Smooth-certified fast DE convergence** (`advanced_config['de']['smooth_certify']`,
+- **Skip the DE global search on smooth cells** (`advanced_config['de']['allow_skip_DE']`,
   **opt-in, default off**). Every active grid cell normally spends at least
   `de.convergence_window` DE generations confirming it has converged. This
   feature reuses information already on hand — the profiled-argmax vectors of a
   fresh cell's in-population neighbours — to detect cells sitting on a smooth,
   single-valued patch of the argmax field (neighbours agree on the argmax *and*
-  the neighbour warm-start was the best activation seed). Such cells confirm
-  convergence on a **single** generation instead of the full window. The cell
-  still evolves, so the early exit is *measured*, not predicted: a cell that
-  improves in that generation keeps going, which preserves quality on stiff
-  unimodal valleys. A replicate study
-  (`examples/run_smooth_certify_replicate_study.py`, 6–8 seeds per mode, scoring
+  the neighbour warm-start was the best activation seed). Such cells run a
+  **single** DE generation and go straight to the L-BFGS-B polish, instead of
+  the full window. That one generation still runs, so the early exit is
+  *measured*, not predicted: a cell that improves in it keeps going, which
+  preserves quality on stiff unimodal valleys. A replicate study
+  (`examples/run_allow_skip_de_replicate_study.py`, 6–8 seeds per mode, scoring
   ROI quality with a noise-robust deficit metric built from the one-sided
   lower-bound structure of profiling) settles the tradeoff. On unimodal-inner
   targets it is a **robust win with no measurable quality cost**: Himmelblau-4D
@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   DE generation under-explores the competing inner modes. Enable it when the
   profiled-out parameters enter smoothly (e.g. Gaussian-constrained nuisances),
   where the win is clean. No new constructor argument and no change to the
-  default code path. New diagnostics counter `sampler.de_cells_smooth_certified`
+  default code path. New diagnostics counter `sampler.de_cells_skipped`
   and a matching end-of-run summary line. The neighbour-agreement tolerance and
   the reduced window are fixed internal constants, not user knobs.
 
