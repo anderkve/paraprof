@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
-  **opt-in, default off**). Every active grid cell normally spends at least
+  **on by default**). Every active grid cell normally spends at least
   `de.convergence_window` DE generations confirming convergence. When a fresh
   cell's in-population neighbours agree on the profiled argmax (and the neighbour
   warm-start was the best activation seed), the local argmax field is smooth, so
@@ -20,11 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scoring ROI quality with a noise-robust one-sided deficit metric) shows a
   robust win with no measurable quality cost on unimodal-inner targets —
   Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both Mann–Whitney
-  *p* < 0.01), ROI deficit indistinguishable from baseline — but a significant
-  ROI-quality regression on a multimodal-inner target (Rastrigin-4D: deficit up,
-  coverage 68%→59%, *p* ≤ 0.02), hence off by default. Reuses existing data only
-  (no new evaluations, no new constructor argument, no change to the default
-  path); adds the `sampler.de_cells_skipped` diagnostic counter.
+  *p* < 0.01), ROI deficit indistinguishable from baseline. Set
+  `allow_early_DE_exit=False` for a genuinely multimodal-inner target
+  (Rastrigin-4D: deficit up, coverage 68%→59%, *p* ≤ 0.02), where one DE
+  generation under-explores the modes. Reuses existing data only (no new
+  evaluations); adds the `sampler.de_cells_skipped` diagnostic counter.
 
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a
@@ -77,6 +77,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wait for a genuinely converged optimum. Always on; no knob.
 
 ### Changed
+- **Updated default settings.** `roi_threshold` now defaults to `4.0` (was
+  `3.0`); `de.allow_early_DE_exit` now defaults to `True` (was off);
+  `suspect_recheck.max_waves` now defaults to `10` (was `3`); and
+  `suspect_recheck.polish_threshold` now defaults to `1e-3` (was `1e-4`).
 - The default `n_initial_optimizations` is now a generous safe ceiling,
   `min(400, 50 * n_dims)`, since the stopping rule controls the actual spend. An
   explicit `n_initial_optimizations` overrides the default.

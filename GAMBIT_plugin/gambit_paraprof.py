@@ -63,7 +63,7 @@ YAML options:
                             patch_coarse_grid:      bool (default true)
                             patch_refined_grid:     bool (default false)
                         Optional ProfileProjector tuning keys:
-    roi_threshold:           ROI cutoff in chi^2 units (default 3.0).
+    roi_threshold:           ROI cutoff in chi^2 units (default 4.0).
     pop_per_grid_point:      DE population size per grid cell (default 3).
     n_initial_optimizations: Global L-BFGS-B starts before grid optimization
                              (default min(100, 20*n_dims)).

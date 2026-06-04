@@ -66,12 +66,12 @@ Scanner:
           # Suspect-cell recheck after patching (defaults shown).
           suspect_recheck:
             enabled: true
-            max_waves: 3
+            max_waves: 10
             param_k: 3.0
             max_fraction: 0.25
             seeds_k_ring: 3
             seeds_from_pool: 3
-            polish_threshold: 1.0e-4
+            polish_threshold: 1.0e-3
         # Optional paraprof-side diagnostics.
         save_plots: true
         plot_settings:
