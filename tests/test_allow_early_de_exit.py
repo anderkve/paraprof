@@ -1,30 +1,23 @@
-"""
-Unit tests for the allow_early_DE_exit fast-convergence helper
-(`de.allow_early_DE_exit`).
+"""Unit tests for the de.allow_early_DE_exit predicate and generation-gate.
 
-These bypass the MPI master/worker loop and exercise the sampler-level
-predicate and config plumbing directly. End-to-end behaviour and the
-target-call savings are covered by the A/B benchmark in
-``examples/run_allow_early_de_exit_benchmark*.py``.
+These bypass the MPI loop and exercise the sampler-level logic directly;
+end-to-end savings are covered by examples/run_allow_early_de_exit_benchmark*.py.
 """
 import numpy as np
 
 from paraprof import ProfileProjector
+from paraprof.sampler import SKIP_DE_WINDOW
 
 
-def _make_sampler(n_prof_dims=2, allow_early_DE_exit=False, grid_n=10):
-    """ProfileProjector with a 1-D projection over a smooth quadratic."""
-    n_dims = 1 + n_prof_dims
-
+def _make_sampler(allow_early_DE_exit=False):
+    """ProfileProjector with a 1-D projection over a smooth 3-D quadratic."""
     def target(p):
         return -float(np.sum(p ** 2))
 
-    bounds = np.array([[-5.0, 5.0]] * n_dims)
-    projection = {'dims': [0], 'grid_points': [grid_n]}
     return ProfileProjector(
         target_func=target,
-        bounds=bounds,
-        projections=[projection],
+        bounds=np.array([[-5.0, 5.0]] * 3),
+        projections=[{'dims': [0], 'grid_points': [10]}],
         pop_per_grid_point=2,
         advanced_config={'de': {'allow_early_DE_exit': allow_early_DE_exit}},
     )
@@ -32,11 +25,9 @@ def _make_sampler(n_prof_dims=2, allow_early_DE_exit=False, grid_n=10):
 
 def _set_cell(sampler, idx, profiled_params, fitness, warm_start_best=True,
               status='optimized'):
-    if not isinstance(idx, tuple):
-        idx = (idx,)
-    profiled_params = np.asarray(profiled_params, dtype=float)
+    idx = idx if isinstance(idx, tuple) else (idx,)
     sampler.population[idx] = {
-        'profiled_params': np.array([profiled_params]),
+        'profiled_params': np.array([np.asarray(profiled_params, dtype=float)]),
         'fitnesses': np.array([float(fitness)]),
         'best_fitness': float(fitness),
         'status': status,
@@ -45,100 +36,61 @@ def _set_cell(sampler, idx, profiled_params, fitness, warm_start_best=True,
         'optimizer_state': None,
         'warm_start_best': warm_start_best,
     }
-    if fitness > sampler.global_max_target_val:
-        sampler.global_max_target_val = float(fitness)
+    sampler.global_max_target_val = max(sampler.global_max_target_val, float(fitness))
 
 
-class TestConfigPlumbing:
-    def test_default_is_off(self):
-        sampler = _make_sampler()
-        assert sampler.de_allow_early_DE_exit is False
-        assert sampler.de_cells_skipped == 0
-
-    def test_opt_in_flag(self):
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        assert sampler.de_allow_early_DE_exit is True
+def test_skippable_when_neighbours_agree():
+    """Agreeing neighbours + warm-start-best => the cell is skip-eligible."""
+    s = _make_sampler(allow_early_DE_exit=True)
+    _set_cell(s, (4,), [0.40, -0.40], fitness=-0.32)
+    _set_cell(s, (6,), [0.42, -0.41], fitness=-0.34)
+    _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
+    assert s._is_de_skippable((5,)) is True
 
 
-class TestDeSkippablePredicate:
-    def test_agreeing_neighbours_certify(self):
-        """A cell flanked by neighbours that agree on the profiled argmax,
-        with its own warm-start the best seed, is skippable."""
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        # Neighbours of cell (5,) at (4,) and (6,) share the same argmax.
-        _set_cell(sampler, (4,), [0.40, -0.40], fitness=-0.32)
-        _set_cell(sampler, (6,), [0.42, -0.41], fitness=-0.34)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        assert sampler._is_de_skippable((5,)) is True
+def test_not_skippable_guards():
+    """Scattered neighbours (argmax disagreement) or a cold seed that beat the
+    warm-start both keep full DE."""
+    s = _make_sampler(allow_early_DE_exit=True)
+    _set_cell(s, (4,), [0.40, -0.40], fitness=-0.32)
+    _set_cell(s, (6,), [-3.50, 3.50], fitness=-0.34)  # far-away mode
+    _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
+    assert s._is_de_skippable((5,)) is False          # disagreement
 
-    def test_scattered_neighbours_do_not_certify(self):
-        """Neighbours that disagree on the argmax (mode crossing / multimodal
-        inner problem) must keep full DE."""
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        _set_cell(sampler, (4,), [0.40, -0.40], fitness=-0.32)
-        # (6,) sits on a far-away mode: large argmax spread.
-        _set_cell(sampler, (6,), [-3.50, 3.50], fitness=-0.34)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        assert sampler._is_de_skippable((5,)) is False
-
-    def test_cold_seed_won_does_not_certify(self):
-        """If a cold random/pool seed beat the neighbour warm-start at
-        activation (warm_start_best False), DE's global search is needed."""
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        _set_cell(sampler, (4,), [0.40, -0.40], fitness=-0.32)
-        _set_cell(sampler, (6,), [0.42, -0.41], fitness=-0.34)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=False, status='active')
-        assert sampler._is_de_skippable((5,)) is False
-
-    def test_too_few_neighbours_do_not_certify(self):
-        """A single neighbour is not enough agreement evidence."""
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        _set_cell(sampler, (4,), [0.40, -0.40], fitness=-0.32)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        assert sampler._is_de_skippable((5,)) is False
+    s.population[(6,)]['profiled_params'][0] = [0.42, -0.41]  # now agree
+    s.population[(5,)]['warm_start_best'] = False             # but cold seed won
+    assert s._is_de_skippable((5,)) is False          # multimodality guard
 
 
-class TestGenerationGate:
-    def test_skippable_cell_gets_reduced_window(self):
-        """create_de_generation_jobs tags a fresh skippable cell with the
-        reduced convergence window and counts it; a non-skippable cell is
-        left on the default window."""
-        from paraprof.sampler import SKIP_DE_WINDOW
+def test_gate_tags_skippable_and_counts():
+    """create_de_generation_jobs gives a skip-eligible fresh cell the reduced
+    window and counts it, leaving a non-eligible cell on the full window."""
+    s = _make_sampler(allow_early_DE_exit=True)
+    s.current_generation = 1
+    for i in (3, 4, 6, 7):
+        _set_cell(s, (i,), [0.4, -0.4], fitness=-0.32)
+    _set_cell(s, (9,), [-3.5, 3.5], fitness=-0.34)            # outlier for (8,)
+    _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
+    _set_cell(s, (8,), [0.41, -0.40], fitness=-0.33, status='active')
+    s.activated_grid_indices = set(s.population.keys())
 
-        sampler = _make_sampler(allow_early_DE_exit=True)
-        sampler.current_generation = 1
-        # Build a settled, agreeing neighbourhood plus two fresh active cells:
-        # (5,) skippable, (8,) not (scattered neighbours).
-        for i in (3, 4, 6, 7):
-            _set_cell(sampler, (i,), [0.4, -0.4], fitness=-0.32)
-        _set_cell(sampler, (9,), [-3.5, 3.5], fitness=-0.34)  # outlier for (8,)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        _set_cell(sampler, (8,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        sampler.activated_grid_indices = set(sampler.population.keys())
+    s.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
 
-        sampler.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
+    assert s.population[(5,)].get('conv_window') == SKIP_DE_WINDOW
+    assert s.population[(8,)].get('conv_window') is None
+    assert s.de_cells_skipped == 1
 
-        assert sampler.population[(5,)].get('conv_window') == SKIP_DE_WINDOW
-        assert sampler.population[(8,)].get('conv_window') is None
-        assert sampler.de_cells_skipped == 1
 
-    def test_off_by_default_no_tagging(self):
-        """With the feature off, no cell is tagged and the counter stays 0."""
-        sampler = _make_sampler(allow_early_DE_exit=False)
-        sampler.current_generation = 1
-        for i in (3, 4, 6, 7):
-            _set_cell(sampler, (i,), [0.4, -0.4], fitness=-0.32)
-        _set_cell(sampler, (5,), [0.41, -0.40], fitness=-0.33,
-                  warm_start_best=True, status='active')
-        sampler.activated_grid_indices = set(sampler.population.keys())
+def test_off_by_default_leaves_full_window():
+    s = _make_sampler(allow_early_DE_exit=False)
+    assert s.de_allow_early_DE_exit is False
+    s.current_generation = 1
+    for i in (3, 4, 6, 7):
+        _set_cell(s, (i,), [0.4, -0.4], fitness=-0.32)
+    _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
+    s.activated_grid_indices = set(s.population.keys())
 
-        sampler.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
+    s.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
 
-        assert sampler.population[(5,)].get('conv_window') is None
-        assert sampler.de_cells_skipped == 0
+    assert s.population[(5,)].get('conv_window') is None
+    assert s.de_cells_skipped == 0

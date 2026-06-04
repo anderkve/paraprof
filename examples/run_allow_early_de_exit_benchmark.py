@@ -1,12 +1,11 @@
 """
-A/B runner for the neighbour-certified DE-skip feature (``de.allow_early_DE_exit``).
+Single-configuration A/B runner for ``de.allow_early_DE_exit``.
 
-Runs every 2D projection of one N-D test target at 50x50 grids twice -- once
-with the DE-skip on, once off -- and writes a JSON summary
-(per-projection cumulative target_calls + the final coarse-grid profile values)
-to ``--out``. The driver subprocesses the two modes and reports the
-target-call delta together with a ROI grid-quality comparison, so a call-count
-win is only counted if grid quality is preserved.
+Runs every 2D projection of one N-D test target at 50x50 grids with the feature
+on or off and writes a JSON summary (per-projection cumulative target_calls plus
+the final coarse grid) to ``--out``. Driven by
+``run_allow_early_de_exit_replicate_study.py``, which subprocesses many seeds
+per mode and reports the call delta and ROI-quality comparison.
 
 Run one configuration directly with:
     mpiexec -n <ncores> python examples/run_allow_early_de_exit_benchmark.py \\

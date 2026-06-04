@@ -57,26 +57,14 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
-# allow_early_DE_exit: let a fresh cell skip DE's global search (idea: reuse the
-# already-stored profiled-argmax vectors of its neighbours to decide how much of
-# DE's per-cell confirmation budget is actually needed). Every active cell
-# normally spends >= `de.convergence_window` generations just proving it has
-# converged. When a cell's neighbours agree on the profiled argmax -- i.e. the
-# local argmax field is smooth/single-valued -- and the neighbour warm-start
-# was the best activation seed, the cell sits on a unimodal patch, so it runs a
-# single DE generation and goes straight to the L-BFGS-B polish instead of the
-# full window. DE still runs that one generation, so the early exit is
-# *measured*, not predicted: a cell that turns out to improve simply keeps
-# evolving.
-#
-# Off by default. A/B benchmarking (examples/run_allow_early_de_exit_benchmark*.py)
-# shows ~10-15% fewer target calls with negligible ROI grid error on targets
-# whose profiled (inner) problem is smooth or stiff-but-unimodal -- Himmelblau-
-# 4D (-15%, mean |dlogL| ~5e-5) and Rosenbrock-4D (-10%, mean ~7e-3). But on a
-# genuinely multimodal inner problem (Rastrigin-4D) one DE generation is too
-# little exploration and ROI grid quality degrades, so the feature is opt-in:
-# enable it when you know the parameters being profiled out enter smoothly
-# (e.g. Gaussian-constrained nuisances), which is the common case.
+# allow_early_DE_exit (opt-in): when a fresh cell's in-population neighbours
+# agree on the profiled argmax -- the local argmax field is smooth/single-valued
+# -- and the neighbour warm-start was the best activation seed, the cell runs a
+# single DE generation then goes straight to the L-BFGS-B polish instead of the
+# full `de.convergence_window`. The exit is measured (that one generation still
+# runs), so a cell that improves keeps evolving. Off by default: a win on
+# smooth/unimodal-inner targets, but one generation under-explores a multimodal
+# inner problem. README/CHANGELOG carry the benchmark numbers.
 DEFAULT_DE_ALLOW_EARLY_DE_EXIT = False
 # Reduced per-cell convergence window applied to skip-DE-eligible cells.
 SKIP_DE_WINDOW = 1
@@ -1983,10 +1971,8 @@ class ProfileProjector:
         if self.n_prof_dims == 0:
             return False
 
-        # Multimodality guard: only stand down DE's global search if the
-        # neighbour warm-start was the best seed at activation. If a cold
-        # random/pool seed beat it, a better inner mode sits nearby and DE's
-        # global phase is doing real work here -- keep it.
+        # Multimodality guard: if a cold random/pool seed beat the neighbour
+        # warm-start at activation, a better inner mode sits nearby -- keep DE.
         if not self.population[grid_idx].get('warm_start_best', False):
             return False
 
@@ -2070,12 +2056,8 @@ class ProfileProjector:
         jobs = []
         for grid_idx in indices_to_process:
             state = self.population[grid_idx]
-            # allow_early_DE_exit: a freshly activated cell (no DE generation run yet)
-            # whose neighbours agree on the profiled argmax sits on a smooth,
-            # single-valued patch, so it skips the DE global search -- one flat
-            # generation then the L-BFGS-B polish, instead of the full
-            # `convergence_window`. That one generation still runs, so the early
-            # exit is self-correcting -- if it improves it keeps going.
+            # allow_early_DE_exit: a fresh, skip-eligible cell takes a one-
+            # generation window (set here) then the polish, not the full one.
             if (self.de_allow_early_DE_exit
                     and len(state['improvement_history']) == 0
                     and state.get('conv_window') is None

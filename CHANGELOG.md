@@ -10,31 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **opt-in, default off**). Every active grid cell normally spends at least
-  `de.convergence_window` DE generations confirming it has converged. This
-  feature reuses information already on hand — the profiled-argmax vectors of a
-  fresh cell's in-population neighbours — to detect cells sitting on a smooth,
-  single-valued patch of the argmax field (neighbours agree on the argmax *and*
-  the neighbour warm-start was the best activation seed). Such cells run a
-  **single** DE generation and go straight to the L-BFGS-B polish, instead of
-  the full window. That one generation still runs, so the early exit is
-  *measured*, not predicted: a cell that improves in it keeps going, which
-  preserves quality on stiff unimodal valleys. A replicate study
-  (`examples/run_allow_early_de_exit_replicate_study.py`, 6–8 seeds per mode, scoring
-  ROI quality with a noise-robust deficit metric built from the one-sided
-  lower-bound structure of profiling) settles the tradeoff. On unimodal-inner
-  targets it is a **robust win with no measurable quality cost**: Himmelblau-4D
-  −13.7% target calls and Rosenbrock-4D −10.9% (both Mann–Whitney *p* < 0.01),
-  with the ROI deficit statistically indistinguishable from baseline (*p* = 0.70
-  and 0.44) and full ROI coverage. Left **off by default** because on a
-  genuinely multimodal *inner* problem (Rastrigin-4D) it is a statistically
-  significant regression -- despite −29% calls, the ROI deficit rises
-  (*p* = 0.001) and ROI coverage falls from 68% to 59% (*p* = 0.018), since one
-  DE generation under-explores the competing inner modes. Enable it when the
-  profiled-out parameters enter smoothly (e.g. Gaussian-constrained nuisances),
-  where the win is clean. No new constructor argument and no change to the
-  default code path. New diagnostics counter `sampler.de_cells_skipped`
-  and a matching end-of-run summary line. The neighbour-agreement tolerance and
-  the reduced window are fixed internal constants, not user knobs.
+  `de.convergence_window` DE generations confirming convergence. When a fresh
+  cell's in-population neighbours agree on the profiled argmax (and the neighbour
+  warm-start was the best activation seed), the local argmax field is smooth, so
+  the cell runs a **single** DE generation then goes straight to the L-BFGS-B
+  polish. That generation still runs, so the exit is *measured*: a cell that
+  improves keeps going. A replicate study
+  (`examples/run_allow_early_de_exit_replicate_study.py`, 6–8 seeds per mode,
+  scoring ROI quality with a noise-robust one-sided deficit metric) shows a
+  robust win with no measurable quality cost on unimodal-inner targets —
+  Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both Mann–Whitney
+  *p* < 0.01), ROI deficit indistinguishable from baseline — but a significant
+  ROI-quality regression on a multimodal-inner target (Rastrigin-4D: deficit up,
+  coverage 68%→59%, *p* ≤ 0.02), hence off by default. Reuses existing data only
+  (no new evaluations, no new constructor argument, no change to the default
+  path); adds the `sampler.de_cells_skipped` diagnostic counter.
 
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a

@@ -42,11 +42,8 @@ class ActivationJob(Job):
 
         samples_list = []
 
-        # Number of leading population slots seeded from the neighbour
-        # warm-start (the warm-start itself plus its perturbations). Used by
-        # the allow_early_DE_exit multimodality guard: if the best activation
-        # individual came from one of these slots, the neighbour seed wasn't
-        # beaten by a cold random/pool seed.
+        # Leading population slots seeded from the neighbour warm-start (itself
+        # plus its perturbations); see warm_start_best below.
         self._n_warm_start_slots = (
             n_from_neighbors if (self.warm_start_params is not None
                                  and n_from_neighbors > 0) else 0
@@ -128,9 +125,8 @@ class ActivationJob(Job):
             'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
             'last_update_gen': 0,
             'optimizer_state': None,
-            # True if the neighbour warm-start (or a perturbation of it) was the
-            # best seed in this cell's activation population -- a cheap
-            # single-cell unimodality signal reused by allow_early_DE_exit.
+            # True if the neighbour warm-start (or a perturbation) was the best
+            # seed here -- the allow_early_DE_exit multimodality guard.
             'warm_start_best': (
                 self._n_warm_start_slots > 0
                 and int(np.argmax(self.fitnesses)) < self._n_warm_start_slots

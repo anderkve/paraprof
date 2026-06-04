@@ -205,9 +205,8 @@ class DEGridPointJob(Job):
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
         # Effective convergence window: allow_early_DE_exit cells use a reduced
-        # window (set in create_de_generation_jobs); everyone else uses the
-        # configured one. `>=` is equivalent to the old `==` for the default
-        # window since improvement_history is capped at convergence_window.
+        # one (set in create_de_generation_jobs). `>=` + slice matches the old
+        # `==`/full-deque for the default window (capped at convergence_window).
         eff_window = grid_state.get('conv_window') or self.sampler.convergence_window
         if grid_state['status'] == 'active' and \
            len(grid_state['improvement_history']) >= eff_window:
