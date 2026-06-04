@@ -235,5 +235,5 @@ results_*/
 /_*.py
 /_*.sh
 
-# Smooth-certify replicate-study output
-smooth_certify_replicate_report.json
+# allow_early_DE_exit replicate-study output
+allow_early_DE_exit_replicate_report.json
