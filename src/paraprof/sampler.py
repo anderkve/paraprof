@@ -489,6 +489,7 @@ class ProfileProjector:
             'lbfgsb': {
                 'ftol': DEFAULT_LBFGSB_FTOL,
                 'gradient_method': 'forward',
+                'surrogate_gradient': False,
             },
 
             'clustering': {
@@ -558,6 +559,10 @@ class ProfileProjector:
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
         self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
+        # Opt-in: estimate L-BFGS-B gradients from the cell's own same-theta
+        # evaluation cloud (least-squares local linear fit) instead of fresh
+        # finite differences, when the cloud is dense/well-conditioned enough.
+        self.lbfgsb_surrogate_gradient = config['lbfgsb']['surrogate_gradient']
 
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for
@@ -612,6 +617,8 @@ class ProfileProjector:
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
+        # FD evaluations avoided by the surrogate-gradient feature (cumulative).
+        self.target_calls_saved_by_surrogate_gradient = 0
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap

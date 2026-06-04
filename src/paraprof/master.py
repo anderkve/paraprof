@@ -874,6 +874,11 @@ def master_main(comm, sampler,
                 f"  User Gradient Errors: {sampler.user_gradient_errors} "
                 f"(fell back to finite differences for these)"
             )
+    if sampler.lbfgsb_surrogate_gradient and sampler.target_calls_saved_by_surrogate_gradient:
+        logger.info(
+            f"  Target Calls Saved by Surrogate Gradient: "
+            f"{sampler.target_calls_saved_by_surrogate_gradient}"
+        )
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     if sampler.de_allow_early_DE_exit and sampler.de_cells_skipped:
