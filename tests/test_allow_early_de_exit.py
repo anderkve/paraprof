@@ -9,7 +9,7 @@ from paraprof import ProfileProjector
 from paraprof.sampler import SKIP_DE_WINDOW
 
 
-def _make_sampler(allow_early_DE_exit=False):
+def _make_sampler(enabled=False):
     """ProfileProjector with a 1-D projection over a smooth 3-D quadratic."""
     def target(p):
         return -float(np.sum(p ** 2))
@@ -19,7 +19,7 @@ def _make_sampler(allow_early_DE_exit=False):
         bounds=np.array([[-5.0, 5.0]] * 3),
         projections=[{'dims': [0], 'grid_points': [10]}],
         pop_per_grid_point=2,
-        advanced_config={'de': {'allow_early_DE_exit': allow_early_DE_exit}},
+        advanced_config={'de': {'allow_early_DE_exit': enabled}},
     )
 
 
@@ -41,7 +41,7 @@ def _set_cell(sampler, idx, profiled_params, fitness, warm_start_best=True,
 
 def test_skippable_when_neighbours_agree():
     """Agreeing neighbours + warm-start-best => the cell is skip-eligible."""
-    s = _make_sampler(allow_early_DE_exit=True)
+    s = _make_sampler(enabled=True)
     _set_cell(s, (4,), [0.40, -0.40], fitness=-0.32)
     _set_cell(s, (6,), [0.42, -0.41], fitness=-0.34)
     _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
@@ -51,7 +51,7 @@ def test_skippable_when_neighbours_agree():
 def test_not_skippable_guards():
     """Scattered neighbours (argmax disagreement) or a cold seed that beat the
     warm-start both keep full DE."""
-    s = _make_sampler(allow_early_DE_exit=True)
+    s = _make_sampler(enabled=True)
     _set_cell(s, (4,), [0.40, -0.40], fitness=-0.32)
     _set_cell(s, (6,), [-3.50, 3.50], fitness=-0.34)  # far-away mode
     _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
@@ -65,7 +65,7 @@ def test_not_skippable_guards():
 def test_gate_tags_skippable_and_counts():
     """create_de_generation_jobs gives a skip-eligible fresh cell the reduced
     window and counts it, leaving a non-eligible cell on the full window."""
-    s = _make_sampler(allow_early_DE_exit=True)
+    s = _make_sampler(enabled=True)
     s.current_generation = 1
     for i in (3, 4, 6, 7):
         _set_cell(s, (i,), [0.4, -0.4], fitness=-0.32)
@@ -82,7 +82,7 @@ def test_gate_tags_skippable_and_counts():
 
 
 def test_off_by_default_leaves_full_window():
-    s = _make_sampler(allow_early_DE_exit=False)
+    s = _make_sampler(enabled=False)
     assert s.de_allow_early_DE_exit is False
     s.current_generation = 1
     for i in (3, 4, 6, 7):
