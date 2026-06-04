@@ -35,24 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default code path. New diagnostics counter `sampler.de_cells_smooth_certified`
   and a matching end-of-run summary line. The neighbour-agreement tolerance and
   the reduced window are fixed internal constants, not user knobs.
-  - **Cross-projection second trigger.** The same reduced-window fast
-    convergence also fires when an earlier projection has already evaluated an
-    ROI-competitive optimum essentially at a fresh cell whose current argmax
-    agrees with it (`_is_pool_certifiable`), reusing `global_solution_pool`
-    (cached per projection) and the activation evaluation that already placed
-    the proximity seed -- no new target calls and no new user knob (folded into
-    `smooth_certify`, gated by the same multimodality guard). Because
-    same-projection optima map back to their own already-converged cell, a fresh
-    cell's pool match is purely cross-projection; it mainly reaches early /
-    edge-of-front cells that lack the two settled neighbours the first trigger
-    needs. A 10-seed A/B (`examples/run_pool_trigger_study.py`, toggling only
-    this trigger with `smooth_certify` on in both arms) shows it certifies
-    ~390 (Himmelblau-4D) / ~56 (Rosenbrock-4D) extra cells per scan for a small
-    further saving -- −1.9% (*p* = 0.005) and −1.0% (*p* = 0.045) target calls
-    -- with ROI deficit equal or significantly better (*p* = 0.005 / 0.85). On
-    a multimodal-inner target (Rastrigin-4D) it barely fires (~5 cells/scan), so
-    it neither helps nor adds harm beyond `smooth_certify`'s own caveat. New
-    diagnostics counter `sampler.de_cells_certified_pool_only`.
 
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a
