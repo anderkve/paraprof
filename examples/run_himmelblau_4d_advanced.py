@@ -185,7 +185,7 @@ if myrank == 0:
         roi_threshold=4.0,                            # Chi-squared units
         pop_per_grid_point=3,                         # Population size per grid point
         max_patching_waves=50,                        # Refinement iterations
-        lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
+        lbfgsb_max_iter=50,                           # L-BFGS-B iterations per point
         lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE
         n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
         n_optima=None,                                # Default: None. Optional prior on the global number
