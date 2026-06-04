@@ -234,3 +234,6 @@ results_*/
 # Local sensitivity / scratch scripts (Claude Code agent)
 /_*.py
 /_*.sh
+
+# allow_early_DE_exit replicate-study output
+allow_early_DE_exit_replicate_report.json

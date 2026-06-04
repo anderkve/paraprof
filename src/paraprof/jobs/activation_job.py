@@ -42,6 +42,13 @@ class ActivationJob(Job):
 
         samples_list = []
 
+        # Leading population slots seeded from the neighbour warm-start (itself
+        # plus its perturbations); see warm_start_best below.
+        self._n_warm_start_slots = (
+            n_from_neighbors if (self.warm_start_params is not None
+                                 and n_from_neighbors > 0) else 0
+        )
+
         if self.warm_start_params is not None and n_from_neighbors > 0:
             samples_list.append(self.warm_start_params)
             for _ in range(n_from_neighbors - 1):
@@ -118,6 +125,12 @@ class ActivationJob(Job):
             'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
             'last_update_gen': 0,
             'optimizer_state': None,
+            # True if the neighbour warm-start (or a perturbation) was the best
+            # seed here -- the allow_early_DE_exit multimodality guard.
+            'warm_start_best': (
+                self._n_warm_start_slots > 0
+                and int(np.argmax(self.fitnesses)) < self._n_warm_start_slots
+            ),
         }
         if self.sampler.direct_eval_mode:
             # Stash the full param vector since direct-eval cells skip

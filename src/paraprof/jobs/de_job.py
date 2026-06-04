@@ -204,10 +204,14 @@ class DEGridPointJob(Job):
             full_params = self.sampler._construct_params(self.grid_idx, best_profiled_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
+        # Effective convergence window: allow_early_DE_exit cells use a reduced
+        # one (set in create_de_generation_jobs). `>=` + slice matches the old
+        # `==`/full-deque for the default window (capped at convergence_window).
+        eff_window = grid_state.get('conv_window') or self.sampler.convergence_window
         if grid_state['status'] == 'active' and \
-           len(grid_state['improvement_history']) == self.sampler.convergence_window:
+           len(grid_state['improvement_history']) >= eff_window:
 
-            avg_improvement = np.mean(grid_state['improvement_history'])
+            avg_improvement = np.mean(list(grid_state['improvement_history'])[-eff_window:])
             if avg_improvement < self.sampler.convergence_threshold:
                 if self.sampler.lbfgsb_polish:
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)

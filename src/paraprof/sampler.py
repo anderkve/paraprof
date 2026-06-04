@@ -57,6 +57,22 @@ DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
+# allow_early_DE_exit (opt-in): when a fresh cell's in-population neighbours
+# agree on the profiled argmax -- the local argmax field is smooth/single-valued
+# -- and the neighbour warm-start was the best activation seed, the cell runs a
+# single DE generation then goes straight to the L-BFGS-B polish instead of the
+# full `de.convergence_window`. The exit is measured (that one generation still
+# runs), so a cell that improves keeps evolving. Off by default: a win on
+# smooth/unimodal-inner targets, but one generation under-explores a multimodal
+# inner problem. README/CHANGELOG carry the benchmark numbers.
+DEFAULT_DE_ALLOW_EARLY_DE_EXIT = False
+# Reduced per-cell convergence window applied to skip-DE-eligible cells.
+SKIP_DE_WINDOW = 1
+# Max per-profiled-dim deviation of the neighbours' argmax from their mean (as a
+# fraction of the profiled-dim bounds extent) for a cell to be skip-DE-eligible.
+# Hidden constant, not a user knob.
+SKIP_DE_PHI_SPREAD = 0.05
+
 DEFAULT_LBFGSB_FTOL = 1e-9
 
 DEFAULT_PATCHING_N_NEIGHBORS = 1
@@ -235,6 +251,7 @@ class ProfileProjector:
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
                     'max_num_to_evolve': int,      # Default: None (all grid points)
+                    'allow_early_DE_exit': bool,        # Default: False (opt-in)
                 },
 
                 'lbfgsb': {
@@ -454,6 +471,7 @@ class ProfileProjector:
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
                 'max_num_to_evolve': None,
+                'allow_early_DE_exit': DEFAULT_DE_ALLOW_EARLY_DE_EXIT,
             },
 
             'lbfgsb': {
@@ -523,6 +541,7 @@ class ProfileProjector:
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
+        self.de_allow_early_DE_exit = config['de']['allow_early_DE_exit']
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -575,6 +594,9 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
+        # Count of cells that skipped the DE global search via allow_early_DE_exit
+        # (cumulative across projections; for diagnostics).
+        self.de_cells_skipped = 0
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
@@ -1937,6 +1959,37 @@ class ProfileProjector:
         return jobs, next_job_id
 
 
+    def _is_de_skippable(self, grid_idx):
+        """True if ``grid_idx``'s in-population neighbours agree on the profiled
+        argmax, so the local argmax field is smooth/single-valued and the cell
+        can confirm convergence on a reduced DE window.
+
+        Reuses the neighbours' already-stored best profiled-params vectors --
+        no new target evaluations. Returns False whenever the evidence is thin
+        (fewer than two neighbours), so the safe default is the full window.
+        """
+        if self.n_prof_dims == 0:
+            return False
+
+        # Multimodality guard: if a cold random/pool seed beat the neighbour
+        # warm-start at activation, a better inner mode sits nearby -- keep DE.
+        if not self.population[grid_idx].get('warm_start_best', False):
+            return False
+
+        neigh_phis = [
+            self._best_profiled_params(n_idx)
+            for n_idx in self._get_valid_neighbors(grid_idx)
+            if n_idx in self.population
+        ]
+        if len(neigh_phis) < 2:
+            return False
+
+        phis = np.asarray(neigh_phis)
+        extent = self._profiled_extent()
+        # Normalised spread: largest per-dim deviation from the neighbour mean.
+        spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
+        return spread < SKIP_DE_PHI_SPREAD
+
     def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
         """Generates all DEGridPointJobs for one generation."""
 
@@ -2002,6 +2055,16 @@ class ProfileProjector:
         # --- Create a job for each selected grid point ---
         jobs = []
         for grid_idx in indices_to_process:
+            state = self.population[grid_idx]
+            # allow_early_DE_exit: a fresh, skip-eligible cell takes a one-
+            # generation window (set here) then the polish, not the full one.
+            if (self.de_allow_early_DE_exit
+                    and len(state['improvement_history']) == 0
+                    and state.get('conv_window') is None
+                    and self._is_de_skippable(grid_idx)):
+                state['conv_window'] = SKIP_DE_WINDOW
+                self.de_cells_skipped += 1
+
             job = DEGridPointJob(
                 job_id=next_job_id,
                 sampler=self,

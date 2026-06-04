@@ -181,6 +181,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
 | `convergence_threshold`            | `1e-6`                         | DE per-cell convergence cutoff                                   |
 | `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
+| `de.allow_early_DE_exit`                | `False`                        | Opt-in: smooth-interior cells (neighbour argmax agreement) skip the DE search — 1 DE generation then polish, instead of the full window (see below) |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
@@ -200,6 +201,8 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
+
+**Early exit from the DE search on smooth cells (`de.allow_early_DE_exit`, opt-in).** Every active grid cell normally spends at least `de.convergence_window` DE generations just *confirming* convergence — budget largely wasted on the smooth ROI interior. With `de.allow_early_DE_exit=True`, a freshly activated cell whose in-population neighbours agree on the profiled argmax (and whose neighbour warm-start was the best activation seed) runs a **single** DE generation then goes straight to the L-BFGS-B polish. That generation still runs, so the exit is self-correcting — a cell that improves keeps evolving. A replicate study (`examples/run_allow_early_de_exit_replicate_study.py`) shows a clean win on unimodal-inner targets — Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both *p* < 0.01), ROI quality indistinguishable from baseline — but it is **off by default** because on a genuinely multimodal *inner* problem (Rastrigin-4D) one DE generation under-explores the modes and ROI quality degrades. Enable it when the profiled-out dimensions enter smoothly (e.g. Gaussian-constrained nuisances).
 
 See the `ProfileProjector` docstring for the full structure. Several DE knobs that did not change ROI quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and are intentionally not user-tunable.
 

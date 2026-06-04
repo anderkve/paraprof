@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
+  **opt-in, default off**). Every active grid cell normally spends at least
+  `de.convergence_window` DE generations confirming convergence. When a fresh
+  cell's in-population neighbours agree on the profiled argmax (and the neighbour
+  warm-start was the best activation seed), the local argmax field is smooth, so
+  the cell runs a **single** DE generation then goes straight to the L-BFGS-B
+  polish. That generation still runs, so the exit is *measured*: a cell that
+  improves keeps going. A replicate study
+  (`examples/run_allow_early_de_exit_replicate_study.py`, 6–8 seeds per mode,
+  scoring ROI quality with a noise-robust one-sided deficit metric) shows a
+  robust win with no measurable quality cost on unimodal-inner targets —
+  Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both Mann–Whitney
+  *p* < 0.01), ROI deficit indistinguishable from baseline — but a significant
+  ROI-quality regression on a multimodal-inner target (Rastrigin-4D: deficit up,
+  coverage 68%→59%, *p* ≤ 0.02), hence off by default. Reuses existing data only
+  (no new evaluations, no new constructor argument, no change to the default
+  path); adds the `sampler.de_cells_skipped` diagnostic counter.
+
 - **`n_optima` prior** — optional `ProfileProjector` argument giving the number
   of optima the target has *globally*; use only when confident it has one or a
   few. It steers the initial-optimization basin-detection stage: a known
