@@ -293,6 +293,12 @@ def master_main(comm, sampler,
         elif sampler.optimization_method == 'lbfgsb':
             stages.append('LBFGSB_LOOP')
 
+        # Cross-projection pool-certificate pass (idea 3, flavor a): a
+        # regression-proof accuracy amplifier run before patching so any raises
+        # propagate. No-op on the first projection / when disabled.
+        if sampler.pool_certificate and not sampler.direct_eval_mode:
+            stages.append('POOL_CERTIFICATE')
+
         # Add patching if enabled (applies to all optimization methods)
         if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
             stages.append('PATCHING_WAVES')
@@ -521,6 +527,14 @@ def master_main(comm, sampler,
                 # Check convergence: no active jobs and no new activations
                 if not new_jobs:
                     logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+            elif current_stage == 'POOL_CERTIFICATE':
+                # One-shot pass; spawned polish jobs drain via the generic loop.
+                new_jobs, next_job_id = sampler.create_pool_certificate_jobs(next_job_id)
+                if not new_jobs:
+                    logger.info("--- Master: No pool-certificate candidates. ---")
                     current_stage = stages.pop(0) if stages else None
                     continue
 
@@ -880,5 +894,11 @@ def master_main(comm, sampler,
         logger.info(
             f"  Cells fast-converged via neighbour smooth-certification: "
             f"{sampler.de_cells_smooth_certified}"
+        )
+    if sampler.pool_certificate and sampler.pool_cert_tests:
+        logger.info(
+            f"  Pool-certificate: raised {sampler.pool_cert_raises}/"
+            f"{sampler.pool_cert_tests} tested cells "
+            f"(total logL gain {sampler.pool_cert_gain:.4g})"
         )
     logger.info("=" * 80)

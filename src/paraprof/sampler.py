@@ -108,6 +108,15 @@ DEFAULT_ACTIVATION_MIX_RATIOS = {
 DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
 DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
 
+# Cross-projection pool-certificate pass (idea 3, flavor a). After a
+# projection's optimization loop, each ROI cell into which an earlier
+# projection's *higher-fitness* evaluated point projects is re-tested with that
+# point's profiled params at the exact grid node. By the one-sided structure of
+# profiling this can only raise the cell value -- a regression-proof accuracy
+# amplifier that reuses global_solution_pool. Off by default while its
+# accuracy/cost tradeoff is being measured.
+DEFAULT_POOL_CERTIFICATE = False
+
 
 class ProfileProjector:
     """
@@ -281,6 +290,7 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
+                    'pool_certificate': bool,            # Default: False (opt-in)
                 },
 
                 'suspect_recheck': {
@@ -501,6 +511,7 @@ class ProfileProjector:
             'cross_projection': {
                 'proximity_warm_start': True,
                 'pool_seeded_initial_maxima': True,
+                'pool_certificate': DEFAULT_POOL_CERTIFICATE,
             },
 
             'suspect_recheck': {
@@ -608,6 +619,11 @@ class ProfileProjector:
         # Count of cells that skipped the DE global phase via neighbour
         # smooth-certification (cumulative across projections; for diagnostics).
         self.de_cells_smooth_certified = 0
+        # Cross-projection pool-certificate diagnostics (cumulative): cells
+        # tested, cells raised, and total logL gained by the test (pre-polish).
+        self.pool_cert_tests = 0
+        self.pool_cert_raises = 0
+        self.pool_cert_gain = 0.0
         # Counters for the grad_func feature (cumulative across projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
@@ -630,6 +646,7 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
+        self.pool_certificate = config['cross_projection']['pool_certificate']
 
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
@@ -2205,6 +2222,63 @@ class ProfileProjector:
         neighbor_info.sort(key=lambda x: x[2], reverse=True)
         return neighbor_info[:n_neighbors]
 
+
+    def create_pool_certificate_jobs(self, next_job_id):
+        """Cross-projection pool-certificate pass (idea 3, flavor a).
+
+        For each in-population cell, look up the highest-fitness full-D point in
+        ``global_solution_pool`` that projects into that cell. Same-projection
+        points map back to their own cell at equal fitness, so a pooled fitness
+        strictly above the cell's current value can only come from another
+        projection's deeper exploration. When that pooled fitness is also
+        ROI-competitive, re-test the point's profiled params at the exact grid
+        node (one evaluation): ``PoolCertificateJob`` adopts via max + polish on
+        improvement, so the pass can only raise grid values (regression-proof).
+        """
+        from .jobs.pool_certificate_job import PoolCertificateJob
+
+        if (not self.pool_certificate or self.n_prof_dims == 0
+                or not self.global_solution_pool or not self.population):
+            return [], next_job_id
+
+        # Highest-fitness pool entry per current-projection cell.
+        best_per_cell = {}
+        for _f, _c, entry in self.global_solution_pool:
+            params = entry['full_params']
+            if not np.all((params >= self.bounds[:, 0])
+                          & (params <= self.bounds[:, 1])):
+                continue
+            cell = self._get_grid_indices_from_point(params)
+            cur = best_per_cell.get(cell)
+            if cur is None or entry['fitness'] > cur['fitness']:
+                best_per_cell[cell] = entry
+
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+        thr = self.suspect_polish_threshold
+        jobs = []
+        for grid_idx, state in self.population.items():
+            entry = best_per_cell.get(grid_idx)
+            if entry is None:
+                continue
+            # Candidate must be ROI-competitive and strictly beat the cell's
+            # current value -- i.e. another projection knows a better optimum
+            # essentially at this location.
+            if (entry['fitness'] < roi_cutoff
+                    or entry['fitness'] <= state['best_fitness'] + thr):
+                continue
+            candidate_phi = np.asarray(entry['full_params'])[self.profiled_dims]
+            jobs.append(PoolCertificateJob(
+                job_id=next_job_id, sampler=self, grid_idx=grid_idx,
+                candidate_phi=candidate_phi, pool_fitness=entry['fitness'],
+            ))
+            next_job_id += 1
+
+        if jobs:
+            self.logger.info(
+                f"--- Pool certificate: testing {len(jobs)} cross-projection "
+                f"candidates ---"
+            )
+        return jobs, next_job_id
 
     def create_patching_wave_jobs(self, wave_number, updated_points_last_wave, next_job_id):
         """Patching test jobs for one wave.
