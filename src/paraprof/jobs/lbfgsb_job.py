@@ -4,23 +4,6 @@ import collections
 from .base import Job
 
 
-# Surrogate-gradient feature (opt-in via lbfgsb.surrogate_gradient). Before
-# spending a finite-difference gradient, try to read the gradient off a local
-# weighted least-squares linear fit of the cell's own same-theta evaluation
-# cloud (this job's trajectory + the cell population). Gated hard on point
-# count, a trust radius, and conditioning so a sparse/degenerate cloud always
-# falls back to FD -- the fit only ever estimates a gradient, never substitutes
-# a value, so it cannot corrupt the grid.
-SURROGATE_TRUST_RADIUS = 0.25   # keep cloud points within this fraction of the
-                                # opt-dim bounds extent of the current iterate
-SURROGATE_BANDWIDTH = 0.6       # Gaussian distance weighting bandwidth (x max d)
-SURROGATE_POINT_MARGIN = 1.8    # require this multiple of the 2n+1 model
-                                # parameters as in-trust-radius points, so the
-                                # diagonal-quadratic fit is well over-determined
-SURROGATE_MIN_DIST = 1e-4       # drop near-duplicate points (normalised) so a
-                                # cluster can't masquerade as a spread of points
-
-
 class LBFGSBJob(Job):
     """Self-contained async L-BFGS-B run (initial eval, gradient, line search, history).
 
@@ -85,32 +68,6 @@ class LBFGSBJob(Job):
 
         self.neighbor_params_to_test = None
 
-        # Surrogate-gradient state. Only active when enabled AND there is no
-        # user gradient (the surrogate replaces the full FD gradient). The cloud
-        # holds (opt-dim params, target_val) for every point this job evaluates
-        # plus, for grid-anchored jobs, the cell's population -- all at the same
-        # theta, so the local fit is unbiased.
-        # Scoped to grid-anchored cells: the global initial optimization is
-        # high-stakes (it finds the global maximum) and must not run on a
-        # possibly-noisy surrogate gradient.
-        self.use_surrogate_grad = (
-            getattr(sampler, 'lbfgsb_surrogate_gradient', False)
-            and not self.has_user_grad
-            and self.grid_idx is not None
-        )
-        self._cloud_phi = []
-        self._cloud_f = []
-        if self.use_surrogate_grad:
-            opt_list = list(self.opt_dims)
-            ext = sampler.bounds[opt_list, 1] - sampler.bounds[opt_list, 0]
-            self._opt_extent = np.where(ext > 0, ext, 1.0)
-
-    def _cloud_add(self, partial_params, target_val):
-        """Record a same-theta (opt-dim params, value) point for the surrogate."""
-        if self.use_surrogate_grad and np.isfinite(target_val):
-            self._cloud_phi.append(np.asarray(partial_params, dtype=float))
-            self._cloud_f.append(float(target_val))
-
     def _get_full_params(self, partial_params):
         """Build full params from the opt-dim slice (passthrough for global opt)."""
         if self.grid_idx is None:
@@ -133,13 +90,6 @@ class LBFGSBJob(Job):
 
     def start(self):
         """Return the first task(s) for this job."""
-        # Seed the surrogate cloud with the cell's population (same-theta points
-        # the cell already evaluated during activation / DE).
-        if self.use_surrogate_grad and self.grid_idx in self.sampler.population:
-            st = self.sampler.population[self.grid_idx]
-            for phi, fit in zip(st['profiled_params'], st['fitnesses']):
-                self._cloud_add(phi, fit)
-
         # The master loop also defensively cleans up zero-opt-dim jobs, but
         # warn here so any future caller hitting this path is visible.
         if self.n_opt_dims == 0:
@@ -217,7 +167,6 @@ class LBFGSBJob(Job):
 
         if self.status == 'NEEDS_NEIGHBOR_TEST' and sub_type == 'LBFGS_NEIGHBOR_TEST':
             neighbor_fitness = result['target_val']
-            self._cloud_add(self.neighbor_params_to_test, neighbor_fitness)
 
             if neighbor_fitness > self.start_fitness:
                 self.current_params = self.neighbor_params_to_test
@@ -239,7 +188,6 @@ class LBFGSBJob(Job):
             self.current_fitness = result['target_val']
             self.current_objective = -self.current_fitness
             self.current_params = self._get_partial_params_from_full(result['params'])
-            self._cloud_add(self.current_params, self.current_fitness)
 
             self.status = 'NEEDS_GRADIENT'
             new_tasks = self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
@@ -267,21 +215,8 @@ class LBFGSBJob(Job):
         if self.lbfgsb_gradient_method not in ("central", "forward"):
             raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
 
-        x = self.current_params
-        per_dim_fd_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
-
-        # Try the surrogate gradient first: if the same-theta cloud yields a
-        # well-conditioned local fit, use it and skip the FD probes entirely.
-        if self.use_surrogate_grad:
-            g_obj = self._try_surrogate_gradient(x)
-            if g_obj is not None:
-                self.sampler.target_calls_saved_by_surrogate_gradient += (
-                    per_dim_fd_cost * self.n_opt_dims
-                )
-                self.current_gradient = g_obj
-                return self._after_gradient_ready()
-
         tasks = []
+        x = self.current_params
         self.gradient_components = {}
 
         # Per-dim step scaled with magnitude for numerical stability.
@@ -290,6 +225,7 @@ class LBFGSBJob(Job):
         self.current_eps = eps
 
         self._user_grad_opt = self._seed_user_grad_opt(user_grad_full)
+        per_dim_fd_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
         signs = (1, -1) if self.lbfgsb_gradient_method == "central" else (1,)
 
         self.pending_grad_evals = 0
@@ -319,10 +255,6 @@ class LBFGSBJob(Job):
         dim, sign = context['dim'], context['sign']
 
         self.gradient_components[(dim, sign)] = -result['target_val'] # Store objective
-        # NB: FD probes sit at ~|x|*1e-8 (micro-scale); mixing them into the
-        # surrogate fit alongside macro-scale line-search/activation points
-        # wrecks its conditioning, so they are deliberately NOT added to the
-        # cloud.
         self.pending_grad_evals -= 1
 
         # Check if all components for the gradient have been computed
@@ -348,55 +280,6 @@ class LBFGSBJob(Job):
                 grad[i] = (self.gradient_components[(i, 1)] - f) / self.current_eps[i]
 
         self.current_gradient = grad
-        return self._after_gradient_ready()
-
-    def _try_surrogate_gradient(self, x):
-        """Objective-frame gradient at ``x`` from a weighted least-squares
-        *diagonal-quadratic* fit of the same-theta cloud, or None if the cloud
-        is too sparse or rank-deficient (then the caller falls back to FD).
-
-        A diagonal-quadratic model ``f ~= a + g.(phi-x) + 0.5 h.(phi-x)^2``
-        gives an unbiased gradient ``g`` at x (a plain linear fit is badly
-        biased by curvature near an optimum). It has ``2n+1`` parameters, so we
-        require comfortably more than that many in-trust-radius points.
-        """
-        n = self.n_opt_dims
-        n_params = 2 * n + 1
-        min_points = int(np.ceil(SURROGATE_POINT_MARGIN * n_params))
-        if len(self._cloud_f) < min_points:
-            return None
-
-        P = np.asarray(self._cloud_phi)               # (k, n) opt-dim params
-        F = np.asarray(self._cloud_f)                 # (k,)   likelihood values
-        delta = (P - x) / self._opt_extent            # normalised displacements
-        d = np.linalg.norm(delta, axis=1)
-        mask = (d < SURROGATE_TRUST_RADIUS) & (d > SURROGATE_MIN_DIST)
-        if int(mask.sum()) < min_points:
-            return None
-
-        dl, Fm, dm = delta[mask], F[mask], d[mask]
-        h_bw = max(float(dm.max()), 1e-12)
-        sw = np.sqrt(np.exp(-((dm / (SURROGATE_BANDWIDTH * h_bw)) ** 2)))
-
-        # Design [1 | delta | delta^2]; gradient wrt phi is the linear block
-        # scaled back by 1/extent (delta is normalised). Weighted via row scaling.
-        A = np.column_stack([np.ones(dl.shape[0]), dl, dl ** 2])
-        try:
-            coef, _res, rank, _sv = np.linalg.lstsq(A * sw[:, None], Fm * sw, rcond=None)
-        except np.linalg.LinAlgError:
-            return None
-        if rank < n_params:                           # not enough independent dirs
-            return None
-
-        g_lik = coef[1:1 + n] / self._opt_extent      # d(target_val)/d(phi) at x
-        if not np.all(np.isfinite(g_lik)):
-            return None
-        return -g_lik                                 # objective = -target_val
-
-    def _after_gradient_ready(self):
-        """History update + two-loop recursion + first line-search task, given
-        ``self.current_gradient`` (from FD, user grad, or the surrogate)."""
-        grad = self.current_gradient
 
         if self.pending_s_k is not None:
             s_k = self.pending_s_k
@@ -485,7 +368,6 @@ class LBFGSBJob(Job):
         opt_indices = self.sampler.profiled_dims if self.grid_idx is not None else self.opt_dims
 
         x_new_bounded = self.sampler._ensure_bounds(x_new, opt_indices)
-        self._cloud_add(x_new_bounded, result['target_val'])
 
         # Armijo condition
         if f_new <= f_old + c1 * alpha * np.dot(g_old, x_new_bounded - x_old):
