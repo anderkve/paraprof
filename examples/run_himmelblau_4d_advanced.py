@@ -78,6 +78,9 @@ if myrank == 0:
             'convergence_window': 3,              # Default: 3
             'num_generations': 100000,            # Default: 100000
             'max_num_to_evolve': None,            # Default: None (all grid points)
+            'allow_early_DE_exit': False,         # Default: False (opt-in). When True, a fresh,
+                                                  # skip-eligible cell whose seed population is
+                                                  # already converged may exit DE early.
         },
 
         'lbfgsb': {
@@ -117,6 +120,43 @@ if myrank == 0:
                                                        # and skip the global
                                                        # L-BFGS-B starts.
         },
+
+        # Suspect-recheck refinement waves. After the normal patching waves,
+        # paraprof re-optimizes ROI cells whose profiled-parameter values look
+        # discontinuous relative to their neighbours (a sign of a missed
+        # better optimum), seeding the recheck from extended neighbours and the
+        # global solution pool.
+        'suspect_recheck': {
+            'enabled': True,                           # Default: True
+            'max_waves': 3,                            # Default: 3. Max recheck waves
+            'param_k': 3.0,                            # Default: 3.0. MAD multiplier on the
+                                                       # profiled-param discontinuity that
+                                                       # flags a cell as suspect
+            'max_fraction': 0.25,                      # Default: 0.25. Safety cap on the
+                                                       # fraction of ROI cells rechecked per wave
+            'seeds_k_ring': 3,                         # Default: 3. Chebyshev radius for
+                                                       # extended-neighbour seeds
+            'seeds_from_pool': 3,                      # Default: 3. Number of pool seeds added
+            'polish_threshold': 1e-4,                  # Default: 1e-4. Min improvement over the
+                                                       # current value to trigger an L-BFGS-B polish
+        },
+
+        # Initial-optimization basin detection. The initial multistart runs a
+        # rolling Latin-hypercube set of L-BFGS-B starts, clusters converged
+        # optima into distinct basins online, and applies a Bayesian stopping
+        # rule (restricted to ROI-competitive optima). n_initial_optimizations
+        # acts as a *cap* on this stage.
+        'basin_detection': {
+            'batch_size': None,                        # Default: None (FD-aware auto; see
+                                                       # resolve_initial_opt_batch_size). Number
+                                                       # of optimizations run concurrently.
+            'undiscovered_threshold': 0.5,             # Default: 0.5. Stop once the expected number
+                                                       # of undiscovered ROI optima falls below this.
+                                                       # Set to 0 to disable early stopping.
+            'min_starts': None,                        # Default: None (auto = max(floor, mult*n_dims),
+                                                       # capped at n_initial_optimizations). Minimum
+                                                       # starts before early stopping may trigger.
+        },
     }
 
     # === Optional: Provide initial points for targeted exploration ===
@@ -147,15 +187,30 @@ if myrank == 0:
         lbfgsb_max_iter=20,                           # L-BFGS-B iterations per point
         lbfgsb_polish=True,                           # Apply L-BFGS-B polishing after DE
         n_initial_optimizations=100,                  # Global L-BFGS-B runs (default: min(100, 20*n_dims)=80)
+        n_optima=None,                                # Default: None. Optional prior on the global number
+        #                                             # of optima (int, or {'min': int, 'max': int}). Use only
+        #                                             # when confident the target has one/a few optima.
         # initial_points=[[3.0, 0.0, -3.0, 0.0]],       # Optional: User-provided initial points to activate grid
         #                                             # Use with n_initial_optimizations=0 to only use these points
+
+        # === Optional user-supplied gradient ===
+        grad_func=None,                               # Default: None. Callable returning grad of target_func
+        #                                             # (the function being MAXIMIZED). Only used in the
+        #                                             # L-BFGS-B paths; cuts finite-difference target calls.
 
         # === Feature toggles ===
         use_clustering=True,                          # Mode detection for refinement
         refinement_direct_eval=True,                  # Fast interpolation vs full optimization
 
+        # === Parameter naming (optional) ===
+        parameter_names=None,                         # Default: None. List of one name per parameter dimension;
+        #                                             # enables string entries in projection 'dims'.
+
         # === I/O ===
         samples_output_file=output_file,
+        warm_start_file=None,                         # Default: None. Path to a sample file from a previous run;
+        #                                             # pre-populates initial_maxima and skips global L-BFGS-B
+        #                                             # starts. Point at samples_output_file to round-trip runs.
 
         # === Advanced configuration (optional - for expert users) ===
         advanced_config=advanced_config,
