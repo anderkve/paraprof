@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Volume-sampling stage (phases 1–4 of `docs/volume_sampling_plan.md`)** —
+- **Volume-sampling stage (`docs/volume_sampling_plan.md`, complete)** —
   an optional post-projection stage that collects a stratified, well-spread
   sample set inside the ROI (`mode='roi'`) or in a shell around it
   (`mode='shell'`), enabled via the new `ProfileProjector` argument
@@ -46,7 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<output_file>_summary.json`) carrying the config, bands, statistics,
   per-tag row counts and the tag legend (non-finite values serialized as
   null). Results also land on `sampler.volume_stage_result`, and every
-  stage evaluation flows to `samples_output_file` as usual. The stage
+  stage evaluation flows to `samples_output_file` as usual.
+  Extras: `plot_volume_samples` (tagged scatter over a 2D profile map),
+  `examples/run_volume_sampling.py`,
+  `benchmarks/volume_sampling_benchmark.py` (funnel vs probe-only
+  coverage/cost on the thin curved Rosenbrock ROI), a README section, and
+  statistical validation tests (probe-only volume estimate vs the analytic
+  4-ball volume; two-island target asserting multi-island coverage and the
+  void diagnostic). The stage
   skips itself with a notice when a projection grids the full parameter
   space (direct-eval mode), where it could only add resolution.
 

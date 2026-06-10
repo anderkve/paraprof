@@ -11,7 +11,7 @@ from .master import (
     terminate_workers,
 )
 from .worker import worker_main
-from .visualization import plot_profiles, plot_profiled_parameters
+from .visualization import plot_profiles, plot_profiled_parameters, plot_volume_samples
 from .test_functions import get_test_function
 from .logger import setup_logger, get_logger, set_log_level
 from .exceptions import (
@@ -43,6 +43,7 @@ __all__ = [
     'worker_main',
     'plot_profiles',
     'plot_profiled_parameters',
+    'plot_volume_samples',
     'get_test_function',
     'setup_logger',
     'get_logger',

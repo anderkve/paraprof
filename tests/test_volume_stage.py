@@ -566,3 +566,43 @@ class TestWriteVolumeOutput:
         assert summary['stats']['prefilter_acceptance'] is None
         assert summary['stats']['probe_acceptance'] is None
         assert summary['stats']['volume_estimate'] is None
+
+
+class TestVolumeSearchJobShellBand:
+    """Shell mode: the band has a finite upper edge with the opposite
+    hinge sign."""
+
+    def make_shell_job(self, sampler, anchor_set, start):
+        return VolumeSearchJob(1, sampler, anchor_set, 0, -25.0, -4.0,
+                               KAPPA, np.asarray(start, dtype=float))
+
+    def test_above_band_violation_and_chain_rule(self, sampler):
+        anchor_set = make_anchor_set()
+        start = np.array([2.0, 5.0])  # scaled dist 0.3 to anchor 0
+        job = self.make_shell_job(sampler, anchor_set, start)
+        tasks = job.start()
+
+        # logL -1 is ABOVE the shell band [-25, -4]: violation 3.
+        raw_grad = np.array([0.5, -1.5])
+        out = job.process_result(result_for(tasks[0], -1.0,
+                                            user_gradient=raw_grad))
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'LBFGS_LINE_SEARCH'
+        violation = 3.0
+        expected_fitness = -(0.3 ** 2 + KAPPA * violation ** 2)
+        assert job.current_fitness == pytest.approx(expected_fitness)
+        # Above the band the hinge sign flips: ∇F = -∇dist² - 2κv∇logL.
+        ddist2 = 2.0 * (start - np.array([2.0, 2.0])) / 10.0 ** 2
+        fitness_grad = -ddist2 - 2.0 * KAPPA * violation * raw_grad
+        np.testing.assert_allclose(job.current_gradient, -fitness_grad)
+        # An above-band point is closest-approach material, not in-band.
+        assert job.outcome() == 'hole'
+        assert job.best_viol == pytest.approx(3.0)
+
+    def test_inside_shell_band_hits(self, sampler):
+        anchor_set = make_anchor_set()
+        job = self.make_shell_job(sampler, anchor_set, [2.5, 2.0])
+        tasks = job.start()
+        out = job.process_result(result_for(tasks[0], -10.0))
+        assert out == []
+        assert job.is_finished() and job.hit

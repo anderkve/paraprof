@@ -172,6 +172,36 @@ write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
 
 `read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
 
+### Volume sampling: well-spread samples in the good-fit volume
+
+A profile-likelihood scan concentrates its samples on the low-dimensional profile *surfaces* — a set of measure zero in the full good-fit volume. When you also want representative points throughout the region of interest (or just outside it, to study *why* nearby regions fail), enable the post-projection **volume-sampling stage**:
+
+```python
+sampler = ProfileProjector(
+    ...,
+    samples_output_file="samples.csv",   # feeds the harvest tier
+    volume_sampling={
+        'mode': 'roi',          # or 'shell': the band between shell_threshold and roi_threshold
+        'n_points': 1000,       # target number of well-spread samples
+        'output_file': "volume_samples.csv",
+    },
+)
+```
+
+After the projections finish, the stage collects one well-spread, in-band sample per *anchor* — scrambled-Sobol points drawn inside the **projection envelope** (the converged profile grids are rigorous upper bounds on logL, so regions whose projection falls in a below-threshold cell of *any* computed projection are excluded for free). Each anchor goes through a three-tier funnel, each tier strictly cheaper per point than the next: **harvest** (cover the anchor from already-logged samples, zero evaluations), **probe** (one evaluation at the anchor), and **anchored search** (a short L-BFGS-B run pulling an evaluation into the band near the anchor; the penalized objective steers the search only — reported samples always carry their true logL). Run `examples/run_volume_sampling.py` for a complete example, and `benchmarks/volume_sampling_benchmark.py` for the cost/coverage comparison against probe-only rejection.
+
+Outputs (paths configurable via `output_file`/`summary_file`):
+
+| Output | Content |
+|--------|---------|
+| `volume_samples.csv` (or `.h5`) | One row `[params..., logL, tag]` per resolved anchor. Tags: `0` harvested, `1` probe — together the in-band rows are the stratified sample set; tag-`1` rows alone are a **uniform** (randomized-QMC) draw from the band; `2` search; `3` hole closest-approach (**not** in-band — diagnostics for anchors whose band was unreachable). |
+| `volume_samples_summary.json` | Statistics: per-status anchor counts, acceptances, evaluations spent, and an unbiased **band volume estimate** with binomial uncertainty (box volume × prefilter acceptance × probe acceptance). |
+| `sampler.volume_stage_result` | Everything in memory: anchors, per-anchor status (`covered`/`projected`/`hole`/`unbudgeted`/`uncovered`), representatives with provenance, closest-approach records. |
+
+Useful knobs: `eval_budget` (hard cap on stage evaluations; anchors beyond it are reported `unbudgeted`), `min_spacing` (Poisson-disk anchor spacing in bounds-scaled units; also the coverage radius), `search='none'` (probe-only mode), `probe_all_anchors=False` (skip probes on harvest-covered anchors — cheaper, but forfeits the uniform subset and volume estimate), `harvest_files` (extra sample files for the harvest tier), and `advanced_config['volume']['penalty_strength']` (the search's band-violation penalty scale). Use `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the tagged samples over a 2D profile map.
+
+Honest caveats: the output is *stratified coverage* (every feature at the resolution scale gets represented regardless of its volume), **not** a uniform draw — except for the tag-`1` subset; `projected` points are enriched near the band boundary; islands the original scan missed entirely are inherited as misses; covering a d-dimensional volume at spacing r needs ~(1/r)^d points, so in high dimensions read "well-spread representatives", not "dense filling". Harvested rows round-trip through the sample file, so with the CSV format their logL matches a re-evaluation only to ~10 significant digits (HDF5 is exact). A `hole` anchor means the search never reached the band — its closest-approach row shows how close it got; an anchor `projected` from far away signals a void between the projection envelope and the true band (see `tests/test_integration.py::test_two_islands_and_void_between_them` for a worked example).
+
 ### Advanced configuration
 
 Pass an `advanced_config` dict for the knobs that actually move solution quality or are real iteration budgets:
@@ -199,6 +229,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
+| `volume.penalty_strength`                     | `1.0`              | Volume-stage search penalty scale: a band violation of `roi_threshold` costs this many units of scaled distance². |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
 

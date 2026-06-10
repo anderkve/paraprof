@@ -1,6 +1,8 @@
 # Implementation plan: stratified ROI/shell volume sampling
 
-Status: design/plan — no implementation yet.
+Status: implemented (all phases). This document is kept as the design
+record; the user-facing description lives in the README's "Volume
+sampling" section.
 
 ## Goal
 
