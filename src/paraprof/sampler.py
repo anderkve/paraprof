@@ -88,6 +88,11 @@ DEFAULT_SUSPECT_SEEDS_K_RING = 3       # Chebyshev radius for extended-neighbour
 DEFAULT_SUSPECT_SEEDS_FROM_POOL = 3
 DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-3  # min improvement over current to trigger LBFGSB
 
+# Volume-sampling tier-3 search: κ = penalty_strength / roi_threshold², so a
+# band violation of roi_threshold costs penalty_strength units of scaled
+# distance² (see docs/volume_sampling_plan.md).
+DEFAULT_VOLUME_PENALTY_STRENGTH = 1.0
+
 # Activation-population mix ratios (neighbours / global pool / random LHS).
 # Hidden — defaults dominate; tuning only degraded benchmarks.
 DEFAULT_ACTIVATION_MIX_RATIOS = {
@@ -518,6 +523,13 @@ class ProfileProjector:
                 'undiscovered_threshold': DEFAULT_BASIN_UNDISCOVERED_THRESHOLD,
                 'min_starts': None,  # None -> max(floor, mult*n_dims), capped at n_initial_optimizations
             },
+
+            'volume': {
+                # κ multiplier for the tier-3 anchored search: a band
+                # violation of roi_threshold costs penalty_strength units
+                # of scaled distance².
+                'penalty_strength': DEFAULT_VOLUME_PENALTY_STRENGTH,
+            },
         }
 
         # Merge with advanced_config if provided
@@ -546,6 +558,9 @@ class ProfileProjector:
                 volume_sampling, self.roi_threshold)
         else:
             self.volume_sampling_config = None
+        self.volume_penalty_strength = config['volume']['penalty_strength']
+        # Result dict of the last run_volume_sampling call (None until then).
+        self.volume_stage_result = None
         self.max_patching_waves = max_patching_waves
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations

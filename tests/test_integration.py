@@ -430,3 +430,128 @@ def test_suspect_recheck_fixes_rosenbrock_strip():
         f"Suspect recheck produced a negative per-cell change "
         f"({result['min_change']}); the pass must never lower a cell's logL"
     )
+
+
+# 4-D sphere with a 2D projection followed by the ROI volume-sampling stage.
+# The runner re-evaluates every reported representative so the test can
+# assert the search/report decoupling: stored logL values are exact and
+# in-band regardless of the penalized search objective.
+VOLUME_RUNNER = textwrap.dedent("""
+    import json
+    import os
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    def target(p):
+        return -float(np.sum(np.asarray(p) ** 2))
+
+    bounds = np.array([[-5.0, 5.0]] * 4)
+    projections = [
+        {'dims': [0, 1], 'grid_points': [6, 6], 'optimization_method': 'lbfgsb'},
+    ]
+    workdir = sys.argv[1]
+
+    np.random.seed(20260610)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=bounds,
+            projections=projections,
+            roi_threshold=4.0,
+            n_initial_optimizations=4,
+            max_patching_waves=2,
+            lbfgsb_max_iter=15,
+            samples_output_file=os.path.join(workdir, 'samples.csv'),
+            volume_sampling={'mode': 'roi', 'n_points': 30},
+        ) as sampler:
+            comm.bcast((sampler.target_func, sampler.grad_func), root=0)
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            vol = sampler.volume_stage_result
+            stats = vol['stats']
+
+            # Re-evaluate every in-band representative: stored logL must be
+            # exact and inside the final band.
+            band_lo, band_hi = vol['band_final']
+            resolved = np.isin(vol['anchor_status'], ['covered', 'projected'])
+            max_err = 0.0
+            reps_in_band = True
+            for k in np.flatnonzero(resolved):
+                logl = target(vol['rep_points'][k])
+                max_err = max(max_err, abs(logl - vol['rep_logls'][k]))
+                reps_in_band &= (band_lo <= logl <= band_hi)
+
+            payload = {
+                'skipped': vol['skipped'],
+                'n_anchors': stats['n_anchors'],
+                'n_covered': stats['n_covered'],
+                'n_projected': stats['n_projected'],
+                'n_holes': stats['n_holes'],
+                'n_unbudgeted': stats['n_unbudgeted'],
+                'n_uncovered': stats['n_uncovered'],
+                'n_probed': stats['n_probed'],
+                'evals_used': stats['evals_used'],
+                'volume_estimate': stats['volume_estimate'],
+                'prefilter_acceptance': stats['prefilter_acceptance'],
+                'uniform_subset_size': int(np.count_nonzero(vol['uniform_subset'])),
+                'max_rep_err': max_err,
+                'reps_in_band': bool(reps_in_band),
+            }
+            print('RESULT', json.dumps(payload), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
+def test_volume_sampling_stage(tmp_path):
+    """End-to-end ROI volume sampling on a 4-D sphere: every anchor must be
+    resolved, representatives must carry exact in-band logL values, and the
+    probe stage must produce the uniform-subset bookkeeping."""
+    result = _run_runner(VOLUME_RUNNER, str(tmp_path))
+
+    assert not result['skipped']
+    n = result['n_anchors']
+    assert n == 30
+
+    # Status partition is exhaustive.
+    total = (result['n_covered'] + result['n_projected'] + result['n_holes']
+             + result['n_unbudgeted'] + result['n_uncovered'])
+    assert total == n
+
+    # No budget was set and the search ran for every probe miss.
+    assert result['n_unbudgeted'] == 0
+    assert result['n_uncovered'] == 0
+
+    # The sphere ROI (a ball) is reachable from any anchor, so searches
+    # should essentially never end as holes; allow a little line-search
+    # flakiness but require the bulk to resolve as covered/projected.
+    assert result['n_holes'] <= 3
+    assert result['n_covered'] + result['n_projected'] >= n - 3
+    assert result['n_covered'] >= 1
+
+    # probe_all_anchors default: every anchor probed, uniform subset and
+    # volume estimate available.
+    assert result['n_probed'] == n
+    assert result['volume_estimate'] is not None
+    assert result['volume_estimate'] >= 0.0
+    assert 0.0 < result['prefilter_acceptance'] < 1.0
+    assert result['evals_used'] >= n
+
+    # Search/report decoupling: representatives carry their true logL and
+    # sit inside the final band.
+    assert result['max_rep_err'] < 1e-9
+    assert result['reps_in_band']

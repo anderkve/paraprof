@@ -395,16 +395,16 @@ class TestHarvest:
         np.testing.assert_array_equal(anchor_set.covered,
                                       [True, True, False, False])
         # Anchor 0: nearest sample wins despite lower logL.
-        np.testing.assert_allclose(anchor_set.harvest_points[0], [2.1, 2.0])
-        assert anchor_set.harvest_logls[0] == -3.0
+        np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
+        assert anchor_set.rep_logls[0] == -3.0
         # Anchor 1: distance tie broken by higher logL.
-        np.testing.assert_allclose(anchor_set.harvest_points[1], [8.0, 2.5])
-        assert anchor_set.harvest_logls[1] == -1.0
+        np.testing.assert_allclose(anchor_set.rep_points[1], [8.0, 2.5])
+        assert anchor_set.rep_logls[1] == -1.0
         # Anchor 2: warm-start hint beyond the coverage radius.
-        np.testing.assert_allclose(anchor_set.harvest_points[2], [2.0, 5.5])
-        assert anchor_set.harvest_dists[2] == pytest.approx(0.25)
+        np.testing.assert_allclose(anchor_set.rep_points[2], [2.0, 5.5])
+        assert anchor_set.rep_dists[2] == pytest.approx(0.25)
         # Anchor 3: nothing in band nearby.
-        assert not np.isfinite(anchor_set.harvest_dists[3])
+        assert not np.isfinite(anchor_set.rep_dists[3])
 
     def test_shell_band_excludes_high_logl(self, tmp_path):
         anchor_set = make_anchor_set()
@@ -418,7 +418,7 @@ class TestHarvest:
         stats = harvest_existing_samples(
             anchor_set, [path], band_lo=-25.0, band_hi=-4.0)
         assert stats['n_in_band'] == 1
-        assert anchor_set.harvest_logls[0] == -10.0
+        assert anchor_set.rep_logls[0] == -10.0
 
     def test_later_file_can_improve(self, tmp_path):
         anchor_set = make_anchor_set()
@@ -428,7 +428,7 @@ class TestHarvest:
         write_samples(np.array([[2.1, 2.0, -2.0]]), path_b)
 
         harvest_existing_samples(anchor_set, [path_a, path_b], -4.0, np.inf)
-        np.testing.assert_allclose(anchor_set.harvest_points[0], [2.1, 2.0])
+        np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
 
     def test_cross_file_distance_tie_prefers_higher_logl(self, tmp_path):
         path_a = str(tmp_path / "a.csv")
@@ -439,7 +439,7 @@ class TestHarvest:
         for files in ([path_a, path_b], [path_b, path_a]):
             anchor_set = make_anchor_set()
             harvest_existing_samples(anchor_set, files, -4.0, np.inf)
-            assert anchor_set.harvest_logls[0] == -1.0
+            assert anchor_set.rep_logls[0] == -1.0
 
     def test_small_chunks_match_single_pass(self, tmp_path):
         rng = np.random.default_rng(11)
@@ -454,10 +454,10 @@ class TestHarvest:
         chunked = make_anchor_set()
         harvest_existing_samples(one_pass, [path], -4.0, np.inf)
         harvest_existing_samples(chunked, [path], -4.0, np.inf, chunk_size=7)
-        np.testing.assert_array_equal(one_pass.harvest_dists,
-                                      chunked.harvest_dists)
-        np.testing.assert_array_equal(one_pass.harvest_points,
-                                      chunked.harvest_points)
+        np.testing.assert_array_equal(one_pass.rep_dists,
+                                      chunked.rep_dists)
+        np.testing.assert_array_equal(one_pass.rep_points,
+                                      chunked.rep_points)
 
     def test_width_mismatch_raises(self, tmp_path):
         anchor_set = make_anchor_set()

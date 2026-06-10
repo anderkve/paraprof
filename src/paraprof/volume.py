@@ -55,6 +55,13 @@ ANCHOR_DRAW_BATCH = 4096
 # Default cap on envelope-tested draws: this many per requested anchor.
 DEFAULT_DRAW_CAP_FACTOR = 10_000
 
+# Provenance of an anchor's representative sample (the funnel tier that
+# produced it). Phase 4 maps these to the output-file tag column.
+SOURCE_NONE = 0
+SOURCE_HARVEST = 1
+SOURCE_PROBE = 2
+SOURCE_SEARCH = 3
+
 
 def _check_positive_int(cfg, key, allow_none=False):
     val = cfg[key]
@@ -294,13 +301,17 @@ class ProjectionEnvelope:
 
 
 class AnchorSet:
-    """Anchors plus prefilter statistics and per-anchor harvest records.
+    """Anchors plus prefilter statistics and per-anchor sample records.
 
-    ``harvest_points/_logls/_dists`` hold each anchor's best in-band sample
-    so far — nearest first, higher logL on distance ties — at any distance.
-    The same record serves two roles: within ``coverage_radius`` it covers
-    the anchor (tier 1 done), at any distance it is the warm start for the
-    anchor's tier-3 search.
+    ``rep_points/_logls/_dists/_source`` hold each anchor's best in-band
+    *representative* sample so far — nearest first, higher logL on distance
+    ties — at any distance, with the funnel tier that produced it
+    (``SOURCE_*``). The record serves two roles: within ``coverage_radius``
+    it covers the anchor, at any distance it is the warm start for the
+    anchor's tier-3 search. ``probed``/``probe_logls`` record the tier-2
+    direct probes (kept separately and unconditionally, so the uniform
+    subset and the volume estimate can be re-derived after global-max
+    drift).
     """
 
     def __init__(self, anchors, bounds, coverage_radius,
@@ -315,15 +326,26 @@ class AnchorSet:
         self._lo = self.bounds[:, 0]
         self._extent = self.bounds[:, 1] - self.bounds[:, 0]
         self.scaled_anchors = self.scale(self.anchors)
+        self._tree = None
 
         n = len(self.anchors)
-        self.harvest_points = np.full((n, n_dims), np.nan)
-        self.harvest_logls = np.full(n, -np.inf)
-        self.harvest_dists = np.full(n, np.inf)
+        self.rep_points = np.full((n, n_dims), np.nan)
+        self.rep_logls = np.full(n, -np.inf)
+        self.rep_dists = np.full(n, np.inf)
+        self.rep_source = np.full(n, SOURCE_NONE, dtype=np.int8)
+        self.probed = np.zeros(n, dtype=bool)
+        self.probe_logls = np.full(n, np.nan)
 
     @property
     def n_anchors(self):
         return len(self.anchors)
+
+    @property
+    def tree(self):
+        """KD-tree over the scaled anchors (built lazily, cached)."""
+        if self._tree is None:
+            self._tree = cKDTree(self.scaled_anchors)
+        return self._tree
 
     @property
     def prefilter_acceptance(self):
@@ -334,12 +356,39 @@ class AnchorSet:
 
     @property
     def covered(self):
-        """Boolean mask of anchors covered by a harvested in-band sample."""
-        return self.harvest_dists <= self.coverage_radius
+        """Boolean mask of anchors covered by an in-band representative."""
+        return self.rep_dists <= self.coverage_radius
 
     def scale(self, points):
         """Map points to bounds-scaled ([0, 1] per dim) coordinates."""
         return (np.asarray(points, dtype=float) - self._lo) / self._extent
+
+    def offer_to_anchor(self, anchor_index, point, logl, dist, source):
+        """Offer an in-band sample as anchor ``anchor_index``'s representative.
+
+        Accepted if it beats the current record (closer; higher logL on an
+        exact distance tie). Returns True if accepted. The caller is
+        responsible for the band check.
+        """
+        better = (dist < self.rep_dists[anchor_index]
+                  or (dist == self.rep_dists[anchor_index]
+                      and logl > self.rep_logls[anchor_index]))
+        if better:
+            self.rep_points[anchor_index] = point
+            self.rep_logls[anchor_index] = logl
+            self.rep_dists[anchor_index] = dist
+            self.rep_source[anchor_index] = source
+        return better
+
+    def offer_sample(self, point, logl, source):
+        """Offer an in-band sample to its nearest anchor (and only that one,
+        preserving stratification). Returns True if it became that anchor's
+        representative. The caller is responsible for the band check."""
+        if self.n_anchors == 0:
+            return False
+        dist, idx = self.tree.query(self.scale(point))
+        return self.offer_to_anchor(int(idx), np.asarray(point, dtype=float),
+                                    float(logl), float(dist), source)
 
 
 def generate_anchors(envelope, bounds, n_points, threshold_delta,
@@ -482,7 +531,7 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo, band_hi,
         return stats
 
     n_dims = anchor_set.anchors.shape[1]
-    tree = cKDTree(anchor_set.scaled_anchors)
+    tree = anchor_set.tree
     iter_kwargs = {} if chunk_size is None else {'chunk_size': chunk_size}
 
     for path in sample_files:
@@ -523,16 +572,17 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo, band_hi,
             a = anchor_idx[rows]
             d = dists[rows]
             l = logls[rows]
-            better = (d < anchor_set.harvest_dists[a]) | (
-                (d == anchor_set.harvest_dists[a]) & (l > anchor_set.harvest_logls[a])
+            better = (d < anchor_set.rep_dists[a]) | (
+                (d == anchor_set.rep_dists[a]) & (l > anchor_set.rep_logls[a])
             )
             upd = a[better]
-            anchor_set.harvest_dists[upd] = d[better]
-            anchor_set.harvest_logls[upd] = l[better]
-            anchor_set.harvest_points[upd] = params[rows[better]]
+            anchor_set.rep_dists[upd] = d[better]
+            anchor_set.rep_logls[upd] = l[better]
+            anchor_set.rep_points[upd] = params[rows[better]]
+            anchor_set.rep_source[upd] = SOURCE_HARVEST
 
     stats['n_covered'] = int(np.count_nonzero(anchor_set.covered))
-    stats['n_with_warm_start'] = int(np.count_nonzero(np.isfinite(anchor_set.harvest_dists)))
+    stats['n_with_warm_start'] = int(np.count_nonzero(np.isfinite(anchor_set.rep_dists)))
     logger.info(
         f"Volume sampling harvest: {stats['n_in_band']} in-band samples out of "
         f"{stats['n_samples']} read from {stats['n_files']} file(s); "
@@ -540,3 +590,191 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo, band_hi,
         f"{stats['n_with_warm_start']} have a warm start."
     )
     return stats
+
+
+class VolumeStageState:
+    """Mutable bookkeeping for one volume-sampling stage run (MPI-free).
+
+    The orchestrator (``master.run_volume_sampling``) feeds it: every stage
+    evaluation goes through :meth:`note_eval` (budget counting, opportunistic
+    representative updates), finished search jobs through
+    :meth:`record_search_job`. :func:`finalize_volume_stage` turns it into
+    the stage result.
+
+    The band stored here is the stage's *initial* band; final classification
+    re-derives membership from stored logL values against the final global
+    maximum, so a mid-stage global-max improvement shifts the reported band
+    without invalidating the records.
+    """
+
+    def __init__(self, anchor_set, band_lo, band_hi, eval_budget=None):
+        self.anchor_set = anchor_set
+        self.band_lo = float(band_lo)
+        self.band_hi = float(band_hi)
+        self.eval_budget = eval_budget
+        self.evals_used = 0
+        self.max_logl_seen = -np.inf
+
+        n = anchor_set.n_anchors
+        n_dims = len(anchor_set.bounds)
+        self.searched = np.zeros(n, dtype=bool)
+        self.search_hit = np.zeros(n, dtype=bool)
+        self.unbudgeted = np.zeros(n, dtype=bool)
+        # Closest-approach records for anchors whose search never reached the
+        # band (the "hole" diagnostic): the evaluation with the smallest band
+        # violation, with its logL and scaled distance to the anchor.
+        self.closest_points = np.full((n, n_dims), np.nan)
+        self.closest_logls = np.full(n, -np.inf)
+        self.closest_dists = np.full(n, np.inf)
+        self.closest_violations = np.full(n, np.inf)
+
+    def in_band(self, logl):
+        return self.band_lo <= logl <= self.band_hi
+
+    def budget_left(self):
+        return self.eval_budget is None or self.evals_used < self.eval_budget
+
+    def note_eval(self, params, logl, offer=True):
+        """Account for one stage evaluation; opportunistically offer in-band
+        results to their nearest anchor (probe jobs do their own exact
+        bookkeeping and pass ``offer=False``)."""
+        self.evals_used += 1
+        if logl > self.max_logl_seen:
+            self.max_logl_seen = logl
+        if offer and np.isfinite(logl) and self.in_band(logl):
+            self.anchor_set.offer_sample(params, logl, SOURCE_SEARCH)
+
+    def record_search_job(self, job):
+        """Fold a finished VolumeSearchJob's outcome into the per-anchor records."""
+        k = job.anchor_index
+        self.searched[k] = True
+        if job.hit:
+            self.search_hit[k] = True
+        if job.best_inband_point is not None:
+            # The job's best in-band point may be nearest to a *different*
+            # anchor (note_eval offered it there); record it against the
+            # job's own anchor too, so 'projected' classification sees it.
+            self.anchor_set.offer_to_anchor(
+                k, job.best_inband_point, job.best_inband_logl,
+                job.best_inband_dist, SOURCE_SEARCH,
+            )
+        if job.best_viol_point is not None and \
+                job.best_viol < self.closest_violations[k]:
+            self.closest_points[k] = job.best_viol_point
+            self.closest_logls[k] = job.best_viol_logl
+            self.closest_dists[k] = job.best_viol_dist
+            self.closest_violations[k] = job.best_viol
+
+
+def finalize_volume_stage(state, config, roi_threshold,
+                          global_max_start, global_max_final,
+                          search_enabled):
+    """Classify every anchor and assemble the stage-result dict.
+
+    Band membership is re-derived from stored logL values against
+    ``global_max_final``, so representatives collected before a mid-stage
+    global-max improvement are reclassified rather than trusted. Anchor
+    statuses:
+
+    - ``covered``: in-band representative within the coverage radius
+      (``rep_source`` says which tier found it).
+    - ``projected``: in-band representative beyond the radius (boundary-
+      projected by the search).
+    - ``hole``: searched, but no in-band point was ever seen; the
+      closest-approach record is the diagnostic.
+    - ``unbudgeted``: never probed/searched because the evaluation budget
+      ran out.
+    - ``uncovered``: everything else (e.g. probe missed and search disabled).
+
+    The volume estimate (box volume x prefilter acceptance x probe
+    acceptance, with a binomial uncertainty from the probe count) is only
+    computed when ``probe_all_anchors`` kept the probe set uniform.
+    """
+    aset = state.anchor_set
+    n = aset.n_anchors
+    band_lo_f, band_hi_f, _ = volume_band(config, roi_threshold, global_max_final)
+
+    rep_in_band = (np.isfinite(aset.rep_logls)
+                   & (aset.rep_logls >= band_lo_f)
+                   & (aset.rep_logls <= band_hi_f))
+    covered = rep_in_band & (aset.rep_dists <= aset.coverage_radius)
+    projected = rep_in_band & ~covered
+    hole = ~rep_in_band & state.searched
+    budget_exhausted = not state.budget_left()
+    unbudgeted = ~rep_in_band & ~state.searched & (
+        state.unbudgeted
+        | (search_enabled & budget_exhausted & aset.probed)
+    )
+    status = np.full(n, 'uncovered', dtype=object)
+    status[unbudgeted] = 'unbudgeted'
+    status[hole] = 'hole'
+    status[projected] = 'projected'
+    status[covered] = 'covered'
+
+    probe_in_band = (aset.probed
+                     & np.isfinite(aset.probe_logls)
+                     & (aset.probe_logls >= band_lo_f)
+                     & (aset.probe_logls <= band_hi_f))
+    n_probed = int(np.count_nonzero(aset.probed))
+    n_probe_hits = int(np.count_nonzero(probe_in_band))
+    probe_acceptance = n_probe_hits / n_probed if n_probed else np.nan
+
+    volume_estimate = None
+    volume_estimate_err = None
+    if config['probe_all_anchors'] and n_probed > 0 \
+            and np.isfinite(aset.prefilter_acceptance):
+        box_volume = float(np.prod(aset.bounds[:, 1] - aset.bounds[:, 0]))
+        envelope_volume = box_volume * aset.prefilter_acceptance
+        volume_estimate = envelope_volume * probe_acceptance
+        # Binomial uncertainty from the probe stage (the prefilter-acceptance
+        # term's error is typically negligible given the draw count, and the
+        # scrambled-Sobol anchors make both conservative).
+        p = probe_acceptance
+        volume_estimate_err = envelope_volume * float(np.sqrt(p * (1.0 - p) / n_probed))
+
+    def _count(mask):
+        return int(np.count_nonzero(mask))
+
+    stats = {
+        'n_anchors': n,
+        'n_covered': _count(covered),
+        'n_covered_harvest': _count(covered & (aset.rep_source == SOURCE_HARVEST)),
+        'n_covered_probe': _count(covered & (aset.rep_source == SOURCE_PROBE)),
+        'n_covered_search': _count(covered & (aset.rep_source == SOURCE_SEARCH)),
+        'n_projected': _count(projected),
+        'n_holes': _count(hole),
+        'n_unbudgeted': _count(unbudgeted),
+        'n_uncovered': _count(status == 'uncovered'),
+        'evals_used': state.evals_used,
+        'n_draws': aset.n_draws,
+        'prefilter_acceptance': aset.prefilter_acceptance,
+        'n_probed': n_probed,
+        'n_probe_hits': n_probe_hits,
+        'probe_acceptance': probe_acceptance,
+        'volume_estimate': volume_estimate,
+        'volume_estimate_err': volume_estimate_err,
+        'global_max_drift': global_max_final - global_max_start,
+        'coverage_radius': aset.coverage_radius,
+    }
+
+    return {
+        'skipped': False,
+        'reason': None,
+        'mode': config['mode'],
+        'anchor_set': aset,
+        'anchors': aset.anchors,
+        'anchor_status': status,
+        'rep_points': aset.rep_points,
+        'rep_logls': aset.rep_logls,
+        'rep_dists': aset.rep_dists,
+        'rep_source': aset.rep_source,
+        'probed': aset.probed,
+        'probe_logls': aset.probe_logls,
+        'uniform_subset': probe_in_band,
+        'closest_points': state.closest_points,
+        'closest_logls': state.closest_logls,
+        'closest_dists': state.closest_dists,
+        'band_initial': (state.band_lo, state.band_hi),
+        'band_final': (band_lo_f, band_hi_f),
+        'stats': stats,
+    }

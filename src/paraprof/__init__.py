@@ -7,6 +7,7 @@ from .master import (
     run_projection,
     run_all_projections,
     run_scan,
+    run_volume_sampling,
     terminate_workers,
 )
 from .worker import worker_main
@@ -37,6 +38,7 @@ __all__ = [
     'run_projection',
     'run_all_projections',
     'run_scan',
+    'run_volume_sampling',
     'terminate_workers',
     'worker_main',
     'plot_profiles',

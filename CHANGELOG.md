@@ -8,19 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Volume-sampling groundwork (phases 1–2 of `docs/volume_sampling_plan.md`)** —
-  master-side building blocks for the upcoming post-projection stage that
-  collects a stratified, well-spread sample set inside the ROI (or in a shell
-  around it). New `volume.py` module: `ProjectionEnvelope` (necessary-condition
-  prefilter built from the converged projection grids — a point whose projection
-  falls in a below-threshold or never-activated cell of any computed projection
-  provably cannot be in the band), scrambled-Sobol anchor generation filtered
-  through the envelope (with prefilter-acceptance bookkeeping for the ROI volume
-  estimate), and the tier-1 harvest that covers anchors from already-evaluated
-  samples by streaming existing sample files. New `ProfileProjector` argument
-  `volume_sampling` (config dict, validated at construction; default None =
-  stage disabled). The stage itself — probe and search jobs, orchestration,
-  outputs — lands with phases 3–4.
+- **Volume-sampling stage (phases 1–3 of `docs/volume_sampling_plan.md`)** —
+  an optional post-projection stage that collects a stratified, well-spread
+  sample set inside the ROI (`mode='roi'`) or in a shell around it
+  (`mode='shell'`), enabled via the new `ProfileProjector` argument
+  `volume_sampling` (config dict, validated at construction) and run
+  automatically by `run_all_projections` (also exposed standalone as
+  `run_volume_sampling`). Three-tier funnel, each tier strictly cheaper per
+  point than the next:
+  1. *Harvest*: anchors are covered from already-evaluated samples by
+     streaming existing sample files (zero evaluations).
+  2. *Probe*: one evaluation at each scrambled-Sobol anchor drawn inside the
+     projection-envelope prefilter (`ProjectionEnvelope`: converged profile
+     grids upper-bound logL, so a point whose projection falls in a
+     below-threshold or never-activated cell of any computed projection
+     provably cannot be in the band). In-band probes form a tagged
+     (QMC-)uniform-on-band subset, and the acceptance fractions yield an
+     unbiased **band volume estimate** with a binomial uncertainty.
+  3. *Anchored search*: probe misses get an L-BFGS-B run on a hinged
+     objective (bounds-scaled distance to the anchor + κ·band-violation²,
+     κ from `advanced_config['volume']['penalty_strength']`), warm-started
+     from the nearest known in-band sample and terminating at the first
+     in-band evaluation within the coverage radius. In-band points get a
+     fully analytic gradient (zero FD evaluations); out-of-band points
+     chain-rule a user `grad_func` when present. The penalty steers the
+     *search only*: reported representatives always carry their true logL,
+     and band membership is re-derived against the final global maximum, so
+     a mid-stage global-max improvement (loudly logged) reclassifies rather
+     than corrupts.
+  Per-anchor outcomes: `covered` / `projected` (in-band, beyond the
+  coverage radius) / `hole` (band unreachable; closest-approach point kept
+  as the diagnostic) / `unbudgeted` (`eval_budget` ran out) / `uncovered`.
+  Results land on `sampler.volume_stage_result`; every stage evaluation
+  also flows to `samples_output_file` as usual. The stage skips itself with
+  a notice when a projection grids the full parameter space (direct-eval
+  mode), where it could only add resolution. File outputs and the JSON
+  summary land with phase 4.
 
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **on by default**). Every active grid cell normally spends at least
