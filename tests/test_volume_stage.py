@@ -606,3 +606,149 @@ class TestVolumeSearchJobShellBand:
         out = job.process_result(result_for(tasks[0], -10.0))
         assert out == []
         assert job.is_finished() and job.hit
+
+
+# --------------------------------------------------------------------------- #
+# Interior steps (experimental)
+# --------------------------------------------------------------------------- #
+from paraprof.exceptions import ConfigurationError
+
+
+class TestInteriorSteps:
+
+    def make_walk_job(self, sampler, anchor_set, steps=4):
+        return VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                               KAPPA, np.array([2.5, 2.0]),
+                               interior_steps=steps)
+
+    def test_config_validation(self):
+        cfg = normalize_volume_config({'interior_steps': 3}, roi_threshold=4.0)
+        assert cfg['interior_steps'] == 3
+        assert normalize_volume_config({}, 4.0)['interior_steps'] == 0
+        for bad in (-1, 1.5, True, 'x'):
+            with pytest.raises(ConfigurationError, match="interior_steps"):
+                normalize_volume_config({'interior_steps': bad}, 4.0)
+
+    def test_hit_starts_walk_along_inward_direction(self, sampler,
+                                                    monkeypatch):
+        anchor_set = make_anchor_set()
+        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        # U -> 0 gives a depth target at the very top of the band, so the
+        # walk runs until the step cap or a non-improving step.
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
+        tasks = job.start()
+
+        out = job.process_result(result_for(tasks[0], -1.0))
+        # Hit registered, but the job keeps running an interior walk.
+        assert job.hit and not job.is_finished()
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_INTERIOR'
+        # Direction: inward continuation of (entry - anchor); entry
+        # (2.5, 2.0) - anchor (2.0, 2.0) -> +x. Step = radius/steps = 0.025
+        # scaled = 0.25 unscaled.
+        np.testing.assert_allclose(out[0]['params'], [2.75, 2.0])
+
+        # Accept two improving in-band steps, then a worse one ends it.
+        out = job.process_result(result_for(out[0], -0.8))
+        np.testing.assert_allclose(out[0]['params'], [3.0, 2.0])
+        out = job.process_result(result_for(out[0], -0.5))
+        assert len(out) == 1
+        out = job.process_result(result_for(out[0], -0.9))  # not deeper
+        assert out == [] and job.is_finished() and job.success
+        np.testing.assert_allclose(job.interior_point, [3.0, 2.0])
+        assert job.interior_logl == -0.5
+        assert job.outcome() == 'hit'
+
+    def test_walk_respects_distance_cap(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        job = self.make_walk_job(sampler, anchor_set, steps=1)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
+        tasks = job.start()
+        out = job.process_result(result_for(tasks[0], -1.0))
+        # Single step of radius 0.1: lands at scaled dist 0.15 > cap 0.1,
+        # so the step is rejected even though it is deeper.
+        out2 = job.process_result(result_for(out[0], -0.1))
+        assert out2 == [] and job.is_finished()
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
+
+    def test_walk_stops_at_depth_target(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        # d=2, band_depth=4: U=0.25 -> target logL = 0 - 4*0.25 = -1.0...
+        # entry at -2.0 is shallower, so the walk runs and must stop at
+        # the first accepted point reaching logL >= -1.0.
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        tasks = job.start()
+        out = job.process_result(result_for(tasks[0], -2.0))
+        assert len(out) == 1
+        out = job.process_result(result_for(out[0], -0.5))  # >= target
+        assert out == [] and job.is_finished() and job.success
+        assert job.interior_logl == -0.5
+
+    def test_shallow_depth_target_finishes_at_entry(self, sampler,
+                                                     monkeypatch):
+        anchor_set = make_anchor_set()
+        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        # U -> 1 gives a depth target at the band edge, which the entry
+        # point already satisfies: no walk.
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1.0)
+        tasks = job.start()
+        out = job.process_result(result_for(tasks[0], -1.0))
+        assert out == [] and job.is_finished() and job.success and job.hit
+        # The entry point still becomes the interior representative.
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
+
+    def test_interior_steps_off_behaves_as_before(self, sampler):
+        anchor_set = make_anchor_set()
+        job = self.make_walk_job(sampler, anchor_set, steps=0)
+        tasks = job.start()
+        out = job.process_result(result_for(tasks[0], -1.0))
+        assert out == [] and job.is_finished() and job.hit
+        assert job.interior_point is None
+
+    def test_projected_termination_detours_through_walk(self, sampler,
+                                                        monkeypatch):
+        anchor_set = make_anchor_set()
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.0, 5.5]), max_iter=1,
+                              interior_steps=2)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
+        tasks = job.start()
+        # In band beyond the radius: analytic gradient -> line search.
+        out = job.process_result(result_for(tasks[0], -1.0))
+        assert out[0]['context']['sub_type'] == 'LBFGS_LINE_SEARCH'
+        # Accept a line-search step that stays in band but beyond radius;
+        # max_iter=1 then terminates the base machinery -> walk detour.
+        ls_result = result_for(out[0], -0.9)
+        ls_result['params'] = np.array([2.0, 5.0])
+        out = job.process_result(ls_result)
+        assert not job.is_finished()
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_INTERIOR'
+        # Reject the step: job finishes; interior point = walk origin
+        # (the best in-band point), outcome projected.
+        out = job.process_result(result_for(out[0], -10.0))
+        assert out == [] and job.is_finished()
+        assert job.outcome() == 'projected'
+        assert job.interior_point is not None
+
+    def test_record_search_job_prefers_interior_point(self):
+        anchor_set = make_anchor_set()
+        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        # The closer band-edge entry point is already registered...
+        anchor_set.offer_to_anchor(0, np.array([2.5, 2.0]), -3.9, 0.05,
+                                   SOURCE_SEARCH)
+        # ...but the job's deeper interior point wins the rep slot.
+        job = SimpleNamespace(
+            anchor_index=0, hit=True,
+            best_inband_point=np.array([2.5, 2.0]), best_inband_logl=-3.9,
+            best_inband_dist=0.05,
+            best_viol_point=None, best_viol_logl=-np.inf,
+            best_viol_dist=np.inf, best_viol=np.inf,
+            interior_point=np.array([2.9, 2.0]), interior_logl=-1.2,
+            interior_dist=0.09,
+        )
+        state.record_search_job(job)
+        np.testing.assert_allclose(anchor_set.rep_points[0], [2.9, 2.0])
+        assert anchor_set.rep_logls[0] == -1.2
+        assert anchor_set.covered[0]  # 0.09 <= radius 0.1

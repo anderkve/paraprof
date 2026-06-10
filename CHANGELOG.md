@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-tag row counts and the tag legend (non-finite values serialized as
   null). Results also land on `sampler.volume_stage_result`, and every
   stage evaluation flows to `samples_output_file` as usual.
+  Experimental `interior_steps` option: searches take up to k cheap
+  randomized steps into the band after entering it (inward continuation
+  of the projection line, depth drawn uniformly over 0..k steps,
+  distance-capped to preserve coverage), softening the band-edge
+  concentration of search-found representatives.
   Extras: `plot_volume_samples` (tagged scatter over a 2D profile map),
   `examples/run_volume_sampling.py`,
   `benchmarks/volume_sampling_benchmark.py` (funnel vs probe-only

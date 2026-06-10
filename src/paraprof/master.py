@@ -471,7 +471,8 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                     warm = anchor_set.anchors[k]
                 job = VolumeSearchJob(
                     next_job_id, sampler, anchor_set, k, band_lo, band_hi,
-                    kappa, warm, max_iter=config['search_max_iter'])
+                    kappa, warm, max_iter=config['search_max_iter'],
+                    interior_steps=config['interior_steps'])
                 next_job_id += 1
                 return job
             return None

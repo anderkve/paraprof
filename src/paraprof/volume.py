@@ -44,6 +44,7 @@ VOLUME_CONFIG_DEFAULTS = {
     'search': 'lbfgsb',         # tier-3 method: 'lbfgsb' or 'none' (probe-only)
     'probe_all_anchors': True,  # probe even harvest-covered anchors (uniform subset)
     'search_max_iter': None,    # per-anchor L-BFGS-B cap (None = lbfgsb_max_iter)
+    'interior_steps': 0,        # experimental: post-entry steps into the band
     'harvest_files': None,      # extra sample files for tier 1
     'output_file': 'volume_samples.csv',
     'summary_file': None,       # None = derived from output_file
@@ -147,6 +148,15 @@ def normalize_volume_config(config, roi_threshold):
     _check_positive_int(cfg, 'n_points')
     _check_positive_int(cfg, 'eval_budget', allow_none=True)
     _check_positive_int(cfg, 'search_max_iter', allow_none=True)
+
+    steps = cfg['interior_steps']
+    if isinstance(steps, bool) or not isinstance(steps, (int, np.integer)) \
+            or steps < 0:
+        raise ConfigurationError(
+            "volume_sampling['interior_steps'] must be a non-negative integer",
+            parameter="volume_sampling.interior_steps", value=steps,
+        )
+    cfg['interior_steps'] = int(steps)
 
     spacing = cfg['min_spacing']
     if spacing is not None:
@@ -682,6 +692,16 @@ class VolumeStageState:
                 k, job.best_inband_point, job.best_inband_logl,
                 job.best_inband_dist, SOURCE_SEARCH,
             )
+        if getattr(job, 'interior_point', None) is not None:
+            # Interior-steps mode (experimental): the job deliberately walked
+            # away from the band edge, so depth beats the closest-wins rule
+            # for this anchor's representative. Coverage is unaffected: the
+            # walk is distance-capped (within the radius for hits).
+            aset = self.anchor_set
+            aset.rep_points[k] = job.interior_point
+            aset.rep_logls[k] = job.interior_logl
+            aset.rep_dists[k] = job.interior_dist
+            aset.rep_source[k] = SOURCE_SEARCH
         if job.best_viol_point is not None and \
                 job.best_viol < self.closest_violations[k]:
             self.closest_points[k] = job.best_viol_point

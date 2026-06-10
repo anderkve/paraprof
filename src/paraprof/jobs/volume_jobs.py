@@ -110,8 +110,14 @@ class VolumeSearchJob(LBFGSBJob):
     minimum-violation evaluation is kept as the closest approach).
     """
 
+    # Distance slack for interior walks from 'projected' entry points: the
+    # walk may move up to this factor times the entry distance from the
+    # anchor (hit-entry walks are capped at the coverage radius instead).
+    PROJECTED_WALK_SLACK = 1.5
+
     def __init__(self, job_id, sampler, anchor_set, anchor_index,
-                 band_lo, band_hi, kappa, start_params, max_iter=None):
+                 band_lo, band_hi, kappa, start_params, max_iter=None,
+                 interior_steps=0, band_depth=None):
         start_params = np.asarray(start_params, dtype=float)
         super().__init__(
             job_id, 'VOLUME_SEARCH', sampler,
@@ -128,10 +134,17 @@ class VolumeSearchJob(LBFGSBJob):
         self.anchor_index = int(anchor_index)
         self.anchor = anchor_set.anchors[self.anchor_index]
         self.coverage_radius = anchor_set.coverage_radius
+        self._lo = anchor_set.bounds[:, 0]
+        self._hi = anchor_set.bounds[:, 1]
         self._extent = anchor_set.bounds[:, 1] - anchor_set.bounds[:, 0]
         self.band_lo = float(band_lo)
         self.band_hi = float(band_hi)
         self.kappa = float(kappa)
+        self.interior_steps = int(interior_steps)
+        # Band depth in logL units (roi_threshold for roi mode); sets the
+        # interior walk's depth-target scale.
+        self.band_depth = float(band_depth) if band_depth is not None \
+            else float(sampler.roi_threshold)
 
         self.hit = False
         self.best_inband_point = None
@@ -141,6 +154,19 @@ class VolumeSearchJob(LBFGSBJob):
         self.best_viol_logl = -np.inf
         self.best_viol_dist = np.inf
         self.best_viol = np.inf
+
+        # Interior-walk state (experimental, off unless interior_steps > 0).
+        # interior_point is the walk's deepest accepted point; the stage
+        # state makes it the anchor's representative.
+        self.interior_point = None
+        self.interior_logl = -np.inf
+        self.interior_dist = np.inf
+        self._walk_done = False
+        self._walk_steps_left = 0
+        self._walk_dir_scaled = None
+        self._walk_dist_cap = np.inf
+        self._walk_target_logl = np.inf
+        self._final_success = None
 
     def _scaled_dist(self, params):
         return float(np.linalg.norm((params - self.anchor) / self._extent))
@@ -167,24 +193,21 @@ class VolumeSearchJob(LBFGSBJob):
         return -ddist2 - 2.0 * self.kappa * violation * sign * grad
 
     def process_result(self, result):
+        if result['context'].get('sub_type') == 'VOLUME_INTERIOR':
+            return self._process_interior_result(result)
+
         logl = result['target_val']
         params = np.asarray(result['params'], dtype=float)
         dist = self._scaled_dist(params)
         violation = self._violation(logl)
 
+        # Track what was seen — also for stray results arriving after a
+        # hit (e.g. leftover FD evaluations while an interior walk runs).
         if violation == 0.0:
             if dist < self.best_inband_dist:
                 self.best_inband_point = params.copy()
                 self.best_inband_logl = float(logl)
                 self.best_inband_dist = dist
-            if dist <= self.coverage_radius:
-                # A covering point, not a stationary one: stop immediately.
-                self.hit = True
-                self.status = 'FINISHED'
-                self._is_finished = True
-                self.success = True
-                self.converged = True
-                return []
         elif (violation < self.best_viol
               or (violation == self.best_viol and dist < self.best_viol_dist)):
             self.best_viol_point = params.copy()
@@ -192,12 +215,127 @@ class VolumeSearchJob(LBFGSBJob):
             self.best_viol_dist = dist
             self.best_viol = violation
 
+        if self.status == 'INTERIOR_WALK' or self._is_finished:
+            return []
+
+        if violation == 0.0 and dist <= self.coverage_radius:
+            # A covering point, not a stationary one: stop the search. In
+            # interior-steps mode, first walk a few steps off the band edge.
+            self.hit = True
+            self.converged = True
+            walk_tasks = self._start_interior_walk(
+                params, float(logl), dist, dist_cap=self.coverage_radius)
+            if walk_tasks is not None:
+                self._final_success = True
+                return walk_tasks
+            self.status = 'FINISHED'
+            self._is_finished = True
+            self.success = True
+            return []
+
         transformed = dict(result)
         transformed['target_val'] = -(dist * dist
                                       + self.kappa * violation * violation)
         transformed['user_gradient'] = self._transformed_gradient(
             params, logl, violation, result.get('user_gradient'))
-        return super().process_result(transformed)
+        out = super().process_result(transformed)
+
+        # The base machinery just terminated (ftol/max_iter/line-search
+        # failure) with an in-band point seen beyond the radius: detour
+        # through an interior walk from it before reporting 'projected'.
+        if self._is_finished and not self._walk_done \
+                and self.interior_steps > 0 \
+                and self.best_inband_point is not None:
+            walk_tasks = self._start_interior_walk(
+                self.best_inband_point, self.best_inband_logl,
+                self.best_inband_dist,
+                dist_cap=max(self.coverage_radius,
+                             self.best_inband_dist
+                             * self.PROJECTED_WALK_SLACK))
+            if walk_tasks is not None:
+                self._final_success = self.success
+                self._is_finished = False
+                return walk_tasks
+        return out
+
+    # ------------------------------------------------------------------ #
+    # Interior walk (experimental, roi mode only): a few cheap steps off
+    # the band edge. Direction: the inward continuation of
+    # (entry - anchor), the line the projection arrived along — no
+    # gradient needed. Each walk draws a *depth target*: for a locally
+    # quadratic basin, uniform-in-volume depth means ΔlnL below the
+    # maximum distributed as depth·U^(2/d), which correctly concentrates
+    # near the band edge in high dimensions (most of a d-ball's volume is
+    # near its surface) and spreads uniformly in 2D. The walk ascends
+    # until its accepted point reaches the target, the step cap, the
+    # distance cap, or a non-improving step.
+    # ------------------------------------------------------------------ #
+    def _start_interior_walk(self, origin, origin_logl, origin_dist,
+                             dist_cap):
+        """Arm the walk; returns the first task list, or None to skip
+        (interior_steps off, shell mode, walk already ran, or the entry
+        point already reaches the drawn depth target)."""
+        if self.interior_steps <= 0 or self._walk_done \
+                or np.isfinite(self.band_hi):
+            return None
+        self._walk_done = True
+        self.interior_point = np.asarray(origin, dtype=float).copy()
+        self.interior_logl = float(origin_logl)
+        self.interior_dist = float(origin_dist)
+
+        # Depth target: logL >= band_top - band_depth * U^(2/d), with
+        # band_top the band's upper logL edge (global max at stage start).
+        band_top = self.band_lo + self.band_depth
+        u = float(np.random.random())
+        self._walk_target_logl = band_top - self.band_depth * u ** (
+            2.0 / max(len(self.anchor), 1))
+        if self.interior_logl >= self._walk_target_logl:
+            return None
+
+        direction = (self.interior_point - self.anchor) / self._extent
+        norm = float(np.linalg.norm(direction))
+        if norm < 1e-12:
+            direction = np.random.standard_normal(len(direction))
+            norm = float(np.linalg.norm(direction))
+        self._walk_dir_scaled = direction / norm
+        self._walk_step = self.coverage_radius / self.interior_steps
+        self._walk_steps_left = self.interior_steps
+        self._walk_dist_cap = float(dist_cap)
+        self.status = 'INTERIOR_WALK'
+        return [self._interior_task()]
+
+    def _interior_task(self):
+        scaled = ((self.interior_point - self._lo) / self._extent
+                  + self._walk_step * self._walk_dir_scaled)
+        params = np.clip(self._lo + scaled * self._extent, self._lo, self._hi)
+        return {'params': params,
+                'context': {'type': self.type, 'job_id': self.id,
+                            'sub_type': 'VOLUME_INTERIOR'}}
+
+    def _process_interior_result(self, result):
+        logl = float(result['target_val'])
+        params = np.asarray(result['params'], dtype=float)
+        dist = self._scaled_dist(params)
+        in_band = self._violation(logl) == 0.0
+        deeper = logl > self.interior_logl
+
+        # Tiny slack so a step landing exactly on the cap is not lost to
+        # floating-point round-trip noise.
+        if in_band and dist <= self._walk_dist_cap + 1e-12 and deeper:
+            self.interior_point = params.copy()
+            self.interior_logl = logl
+            self.interior_dist = dist
+            self._walk_steps_left -= 1
+            if self._walk_steps_left > 0 \
+                    and self.interior_logl < self._walk_target_logl:
+                return [self._interior_task()]
+        self._finish_walk()
+        return []
+
+    def _finish_walk(self):
+        self.status = 'FINISHED'
+        self._is_finished = True
+        self.success = bool(self._final_success)
 
     def outcome(self):
         """'hit', 'projected', or 'hole' — meaningful once the job finished."""
