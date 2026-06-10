@@ -398,3 +398,171 @@ class TestFinalize:
             search_enabled=True)
         assert result['anchor_status'][0] == 'covered'
         assert result['band_final'] == (-25.0, -4.0)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: output file and JSON summary
+# --------------------------------------------------------------------------- #
+import json
+
+from paraprof.sample_io import read_samples
+from paraprof.volume import (
+    TAG_HARVEST,
+    TAG_HOLE,
+    TAG_PROBE,
+    TAG_SEARCH,
+    assemble_volume_rows,
+    default_summary_file,
+    write_volume_output,
+)
+
+
+def make_finalized_result():
+    """A finalized stage result with one anchor per status/tag combination."""
+    anchor_set = make_anchor_set()
+    state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+
+    # Anchor 0: covered by harvest. Anchor 1: covered by its probe.
+    # Anchor 2: projected (search). Anchor 3: hole with closest approach.
+    anchor_set.offer_to_anchor(0, np.array([2.1, 2.0]), -1.0, 0.01,
+                               SOURCE_HARVEST)
+    anchor_set.offer_to_anchor(1, np.array([8.0, 2.0]), -2.0, 0.0,
+                               SOURCE_PROBE)
+    anchor_set.offer_to_anchor(2, np.array([2.0, 5.5]), -3.0, 0.25,
+                               SOURCE_SEARCH)
+    anchor_set.probed[:] = True
+    anchor_set.probe_logls[:] = [-10.0, -2.0, -10.0, -10.0]
+    state.searched[2:] = True
+    state.closest_points[3] = [7.0, 7.0]
+    state.closest_logls[3] = -6.0
+    state.closest_dists[3] = 0.14
+    state.closest_violations[3] = 2.0
+
+    return finalize_volume_stage(
+        state, roi_config(), roi_threshold=4.0,
+        global_max_start=0.0, global_max_final=0.0,
+        search_enabled=True)
+
+
+class TestAssembleVolumeRows:
+
+    def test_rows_and_tags(self):
+        result = make_finalized_result()
+        np.testing.assert_array_equal(
+            result['anchor_status'],
+            ['covered', 'covered', 'projected', 'hole'])
+
+        rows = assemble_volume_rows(result)
+        assert rows.shape == (4, 4)  # 2 dims + logL + tag
+
+        by_tag = {row[-1]: row for row in rows}
+        np.testing.assert_allclose(by_tag[TAG_HARVEST], [2.1, 2.0, -1.0, 0.0])
+        np.testing.assert_allclose(by_tag[TAG_PROBE], [8.0, 2.0, -2.0, 1.0])
+        np.testing.assert_allclose(by_tag[TAG_SEARCH], [2.0, 5.5, -3.0, 2.0])
+        np.testing.assert_allclose(by_tag[TAG_HOLE], [7.0, 7.0, -6.0, 3.0])
+
+    def test_hole_without_closest_approach_is_skipped(self):
+        result = make_finalized_result()
+        # Erase anchor 3's closest-approach record.
+        result['closest_violations'][3] = np.inf
+        rows = assemble_volume_rows(result)
+        assert rows.shape == (3, 4)
+        assert TAG_HOLE not in rows[:, -1]
+
+    def test_empty_result(self):
+        anchor_set = make_anchor_set()
+        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        result = finalize_volume_stage(
+            state, roi_config(), roi_threshold=4.0,
+            global_max_start=0.0, global_max_final=0.0,
+            search_enabled=True)
+        rows = assemble_volume_rows(result)
+        assert rows.shape == (0, 4)
+
+
+class TestWriteVolumeOutput:
+
+    @pytest.mark.parametrize("ext", [".csv", ".h5"])
+    def test_round_trip(self, tmp_path, ext):
+        if ext == ".h5":
+            pytest.importorskip("h5py")
+        result = make_finalized_result()
+        cfg = roi_config(output_file=str(tmp_path / f"vol{ext}"))
+
+        out_path, summary_path, rows_by_tag = write_volume_output(result, cfg)
+
+        samples = read_samples(out_path)
+        assert samples.shape == (4, 4)
+        assert rows_by_tag == {0: 1, 1: 1, 2: 1, 3: 1}
+        # Annotations on the result dict.
+        assert result['output_file'] == out_path
+        assert result['summary_file'] == summary_path
+        assert result['rows_by_tag'] == rows_by_tag
+
+        with open(summary_path) as f:
+            summary = json.load(f)
+        assert summary['mode'] == 'roi'
+        assert summary['n_rows'] == 4
+        assert summary['rows_by_tag'] == {'0': 1, '1': 1, '2': 1, '3': 1}
+        assert summary['stats']['n_covered'] == 2
+        assert summary['uniform_subset_valid'] is True
+        # JSON portability: the roi band's +inf upper edge becomes null.
+        assert summary['band_final'][1] is None
+        assert summary['band_final'][0] == -4.0
+        assert summary['tag_legend']['3'].startswith('hole')
+
+    def test_default_summary_path(self, tmp_path):
+        result = make_finalized_result()
+        out = str(tmp_path / "sub" / "vol.csv")
+        cfg = roi_config(output_file=out)
+        _, summary_path, _ = write_volume_output(result, cfg)
+        assert summary_path == str(tmp_path / "sub" / "vol_summary.json")
+        assert default_summary_file("a/b.h5") == "a/b_summary.json"
+
+    def test_explicit_summary_path(self, tmp_path):
+        result = make_finalized_result()
+        cfg = roi_config(output_file=str(tmp_path / "vol.csv"),
+                         summary_file=str(tmp_path / "s.json"))
+        _, summary_path, _ = write_volume_output(result, cfg)
+        assert summary_path == str(tmp_path / "s.json")
+        assert (tmp_path / "s.json").exists()
+
+    def test_overwrites_with_warning(self, tmp_path):
+        result = make_finalized_result()
+        out = tmp_path / "vol.csv"
+        out.write_text("old content\n")
+        cfg = roi_config(output_file=str(out))
+        write_volume_output(result, cfg)
+        assert read_samples(str(out)).shape == (4, 4)
+
+    def test_empty_result_writes_summary_only(self, tmp_path):
+        anchor_set = make_anchor_set()
+        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        result = finalize_volume_stage(
+            state, roi_config(), roi_threshold=4.0,
+            global_max_start=0.0, global_max_final=0.0,
+            search_enabled=True)
+        cfg = roi_config(output_file=str(tmp_path / "vol.csv"))
+
+        out_path, summary_path, rows_by_tag = write_volume_output(result, cfg)
+        assert out_path is None
+        assert not (tmp_path / "vol.csv").exists()
+        with open(summary_path) as f:
+            summary = json.load(f)
+        assert summary['output_file'] is None
+        assert summary['n_rows'] == 0
+
+    def test_nan_stats_become_null(self, tmp_path):
+        anchor_set = make_anchor_set()  # no draws: prefilter acceptance NaN
+        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        result = finalize_volume_stage(
+            state, roi_config(), roi_threshold=4.0,
+            global_max_start=0.0, global_max_final=0.0,
+            search_enabled=True)
+        cfg = roi_config(output_file=str(tmp_path / "vol.csv"))
+        _, summary_path, _ = write_volume_output(result, cfg)
+        with open(summary_path) as f:
+            summary = json.load(f)
+        assert summary['stats']['prefilter_acceptance'] is None
+        assert summary['stats']['probe_acceptance'] is None
+        assert summary['stats']['volume_estimate'] is None

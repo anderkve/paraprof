@@ -56,11 +56,35 @@ ANCHOR_DRAW_BATCH = 4096
 DEFAULT_DRAW_CAP_FACTOR = 10_000
 
 # Provenance of an anchor's representative sample (the funnel tier that
-# produced it). Phase 4 maps these to the output-file tag column.
+# produced it). The output file's tag column uses the same values, plus
+# TAG_HOLE for closest-approach rows.
 SOURCE_NONE = 0
 SOURCE_HARVEST = 1
 SOURCE_PROBE = 2
 SOURCE_SEARCH = 3
+
+# Output-file tag column. Tags 0-2 rows are in-band representatives and
+# encode which tier found them; tag-1 rows are additionally the
+# (QMC-)uniform subset. Tag-3 rows are the closest-approach points of
+# "hole" anchors and are NOT in-band — they are diagnostics for why the
+# band is unreachable there.
+TAG_HARVEST = 0.0
+TAG_PROBE = 1.0
+TAG_SEARCH = 2.0
+TAG_HOLE = 3.0
+
+_SOURCE_TO_TAG = {
+    SOURCE_HARVEST: TAG_HARVEST,
+    SOURCE_PROBE: TAG_PROBE,
+    SOURCE_SEARCH: TAG_SEARCH,
+}
+
+TAG_LEGEND = {
+    int(TAG_HARVEST): 'harvested from existing samples (in-band)',
+    int(TAG_PROBE): 'direct anchor probe (in-band; the uniform subset)',
+    int(TAG_SEARCH): 'anchored search result (in-band)',
+    int(TAG_HOLE): 'hole closest approach (NOT in-band; diagnostic)',
+}
 
 
 def _check_positive_int(cfg, key, allow_none=False):
@@ -774,7 +798,143 @@ def finalize_volume_stage(state, config, roi_threshold,
         'closest_points': state.closest_points,
         'closest_logls': state.closest_logls,
         'closest_dists': state.closest_dists,
+        'closest_violations': state.closest_violations,
         'band_initial': (state.band_lo, state.band_hi),
         'band_final': (band_lo_f, band_hi_f),
         'stats': stats,
     }
+
+
+def assemble_volume_rows(result):
+    """The stage's output rows: ``[params..., logL, tag]`` per anchor.
+
+    One row per anchor with an in-band representative (status ``covered``
+    or ``projected``), tagged by the tier that found it (``TAG_HARVEST`` /
+    ``TAG_PROBE`` / ``TAG_SEARCH``), plus one ``TAG_HOLE`` row per hole
+    anchor whose search recorded a closest-approach point (those rows are
+    *not* in-band). Returns an ``(n_rows, n_dims + 2)`` float array.
+    """
+    status = result['anchor_status']
+    n_dims = result['anchors'].shape[1] if len(result['anchors']) else 0
+
+    blocks = []
+    rep_mask = np.isin(status, ('covered', 'projected'))
+    if rep_mask.any():
+        tags = np.array([_SOURCE_TO_TAG[s]
+                         for s in result['rep_source'][rep_mask]])
+        blocks.append(np.column_stack([
+            result['rep_points'][rep_mask],
+            result['rep_logls'][rep_mask],
+            tags,
+        ]))
+
+    hole_mask = (status == 'hole') & np.isfinite(result['closest_violations'])
+    if hole_mask.any():
+        blocks.append(np.column_stack([
+            result['closest_points'][hole_mask],
+            result['closest_logls'][hole_mask],
+            np.full(int(np.count_nonzero(hole_mask)), TAG_HOLE),
+        ]))
+
+    if not blocks:
+        return np.empty((0, n_dims + 2))
+    return np.vstack(blocks)
+
+
+def _json_safe(obj):
+    """Recursively convert a result structure to JSON-portable types.
+
+    NumPy scalars become Python scalars; non-finite floats become None
+    (JSON has no inf/nan); tuples become lists.
+    """
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_json_safe(v) for v in obj.tolist()]
+    if isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        val = float(obj)
+        return val if np.isfinite(val) else None
+    return obj
+
+
+def default_summary_file(output_file):
+    """The summary path derived from ``output_file``: same base,
+    ``_summary.json`` suffix."""
+    base, _ = os.path.splitext(output_file)
+    return base + '_summary.json'
+
+
+def write_volume_output(result, config):
+    """Write the stage's sample file and JSON summary (Phase 4 outputs).
+
+    The sample file (``config['output_file']``; format from the extension
+    via sample_io, replaced if it exists) holds the rows from
+    :func:`assemble_volume_rows`; nothing is written when there are no
+    rows. The JSON summary (``config['summary_file']``, default derived
+    via :func:`default_summary_file`) holds the run configuration, bands,
+    statistics, per-tag row counts, and the tag legend.
+
+    Returns ``(output_path_or_None, summary_path, rows_by_tag)`` and
+    annotates ``result`` with the same under the keys ``output_file``,
+    ``summary_file`` and ``rows_by_tag``.
+    """
+    import json
+
+    from .sample_io import write_samples
+
+    logger = get_logger()
+    rows = assemble_volume_rows(result)
+    rows_by_tag = {
+        int(tag): int(np.count_nonzero(rows[:, -1] == tag))
+        for tag in (TAG_HARVEST, TAG_PROBE, TAG_SEARCH, TAG_HOLE)
+    }
+
+    output_path = config['output_file']
+    if len(rows):
+        if os.path.exists(output_path):
+            logger.warning(
+                f"Volume sampling: replacing existing file '{output_path}'."
+            )
+        write_samples(rows, output_path, overwrite=True)
+        logger.info(
+            f"Volume sampling: wrote {len(rows)} tagged samples to "
+            f"'{output_path}'."
+        )
+    else:
+        output_path = None
+        logger.info(
+            "Volume sampling: no in-band representatives or closest-approach "
+            "points; no sample file written."
+        )
+
+    summary_path = config['summary_file'] or default_summary_file(
+        config['output_file'])
+    summary = {
+        'mode': result['mode'],
+        'band_initial': result['band_initial'],
+        'band_final': result['band_final'],
+        'config': config,
+        'stats': result['stats'],
+        'output_file': output_path,
+        'n_rows': len(rows),
+        'rows_by_tag': rows_by_tag,
+        'tag_legend': TAG_LEGEND,
+        'uniform_subset_valid': config['probe_all_anchors'],
+    }
+    summary_dir = os.path.dirname(summary_path)
+    if summary_dir:
+        os.makedirs(summary_dir, exist_ok=True)
+    with open(summary_path, 'w') as f:
+        json.dump(_json_safe(summary), f, indent=2)
+    logger.info(f"Volume sampling: wrote summary to '{summary_path}'.")
+
+    result['output_file'] = output_path
+    result['summary_file'] = summary_path
+    result['rows_by_tag'] = rows_by_tag
+    return output_path, summary_path, rows_by_tag

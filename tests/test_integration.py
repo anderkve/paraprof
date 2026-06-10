@@ -473,7 +473,10 @@ VOLUME_RUNNER = textwrap.dedent("""
             max_patching_waves=2,
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
-            volume_sampling={'mode': 'roi', 'n_points': 30},
+            volume_sampling={
+                'mode': 'roi', 'n_points': 30,
+                'output_file': os.path.join(workdir, 'volume_samples.csv'),
+            },
         ) as sampler:
             comm.bcast((sampler.target_func, sampler.grad_func), root=0)
             run_all_projections(
@@ -494,8 +497,21 @@ VOLUME_RUNNER = textwrap.dedent("""
                 max_err = max(max_err, abs(logl - vol['rep_logls'][k]))
                 reps_in_band &= (band_lo <= logl <= band_hi)
 
+            # Phase-4 outputs: tagged sample file + JSON summary.
+            from paraprof import read_samples
+            out_rows = read_samples(vol['output_file'])
+            with open(vol['summary_file']) as f:
+                summary = json.load(f)
+
             payload = {
                 'skipped': vol['skipped'],
+                'output_rows': out_rows.shape[0],
+                'output_cols': out_rows.shape[1],
+                'output_tags': sorted(set(out_rows[:, -1].tolist())),
+                'rows_by_tag': {str(k): v for k, v in vol['rows_by_tag'].items()},
+                'summary_n_rows': summary['n_rows'],
+                'summary_mode': summary['mode'],
+                'summary_volume_estimate': summary['stats']['volume_estimate'],
                 'n_anchors': stats['n_anchors'],
                 'n_covered': stats['n_covered'],
                 'n_projected': stats['n_projected'],
@@ -555,3 +571,15 @@ def test_volume_sampling_stage(tmp_path):
     # sit inside the final band.
     assert result['max_rep_err'] < 1e-9
     assert result['reps_in_band']
+
+    # Phase-4 outputs: one tagged row per resolved anchor (plus hole
+    # closest-approach rows, zero here), 4 params + logL + tag columns,
+    # and a JSON summary consistent with the in-memory result.
+    assert result['output_rows'] == result['n_covered'] + result['n_projected']
+    assert result['output_cols'] == 6
+    assert set(result['output_tags']) <= {0.0, 1.0, 2.0, 3.0}
+    assert sum(result['rows_by_tag'].values()) == result['output_rows']
+    assert result['summary_n_rows'] == result['output_rows']
+    assert result['summary_mode'] == 'roi'
+    assert result['summary_volume_estimate'] == pytest.approx(
+        result['volume_estimate'])

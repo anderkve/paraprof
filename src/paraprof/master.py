@@ -374,7 +374,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     from .volume import (
         ProjectionEnvelope, VolumeStageState, finalize_volume_stage,
         generate_anchors, harvest_existing_samples, resolve_harvest_files,
-        volume_band,
+        volume_band, write_volume_output,
     )
     from .jobs.volume_jobs import VolumeProbeJob, VolumeSearchJob
 
@@ -486,6 +486,12 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
         global_max_start, sampler.global_max_target_val,
         search_enabled=(config['search'] != 'none'))
     stats = result['stats']
+
+    # --- Write the tagged sample file and the JSON summary ---
+    try:
+        write_volume_output(result, config)
+    except (OSError, ValueError) as e:
+        logger.warning(f"Volume sampling: could not write output files: {e}")
 
     logger.info("=" * 80)
     logger.info("--- Volume sampling complete ---")
