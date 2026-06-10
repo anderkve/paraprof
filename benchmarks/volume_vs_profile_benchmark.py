@@ -22,7 +22,13 @@ and the logL distributions.
 Run with MPI:
 
     mpiexec -n <ncores> python -m mpi4py volume_vs_profile_benchmark.py \\
-        [himmelblau_4d|rosenbrock_4d] [n_points]
+        [himmelblau_4d|rosenbrock_4d|sphere_4d|sphere_6d|sphere_8d] [n_points]
+
+The sphere targets (logL = -|x|^2 on [-5, 5]^n, ROI = a ball) are the
+clean dimension-scaling cases: as n grows, ever fewer of the scan's
+by-product evaluations land in the band away from the profile surface,
+so recycled samples thin out while the volume stage keeps its per-anchor
+guarantee.
 
 Required: at least 2 MPI ranks. The ``-m mpi4py`` launcher makes an
 uncaught exception on any rank abort the whole job instead of deadlocking
@@ -54,15 +60,6 @@ N_POINTS = int(sys.argv[2]) if len(sys.argv) > 2 else 500
 ROI_THRESHOLD = 4.0
 N_REFERENCE = 4000
 
-log_likelihood, bounds, _ = get_test_function(FUNC_NAME)
-bounds = np.asarray(bounds, dtype=float)
-LO, EXTENT = bounds[:, 0], bounds[:, 1] - bounds[:, 0]
-
-PROJECTIONS = [
-    {'dims': [0, 1], 'grid_points': [40, 40]},
-]
-
-
 def himmelblau_4d_vec(x):
     t1 = (x[:, 0] ** 2 + x[:, 1] - 11) ** 2 + (x[:, 0] + x[:, 1] ** 2 - 7) ** 2
     t2 = (x[:, 2] ** 2 + x[:, 3] - 11) ** 2 + (x[:, 2] + x[:, 3] ** 2 - 7) ** 2
@@ -77,11 +74,32 @@ def rosenbrock_4d_vec(x):
     )
 
 
-VECTORIZED = {
-    'himmelblau_4d': himmelblau_4d_vec,
-    'rosenbrock_4d': rosenbrock_4d_vec,
-}
-logl_vec = VECTORIZED[FUNC_NAME]
+def sphere(p):
+    return -float(np.sum(np.asarray(p) ** 2))
+
+
+def sphere_vec(x):
+    return -np.sum(x ** 2, axis=1)
+
+
+def resolve_target(name):
+    """(scalar target, bounds, vectorized target, projection config)."""
+    if name.startswith('sphere_'):
+        n_dims = int(name.split('_')[1].rstrip('d'))
+        proj = {'dims': [0, 1], 'grid_points': [20, 20],
+                'optimization_method': 'lbfgsb'}
+        return sphere, np.array([[-5.0, 5.0]] * n_dims), sphere_vec, proj
+    func, bnds, _ = get_test_function(name)
+    vec = {'himmelblau_4d': himmelblau_4d_vec,
+           'rosenbrock_4d': rosenbrock_4d_vec}[name]
+    return func, np.asarray(bnds, dtype=float), vec, \
+        {'dims': [0, 1], 'grid_points': [40, 40]}
+
+
+log_likelihood, bounds, logl_vec, projection = resolve_target(FUNC_NAME)
+LO, EXTENT = bounds[:, 0], bounds[:, 1] - bounds[:, 0]
+
+PROJECTIONS = [projection]
 
 
 def scale(points):
