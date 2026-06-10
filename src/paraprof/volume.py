@@ -45,6 +45,8 @@ VOLUME_CONFIG_DEFAULTS = {
     'probe_all_anchors': True,  # probe even harvest-covered anchors (uniform subset)
     'search_max_iter': None,    # per-anchor L-BFGS-B cap (None = lbfgsb_max_iter)
     'interior_steps': 0,        # experimental: post-entry steps into the band
+    'depth_law': 'uniform_dlnl',  # interior-walk depth target: 'volume',
+                                  # 'uniform_dlnl' or 'uniform_sigma'
     'harvest_files': None,      # extra sample files for tier 1
     'output_file': 'volume_samples.csv',
     'summary_file': None,       # None = derived from output_file
@@ -158,6 +160,13 @@ def normalize_volume_config(config, roi_threshold):
         )
     cfg['interior_steps'] = int(steps)
 
+    if cfg['depth_law'] not in ('volume', 'uniform_dlnl', 'uniform_sigma'):
+        raise ConfigurationError(
+            f"volume_sampling['depth_law'] must be 'volume', 'uniform_dlnl' "
+            f"or 'uniform_sigma', got {cfg['depth_law']!r}",
+            parameter="volume_sampling.depth_law", value=cfg['depth_law'],
+        )
+
     spacing = cfg['min_spacing']
     if spacing is not None:
         if isinstance(spacing, bool) or not isinstance(spacing, (int, float, np.floating, np.integer)) \
@@ -203,6 +212,28 @@ def normalize_volume_config(config, roi_threshold):
         )
 
     return cfg
+
+
+def depth_law_exponent(depth_law, n_dims):
+    """Exponent γ of the interior-walk depth-target draw t = c·U^γ.
+
+    The walk targets a depth t (ΔlnL below the band top) drawn by inverse
+    CDF: t = c·U^γ with U ~ Uniform(0, 1). The presets:
+
+    - ``'uniform_dlnl'`` (γ = 1): depths uniform in ΔlnL — equal
+      representation at every fit-quality level (the default).
+    - ``'uniform_sigma'`` (γ = 2): depths uniform in Z = sqrt(2·ΔlnL),
+      the one-dof Wilks significance — extra resolution near the top.
+    - ``'volume'`` (γ = 2/d): the uniform-in-parameter-volume law for a
+      locally quadratic d-dimensional basin, where the volume at depth
+      <= t grows like t^(d/2) — concentrates near the band edge in high
+      dimensions.
+    """
+    return {
+        'volume': 2.0 / max(int(n_dims), 1),
+        'uniform_dlnl': 1.0,
+        'uniform_sigma': 2.0,
+    }[depth_law]
 
 
 def volume_band(config, roi_threshold, global_max):
@@ -779,6 +810,18 @@ def finalize_volume_stage(state, config, roi_threshold,
     def _count(mask):
         return int(np.count_nonzero(mask))
 
+    # Realized depth distribution of the in-band representatives (roi mode):
+    # lets users check the achieved depth law against the requested one
+    # (walks are censored by the distance cap and the locally reachable
+    # likelihood, so the realized distribution can deviate).
+    rep_depth_histogram = None
+    if config['mode'] == 'roi' and rep_in_band.any():
+        depths = global_max_final - aset.rep_logls[rep_in_band]
+        edges = np.linspace(0.0, roi_threshold, 11)
+        counts, _ = np.histogram(depths, bins=edges)
+        rep_depth_histogram = {'bin_edges': edges.tolist(),
+                               'counts': counts.tolist()}
+
     stats = {
         'n_anchors': n,
         'n_covered': _count(covered),
@@ -799,6 +842,7 @@ def finalize_volume_stage(state, config, roi_threshold,
         'volume_estimate_err': volume_estimate_err,
         'global_max_drift': global_max_final - global_max_start,
         'coverage_radius': aset.coverage_radius,
+        'rep_depth_histogram': rep_depth_histogram,
     }
 
     return {

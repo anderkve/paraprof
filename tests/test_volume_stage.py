@@ -671,19 +671,31 @@ class TestInteriorSteps:
         assert out2 == [] and job.is_finished()
         np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
 
-    def test_walk_stops_at_depth_target(self, sampler, monkeypatch):
+    def test_walk_bisects_toward_depth_target(self, sampler, monkeypatch):
         anchor_set = make_anchor_set()
         job = self.make_walk_job(sampler, anchor_set, steps=4)
-        # d=2, band_depth=4: U=0.25 -> target logL = 0 - 4*0.25 = -1.0...
-        # entry at -2.0 is shallower, so the walk runs and must stop at
-        # the first accepted point reaching logL >= -1.0.
+        # d=2, band_depth=4: U=0.25 -> target logL = 0 - 4*0.25 = -1.0;
+        # entry at -2.0 is shallower, so the walk runs.
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         tasks = job.start()
         out = job.process_result(result_for(tasks[0], -2.0))
         assert len(out) == 1
-        out = job.process_result(result_for(out[0], -0.5))  # >= target
+
+        # First step overshoots the target by 0.5 > tol (0.05*4): a
+        # bisection task between the entry and the overshot point follows.
+        out = job.process_result(result_for(out[0], -0.5))
+        assert len(out) == 1
+        np.testing.assert_allclose(out[0]['params'], [2.625, 2.0])
+        # Midpoint still below the target: becomes the bracket's lower end.
+        out = job.process_result(result_for(out[0], -1.05))
+        assert len(out) == 1
+        np.testing.assert_allclose(out[0]['params'], [2.6875, 2.0])
+        # Within tolerance of the target: done, and the representative is
+        # the refined point, not the overshot one.
+        out = job.process_result(result_for(out[0], -0.95))
         assert out == [] and job.is_finished() and job.success
-        assert job.interior_logl == -0.5
+        assert job.interior_logl == -0.95
+        np.testing.assert_allclose(job.interior_point, [2.6875, 2.0])
 
     def test_shallow_depth_target_finishes_at_entry(self, sampler,
                                                      monkeypatch):
@@ -752,3 +764,82 @@ class TestInteriorSteps:
         np.testing.assert_allclose(anchor_set.rep_points[0], [2.9, 2.0])
         assert anchor_set.rep_logls[0] == -1.2
         assert anchor_set.covered[0]  # 0.09 <= radius 0.1
+
+
+class TestDepthLaw:
+
+    def test_config_validation(self):
+        cfg = normalize_volume_config({}, roi_threshold=4.0)
+        assert cfg['depth_law'] == 'uniform_dlnl'
+        for law in ('volume', 'uniform_dlnl', 'uniform_sigma'):
+            cfg = normalize_volume_config({'depth_law': law}, 4.0)
+            assert cfg['depth_law'] == law
+        with pytest.raises(ConfigurationError, match="depth_law"):
+            normalize_volume_config({'depth_law': 'posterior'}, 4.0)
+
+    def test_exponent_mapping(self):
+        from paraprof.volume import depth_law_exponent
+        assert depth_law_exponent('uniform_dlnl', 8) == 1.0
+        assert depth_law_exponent('uniform_sigma', 8) == 2.0
+        assert depth_law_exponent('volume', 8) == pytest.approx(0.25)
+        assert depth_law_exponent('volume', 2) == 1.0
+
+    def test_job_uses_depth_exponent(self, sampler, monkeypatch):
+        """Same U, different laws -> different targets -> different
+        walk/no-walk decisions for the same entry point."""
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        # band_depth 4, entry logL -1.0:
+        # gamma=1 (uniform_dlnl): target = -4*0.25 = -1.0 -> entry already
+        # reaches it, no walk.
+        anchor_set = make_anchor_set()
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=4,
+                              depth_exponent=1.0)
+        out = job.process_result(result_for(job.start()[0], -1.0))
+        assert out == [] and job.is_finished()
+
+        # gamma=2 (uniform_sigma): target = -4*0.0625 = -0.25 -> deeper
+        # than the entry, walk runs.
+        anchor_set = make_anchor_set()
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=4,
+                              depth_exponent=2.0)
+        out = job.process_result(result_for(job.start()[0], -1.0))
+        assert len(out) == 1 and not job.is_finished()
+        assert job._walk_target_logl == pytest.approx(-0.25)
+
+    def test_finalize_reports_depth_histogram(self):
+        anchor_set = make_anchor_set()
+        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        # Depths 0.5, 1.5, 3.5 below a final max of 0.
+        anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -0.5, 0.0,
+                                   SOURCE_PROBE)
+        anchor_set.offer_to_anchor(1, np.array([8.0, 2.0]), -1.5, 0.0,
+                                   SOURCE_PROBE)
+        anchor_set.offer_to_anchor(2, np.array([2.0, 8.0]), -3.5, 0.2,
+                                   SOURCE_SEARCH)
+        result = finalize_volume_stage(
+            state, roi_config(), roi_threshold=4.0,
+            global_max_start=0.0, global_max_final=0.0,
+            search_enabled=True)
+        hist = result['stats']['rep_depth_histogram']
+        assert hist['bin_edges'][0] == 0.0
+        assert hist['bin_edges'][-1] == 4.0
+        assert sum(hist['counts']) == 3
+        # 10 bins of width 0.4: depths 0.5, 1.5, 3.5 -> bins 1, 3, 8.
+        assert hist['counts'][1] == 1
+        assert hist['counts'][3] == 1
+        assert hist['counts'][8] == 1
+
+    def test_no_histogram_for_shell_mode(self):
+        anchor_set = make_anchor_set()
+        state = VolumeStageState(anchor_set, -25.0, -4.0)
+        anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -10.0, 0.0,
+                                   SOURCE_PROBE)
+        cfg = normalize_volume_config(
+            {'mode': 'shell', 'shell_threshold': 25.0}, roi_threshold=4.0)
+        result = finalize_volume_stage(
+            state, cfg, roi_threshold=4.0,
+            global_max_start=0.0, global_max_final=0.0,
+            search_enabled=True)
+        assert result['stats']['rep_depth_histogram'] is None

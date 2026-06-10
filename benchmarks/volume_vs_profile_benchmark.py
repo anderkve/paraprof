@@ -23,7 +23,7 @@ Run with MPI:
 
     mpiexec -n <ncores> python -m mpi4py volume_vs_profile_benchmark.py \\
         [himmelblau_4d|rosenbrock_4d|sphere_4d|sphere_6d|sphere_8d] \\
-        [n_points] [interior_steps]
+        [n_points] [interior_steps] [depth_law]
 
 The sphere targets (logL = -|x|^2 on [-5, 5]^n, ROI = a ball) are the
 clean dimension-scaling cases: as n grows, ever fewer of the scan's
@@ -59,6 +59,7 @@ myrank = comm.Get_rank()
 FUNC_NAME = sys.argv[1] if len(sys.argv) > 1 else 'himmelblau_4d'
 N_POINTS = int(sys.argv[2]) if len(sys.argv) > 2 else 500
 INTERIOR_STEPS = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+DEPTH_LAW = sys.argv[4] if len(sys.argv) > 4 else 'uniform_dlnl'
 ROI_THRESHOLD = 4.0
 N_REFERENCE = 4000
 
@@ -191,7 +192,7 @@ def make_figures(scan_in_band, volume_pts, reference, gmax, band_lo,
             ax.set_xlabel(f"$x_{{{di}}}$")
             ax.set_ylabel(f"$x_{{{dj}}}$")
     fig.suptitle(f"{FUNC_NAME}: profiling-stage vs volume-stage samples"
-                 + (f" (interior_steps={INTERIOR_STEPS})"
+                 + (f" (interior_steps={INTERIOR_STEPS}, {DEPTH_LAW})"
                     if INTERIOR_STEPS else ""))
     fig.tight_layout()
     path = f"{out_prefix}_clouds{'_interior' if INTERIOR_STEPS else ''}.png"
@@ -242,7 +243,7 @@ def master(workdir):
 
         sampler.volume_sampling_config = normalize_volume_config(
             {'mode': 'roi', 'n_points': N_POINTS,
-             'interior_steps': INTERIOR_STEPS,
+             'interior_steps': INTERIOR_STEPS, 'depth_law': DEPTH_LAW,
              'output_file': os.path.join(workdir, 'volume.csv')},
             ROI_THRESHOLD)
         vol = run_volume_sampling(comm, sampler, results, myrank=myrank)
@@ -276,7 +277,8 @@ def master(workdir):
         ]
 
         print(f"\n=== {FUNC_NAME}: profiling-stage vs volume-stage samples "
-              f"(interior_steps={INTERIOR_STEPS}) ===")
+              f"(interior_steps={INTERIOR_STEPS}, depth_law={DEPTH_LAW}) "
+              f"===")
         print(f"Scan: {scan_calls} evals -> {len(scan_in_band)} in-band "
               f"samples. Volume stage: {stats['evals_used']} evals -> "
               f"{len(volume_pts)} samples "

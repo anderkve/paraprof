@@ -372,9 +372,9 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     with ``skipped=True`` and a ``reason``.
     """
     from .volume import (
-        ProjectionEnvelope, VolumeStageState, finalize_volume_stage,
-        generate_anchors, harvest_existing_samples, resolve_harvest_files,
-        volume_band, write_volume_output,
+        ProjectionEnvelope, VolumeStageState, depth_law_exponent,
+        finalize_volume_stage, generate_anchors, harvest_existing_samples,
+        resolve_harvest_files, volume_band, write_volume_output,
     )
     from .jobs.volume_jobs import VolumeProbeJob, VolumeSearchJob
 
@@ -452,6 +452,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     # --- Tier 3: anchored searches for anchors whose probe missed ---
     if config['search'] != 'none':
         kappa = sampler.volume_penalty_strength / sampler.roi_threshold ** 2
+        depth_exponent = depth_law_exponent(config['depth_law'], sampler.dims)
         next_job_id = 1
         search_cursor = 0
 
@@ -472,7 +473,8 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                 job = VolumeSearchJob(
                     next_job_id, sampler, anchor_set, k, band_lo, band_hi,
                     kappa, warm, max_iter=config['search_max_iter'],
-                    interior_steps=config['interior_steps'])
+                    interior_steps=config['interior_steps'],
+                    depth_exponent=depth_exponent)
                 next_job_id += 1
                 return job
             return None

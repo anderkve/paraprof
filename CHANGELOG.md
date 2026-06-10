@@ -49,9 +49,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stage evaluation flows to `samples_output_file` as usual.
   Experimental `interior_steps` option: searches take up to k cheap
   randomized steps into the band after entering it (inward continuation
-  of the projection line, depth drawn uniformly over 0..k steps,
-  distance-capped to preserve coverage), softening the band-edge
-  concentration of search-found representatives.
+  of the projection line, distance-capped to preserve coverage),
+  removing the band-edge concentration of search-found representatives.
+  Each walk targets a drawn depth `ΔlnL = roi_threshold · U^γ` with the
+  exponent set by `depth_law`: `'uniform_dlnl'` (γ=1, default — equal
+  representation at every fit-quality level, robust under tighter
+  ΔlnL re-cuts), `'uniform_sigma'` (γ=2, uniform in the 1-dof
+  significance), or `'volume'` (γ=2/d, the uniform-in-volume law for a
+  locally quadratic d-dim basin). The realized depth distribution
+  (censored by the distance cap and the locally reachable likelihood)
+  is reported as `rep_depth_histogram` in the stats/summary.
   Extras: `plot_volume_samples` (tagged scatter over a 2D profile map),
   `examples/run_volume_sampling.py`,
   `benchmarks/volume_sampling_benchmark.py` (funnel vs probe-only

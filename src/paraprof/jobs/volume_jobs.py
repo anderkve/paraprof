@@ -19,6 +19,10 @@ from .lbfgsb_job import LBFGSBJob
 # (logL = -inf) yields a huge-but-finite penalty instead of overflowing.
 VIOLATION_CLAMP = 1e100
 
+# Interior walks stop refining once within this fraction of the band depth
+# from the drawn depth target.
+WALK_DEPTH_TOL_FRAC = 0.05
+
 
 class VolumeProbeJob(Job):
     """Evaluate the target once at each of the given anchors (tier 2).
@@ -117,7 +121,7 @@ class VolumeSearchJob(LBFGSBJob):
 
     def __init__(self, job_id, sampler, anchor_set, anchor_index,
                  band_lo, band_hi, kappa, start_params, max_iter=None,
-                 interior_steps=0, band_depth=None):
+                 interior_steps=0, band_depth=None, depth_exponent=None):
         start_params = np.asarray(start_params, dtype=float)
         super().__init__(
             job_id, 'VOLUME_SEARCH', sampler,
@@ -145,6 +149,9 @@ class VolumeSearchJob(LBFGSBJob):
         # interior walk's depth-target scale.
         self.band_depth = float(band_depth) if band_depth is not None \
             else float(sampler.roi_threshold)
+        # Exponent γ of the depth-target draw t = band_depth·U^γ (see
+        # volume.depth_law_exponent). None = the quadratic-basin volume law.
+        self.depth_exponent = depth_exponent
 
         self.hit = False
         self.best_inband_point = None
@@ -166,6 +173,8 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_dir_scaled = None
         self._walk_dist_cap = np.inf
         self._walk_target_logl = np.inf
+        self._walk_bisecting = False
+        self._walk_low_point = None
         self._final_success = None
 
     def _scaled_dist(self, params):
@@ -283,12 +292,15 @@ class VolumeSearchJob(LBFGSBJob):
         self.interior_logl = float(origin_logl)
         self.interior_dist = float(origin_dist)
 
-        # Depth target: logL >= band_top - band_depth * U^(2/d), with
-        # band_top the band's upper logL edge (global max at stage start).
+        # Depth target: logL >= band_top - band_depth * U^γ, with band_top
+        # the band's upper logL edge (global max at stage start) and γ the
+        # configured depth law (volume.depth_law_exponent).
         band_top = self.band_lo + self.band_depth
+        exponent = self.depth_exponent
+        if exponent is None:
+            exponent = 2.0 / max(len(self.anchor), 1)
         u = float(np.random.random())
-        self._walk_target_logl = band_top - self.band_depth * u ** (
-            2.0 / max(len(self.anchor), 1))
+        self._walk_target_logl = band_top - self.band_depth * u ** exponent
         if self.interior_logl >= self._walk_target_logl:
             return None
 
@@ -317,20 +329,53 @@ class VolumeSearchJob(LBFGSBJob):
         params = np.asarray(result['params'], dtype=float)
         dist = self._scaled_dist(params)
         in_band = self._violation(logl) == 0.0
-        deeper = logl > self.interior_logl
-
         # Tiny slack so a step landing exactly on the cap is not lost to
         # floating-point round-trip noise.
-        if in_band and dist <= self._walk_dist_cap + 1e-12 and deeper:
-            self.interior_point = params.copy()
-            self.interior_logl = logl
-            self.interior_dist = dist
-            self._walk_steps_left -= 1
+        acceptable = in_band and dist <= self._walk_dist_cap + 1e-12
+        self._walk_steps_left -= 1
+        tol = WALK_DEPTH_TOL_FRAC * self.band_depth
+
+        if not self._walk_bisecting:
+            # Marching phase: fixed steps inward until the target is
+            # crossed (or a step is rejected / the budget runs out).
+            if acceptable and logl > self.interior_logl:
+                below_target = self.interior_point.copy()
+                self.interior_point = params.copy()
+                self.interior_logl = logl
+                self.interior_dist = dist
+                if logl >= self._walk_target_logl:
+                    # Crossed the target: refine toward it by bisection if
+                    # the overshoot is large and budget remains, so the
+                    # realized depth is not quantized to the step lattice.
+                    if self._walk_steps_left > 0 \
+                            and logl - self._walk_target_logl > tol:
+                        self._walk_bisecting = True
+                        self._walk_low_point = below_target
+                        return [self._bisect_task()]
+                elif self._walk_steps_left > 0:
+                    return [self._interior_task()]
+        else:
+            # Bisection phase: tighten the bracket around the target depth.
+            # Points at/above the target replace the upper end (the
+            # representative); anything else replaces the lower end.
+            if acceptable and logl >= self._walk_target_logl:
+                if logl < self.interior_logl:
+                    self.interior_point = params.copy()
+                    self.interior_logl = logl
+                    self.interior_dist = dist
+            else:
+                self._walk_low_point = params.copy()
             if self._walk_steps_left > 0 \
-                    and self.interior_logl < self._walk_target_logl:
-                return [self._interior_task()]
+                    and self.interior_logl - self._walk_target_logl > tol:
+                return [self._bisect_task()]
         self._finish_walk()
         return []
+
+    def _bisect_task(self):
+        params = 0.5 * (self._walk_low_point + self.interior_point)
+        return {'params': params,
+                'context': {'type': self.type, 'job_id': self.id,
+                            'sub_type': 'VOLUME_INTERIOR'}}
 
     def _finish_walk(self):
         self.status = 'FINISHED'
