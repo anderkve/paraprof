@@ -9,6 +9,7 @@ from .exceptions import (
     InvalidBoundsError, InvalidProjectionError, ConfigurationError,
 )
 from .sample_io import create_sample_writer, read_samples
+from .volume import normalize_volume_config
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
@@ -128,6 +129,8 @@ class ProfileProjector:
                  # I/O
                  samples_output_file=None,
                  warm_start_file=None,
+                 # Post-projection volume-sampling stage (optional)
+                 volume_sampling=None,
                  # Parameter naming (optional, enables string dims in projections)
                  parameter_names=None,
                  # Advanced configuration (optional)
@@ -230,6 +233,13 @@ class ProfileProjector:
             warm start). To round-trip the current run's samples into the
             next one, point ``warm_start_file`` at the same path as
             ``samples_output_file``.
+        volume_sampling : dict, optional
+            Configuration for the post-projection volume-sampling stage,
+            which collects a stratified, well-spread sample set inside the
+            ROI (``mode='roi'``) or in a shell around it (``mode='shell'``).
+            Validated at construction; see ``volume.VOLUME_CONFIG_DEFAULTS``
+            for the keys and ``docs/volume_sampling_plan.md`` for the
+            design. Default: None (stage disabled).
 
         Parameter Naming
         ----------------
@@ -527,6 +537,15 @@ class ProfileProjector:
         # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
         self.roi_threshold = roi_threshold
+
+        # Volume-sampling stage configuration: validated up front like the
+        # rest of the config; the stage itself runs after the projections
+        # (see volume.py and docs/volume_sampling_plan.md).
+        if volume_sampling is not None:
+            self.volume_sampling_config = normalize_volume_config(
+                volume_sampling, self.roi_threshold)
+        else:
+            self.volume_sampling_config = None
         self.max_patching_waves = max_patching_waves
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations

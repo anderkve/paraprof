@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Volume-sampling groundwork (phases 1–2 of `docs/volume_sampling_plan.md`)** —
+  master-side building blocks for the upcoming post-projection stage that
+  collects a stratified, well-spread sample set inside the ROI (or in a shell
+  around it). New `volume.py` module: `ProjectionEnvelope` (necessary-condition
+  prefilter built from the converged projection grids — a point whose projection
+  falls in a below-threshold or never-activated cell of any computed projection
+  provably cannot be in the band), scrambled-Sobol anchor generation filtered
+  through the envelope (with prefilter-acceptance bookkeeping for the ROI volume
+  estimate), and the tier-1 harvest that covers anchors from already-evaluated
+  samples by streaming existing sample files. New `ProfileProjector` argument
+  `volume_sampling` (config dict, validated at construction; default None =
+  stage disabled). The stage itself — probe and search jobs, orchestration,
+  outputs — lands with phases 3–4.
+
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **on by default**). Every active grid cell normally spends at least
   `de.convergence_window` DE generations confirming convergence. When a fresh
