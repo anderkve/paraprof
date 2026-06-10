@@ -1,6 +1,8 @@
 # Implementation plan: profile likelihood projections in derived-parameter planes
 
-Status: design/plan — no implementation yet.
+Status: deferred — kept for future work. The volume-sampling feature
+(`volume_sampling_plan.md`) is being pursued first; it shares none of this
+plan's plumbing (anchors and constraints live in input space there).
 
 ## Goal
 
