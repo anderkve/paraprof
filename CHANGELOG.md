@@ -8,97 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Volume-sampling stage (`docs/volume_sampling_plan.md`, complete)** —
-  an optional post-projection stage that collects a stratified, well-spread
-  sample set inside the ROI (`mode='roi'`) or in a shell around it
-  (`mode='shell'`), enabled via the new `ProfileProjector` argument
-  `volume_sampling` (config dict, validated at construction) and run
-  automatically by `run_all_projections` (also exposed standalone as
-  `run_volume_sampling`). Three-tier funnel, each tier strictly cheaper per
-  point than the next:
-  1. *Harvest*: anchors are covered from already-evaluated samples by
-     streaming existing sample files (zero evaluations).
-  2. *Probe*: one evaluation at each scrambled-Sobol anchor drawn inside the
-     projection-envelope prefilter (`ProjectionEnvelope`: converged profile
-     grids upper-bound logL, so a point whose projection falls in a
-     below-threshold or never-activated cell of any computed projection
-     provably cannot be in the band). In-band probes form a tagged
-     (QMC-)uniform-on-band subset, and the acceptance fractions yield an
-     unbiased **band volume estimate** with a binomial uncertainty.
-  3. *Anchored search*: probe misses get an L-BFGS-B run on a hinged
-     objective (bounds-scaled distance to the anchor + κ·band-violation²,
-     κ from `advanced_config['volume']['penalty_strength']`), warm-started
-     from the nearest known in-band sample and terminating at the first
-     in-band evaluation within the coverage radius. In-band points get a
-     fully analytic gradient (zero FD evaluations); out-of-band points
-     chain-rule a user `grad_func` when present. The penalty steers the
-     *search only*: reported representatives always carry their true logL,
-     and band membership is re-derived against the final global maximum, so
-     a mid-stage global-max improvement (loudly logged) reclassifies rather
-     than corrupts.
-  Per-anchor outcomes: `covered` / `projected` (in-band, beyond the
-  coverage radius) / `hole` (band unreachable; closest-approach point kept
-  as the diagnostic) / `unbudgeted` (`eval_budget` ran out) / `uncovered`.
-  Outputs: a provenance-tagged sample file (`output_file`, csv/h5 via
-  sample_io; rows `[params..., logL, tag]` with tag 0=harvest, 1=probe
-  (the uniform subset), 2=search, 3=hole closest-approach — tag-3 rows are
-  *not* in-band) and a JSON summary (`summary_file`, default
-  `<output_file>_summary.json`) carrying the config, bands, statistics,
-  per-tag row counts and the tag legend (non-finite values serialized as
-  null). Results also land on `sampler.volume_stage_result`, and every
-  stage evaluation flows to `samples_output_file` as usual.
-  `interior_steps` option (default 8; 0 disables): searches take up to
-  k cheap steps into the band after entering it, removing the band-edge
-  concentration of search-found representatives at a few percent of the
-  stage cost. Walks aim at the nearest scan-known point at least as
-  deep as the drawn target (global pool / initial maxima; aim points
-  beyond the distance cap are projected onto the cap sphere; direction
-  choice costs no evaluations) — the aiming is what makes the depth
-  laws hold on asymmetric/multimodal targets, where a fixed inward ray
-  misses the small deep cores and censors the law toward volume-like.
-  Marches pass straight through logL dips and thin out-of-band slivers
-  (only in-band points are adopted), bisect toward the target on
-  crossing, use a shrink/re-aim ladder on out-of-cap steps, and size
-  steps so the budget can traverse the cap ball's diameter. Depth
-  targets are drawn adaptively: every representative (probe, harvest,
-  byproduct, walked) counts toward the law's per-depth quota, so walks
-  compensate the passive points' edge-heavy depth mix and the COMBINED
-  representative set converges to the law; walked representatives are
-  locked against replacement by closer band-edge byproducts. Walks stay
-  distance-capped, preserving all coverage guarantees. Budget left
-  over after a walk reaches its depth target funds *tangential
-  randomization*: hops along the iso-likelihood shell (perpendicular to
-  a secant normal from the walk's own target crossing — no gradient
-  evaluations), with curvature drift corrected by bisection toward the
-  on-target point, failed rounds reverting with a halved hop, and cap/
-  bounds checked arithmetically before any evaluation. The shell
-  normal is a Broyden secant estimate, rank-1 updated from every
-  tangent evaluation at zero cost, and drift corrections are Newton
-  steps along it (midpoint fallback), so the normal tracks curvature
-  and corrections preserve the tangential displacement. This removes
-  the aim-ray fingerprint in fixed-depth cross-sections at zero extra
-  stage cost for the default budget (Rosenbrock-4D fixed-depth
-  transverse spread ratio 0.52-0.77 -> 0.72-0.81 at interior_steps=8)
-  and converts extra budget into full spread in the band interior
-  (~0.96-1.0 at interior_steps=16-32, +5-12% stage cost), while the
-  depth-law marginals and the uniform probe subset are unchanged.
-  Each walk targets a drawn depth `ΔlnL = roi_threshold · U^γ` with the
-  exponent set by `depth_law`: `'uniform_dlnl'` (γ=1, default — equal
-  representation at every fit-quality level, robust under tighter
-  ΔlnL re-cuts), `'uniform_sigma'` (γ=2, uniform in the 1-dof
-  significance), or `'volume'` (γ=2/d, the uniform-in-volume law for a
-  locally quadratic d-dim basin). The realized depth distribution
-  (censored by the distance cap and the locally reachable likelihood)
-  is reported as `rep_depth_histogram` in the stats/summary.
-  Extras: `plot_volume_samples` (tagged scatter over a 2D profile map),
-  `examples/run_volume_sampling.py`,
-  `benchmarks/volume_sampling_benchmark.py` (funnel vs probe-only
-  coverage/cost on the thin curved Rosenbrock ROI), a README section, and
-  statistical validation tests (probe-only volume estimate vs the analytic
-  4-ball volume; two-island target asserting multi-island coverage and the
-  void diagnostic). The stage
-  skips itself with a notice when a projection grids the full parameter
-  space (direct-eval mode), where it could only add resolution.
+- **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
+  post-projection stage that collects a stratified, well-spread sample set
+  inside the ROI (`mode='roi'`) or in a shell around it (`mode='shell'`).
+  Enabled by the new `ProfileProjector` argument `volume_sampling` (a config
+  dict, validated at construction) and run automatically by
+  `run_all_projections`; also exposed standalone as `run_volume_sampling`.
+  Targets a grid of scrambled-Sobol *anchors* drawn inside a prefilter built
+  from the converged projection grids (`ProjectionEnvelope`), via a three-tier
+  funnel: harvest of existing samples (zero evaluations), one direct probe per
+  anchor, and an anchored L-BFGS-B search for probe misses. In-band probes
+  form a tagged (QMC-)uniform subset and yield an unbiased **band volume
+  estimate** with a binomial uncertainty. Reported representatives always
+  carry their true logL, and band membership is re-derived against the final
+  global maximum. Per-anchor outcomes: `covered` / `projected` / `hole` /
+  `unbudgeted` / `uncovered`.
+  - `interior_steps` (default 8; 0 disables) walks each search a few steps
+    into the band to a drawn depth target, so representatives span fit quality
+    rather than piling at the band edge; leftover budget is spent on
+    tangential randomization across the iso-likelihood shell. `depth_law`
+    (`'uniform_dlnl'` default, `'uniform_sigma'`, `'volume'`) sets the depth
+    distribution; the realized distribution is reported as
+    `rep_depth_histogram`.
+  - Outputs: a provenance-tagged sample file (`output_file`, csv/h5; rows
+    `[params..., logL, tag]`, tag 0=harvest, 1=probe/uniform-subset, 2=search,
+    3=hole closest-approach which is *not* in-band) and a JSON summary
+    (`summary_file`). Results also land on `sampler.volume_stage_result`, and
+    every stage evaluation flows to `samples_output_file` as usual. The stage
+    skips itself when a projection grids the full parameter space.
+  - Extras: `plot_volume_samples`, `examples/run_volume_sampling.py`,
+    `benchmarks/volume_sampling_benchmark.py`,
+    `benchmarks/volume_vs_profile_benchmark.py`.
 
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **on by default**). Every active grid cell normally spends at least

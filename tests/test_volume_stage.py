@@ -278,7 +278,6 @@ class TestVolumeStageState:
         state.note_eval(np.array([8.0, 2.0]), -10.0)
         state.note_eval(np.array([8.05, 2.0]), -1.0, offer=False)
         assert not anchor_set.covered[1]
-        assert state.max_logl_seen == -1.0
 
     def test_record_search_job(self):
         anchor_set = make_anchor_set()
@@ -291,7 +290,7 @@ class TestVolumeStageState:
             best_viol_dist=0.2, best_viol=1.0,
         )
         state.record_search_job(job)
-        assert state.searched[2] and not state.search_hit[2]
+        assert state.searched[2]
         # The in-band point became anchor 2's representative (projected).
         assert anchor_set.rep_dists[2] == pytest.approx(0.25)
         assert anchor_set.rep_source[2] == SOURCE_SEARCH

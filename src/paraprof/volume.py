@@ -683,12 +683,10 @@ class VolumeStageState:
         self.band_hi = float(band_hi)
         self.eval_budget = eval_budget
         self.evals_used = 0
-        self.max_logl_seen = -np.inf
 
         n = anchor_set.n_anchors
         n_dims = len(anchor_set.bounds)
         self.searched = np.zeros(n, dtype=bool)
-        self.search_hit = np.zeros(n, dtype=bool)
         self.unbudgeted = np.zeros(n, dtype=bool)
         # Adaptive depth-quota state (armed by init_depth_quota; roi mode).
         self._quota_probs = None
@@ -761,8 +759,6 @@ class VolumeStageState:
         results to their nearest anchor (probe jobs do their own exact
         bookkeeping and pass ``offer=False``)."""
         self.evals_used += 1
-        if logl > self.max_logl_seen:
-            self.max_logl_seen = logl
         if offer and np.isfinite(logl) and self.in_band(logl):
             self.anchor_set.offer_sample(params, logl, SOURCE_SEARCH)
 
@@ -770,8 +766,6 @@ class VolumeStageState:
         """Fold a finished VolumeSearchJob's outcome into the per-anchor records."""
         k = job.anchor_index
         self.searched[k] = True
-        if job.hit:
-            self.search_hit[k] = True
         if job.best_inband_point is not None:
             # The job's best in-band point may be nearest to a *different*
             # anchor (note_eval offered it there); record it against the
@@ -994,7 +988,7 @@ def default_summary_file(output_file):
 
 
 def write_volume_output(result, config):
-    """Write the stage's sample file and JSON summary (Phase 4 outputs).
+    """Write the stage's sample file and JSON summary.
 
     The sample file (``config['output_file']``; format from the extension
     via sample_io, replaced if it exists) holds the rows from

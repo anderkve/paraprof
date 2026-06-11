@@ -169,9 +169,9 @@ class VolumeSearchJob(LBFGSBJob):
         self.best_viol_dist = np.inf
         self.best_viol = np.inf
 
-        # Interior-walk state (experimental, off unless interior_steps > 0).
-        # interior_point is the walk's deepest accepted point; the stage
-        # state makes it the anchor's representative.
+        # Interior-walk state (off unless interior_steps > 0). interior_point
+        # is the walk's deepest accepted point; the stage state makes it the
+        # anchor's representative.
         self.interior_point = None
         self.interior_logl = -np.inf
         self.interior_dist = np.inf
@@ -186,13 +186,9 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_fail_count = 0
         self._march_point = None
         self._walk_entry_point = None
-        # Tangential-randomization state (final walk phase, funded by the
-        # walk budget left over after the depth target is reached).
-        # _tan_grad is a running secant/Broyden estimate of the scaled-
-        # space logL gradient, rank-1 updated from every tangent
-        # evaluation, so the shell normal tracks curvature as the point
-        # moves and corrections can step along the gradient (Newton)
-        # instead of pulling back toward the previous position.
+        # Tangential-randomization state. _tan_grad is a Broyden estimate of
+        # the scaled-space logL gradient (the shell normal), rank-1 updated
+        # from every tangent evaluation.
         self._tan_grad = None
         self._tan_h = 0.0
         self._tan_correct_left = 0
@@ -258,7 +254,6 @@ class VolumeSearchJob(LBFGSBJob):
             # A covering point, not a stationary one: stop the search. In
             # interior-steps mode, first walk a few steps off the band edge.
             self.hit = True
-            self.converged = True
             walk_tasks = self._start_interior_walk(
                 params, float(logl), dist, dist_cap=self.coverage_radius)
             if walk_tasks is not None:
@@ -295,16 +290,12 @@ class VolumeSearchJob(LBFGSBJob):
         return out
 
     # ------------------------------------------------------------------ #
-    # Interior walk (experimental, roi mode only): a few cheap steps off
-    # the band edge. Direction: the inward continuation of
-    # (entry - anchor), the line the projection arrived along — no
-    # gradient needed. Each walk draws a *depth target*: for a locally
-    # quadratic basin, uniform-in-volume depth means ΔlnL below the
-    # maximum distributed as depth·U^(2/d), which correctly concentrates
-    # near the band edge in high dimensions (most of a d-ball's volume is
-    # near its surface) and spreads uniformly in 2D. The walk ascends
-    # until its accepted point reaches the target, the step cap, the
-    # distance cap, or a non-improving step.
+    # Interior walk (roi mode only): steps from the band edge toward a
+    # drawn depth target (ΔlnL below the band top; see draw_depth_target
+    # and depth_law_exponent). It marches along the aim direction
+    # (_walk_aim_direction), bisects to land precisely on the target, and
+    # spends any leftover budget on tangential randomization. All moves
+    # stay within the distance cap, preserving the coverage guarantee.
     # ------------------------------------------------------------------ #
     def _start_interior_walk(self, origin, origin_logl, origin_dist,
                              dist_cap):
@@ -384,18 +375,10 @@ class VolumeSearchJob(LBFGSBJob):
 
     def _walk_aim_direction(self, origin):
         """Scaled-space unit direction for the walk: toward the nearest
-        known point at least as deep as the target.
-
-        A fixed inward ray misses the small high-likelihood cores of
-        asymmetric basins (the walk then stalls below its depth target),
-        but the scan already knows where deep points are — the pool and
-        the initial-maxima registry. An aim point beyond the walk's
-        distance cap is replaced by its projection onto the cap sphere
-        around the anchor (the deepest *reachable* location toward it),
-        so the walk does not immediately exit the cap. Falls back to the
-        inward continuation of (origin - anchor) when no candidate
-        qualifies, which is the symmetric-basin geometry where that ray
-        is ideal.
+        scan-known point (global pool / initial maxima) at least as deep as
+        the target. Aim points beyond the distance cap are projected onto
+        the cap sphere around the anchor. Falls back to the inward
+        continuation of ``origin - anchor`` when no candidate qualifies.
         """
         origin_scaled = (np.asarray(origin, dtype=float) - self._lo) \
             / self._extent
@@ -515,16 +498,13 @@ class VolumeSearchJob(LBFGSBJob):
                             'sub_type': 'VOLUME_INTERIOR'}}
 
     # ------------------------------------------------------------------ #
-    # Tangential randomization: once the depth target is reached, spend
-    # any leftover walk budget moving the point ALONG its iso-likelihood
-    # shell, erasing the aim ray's directional fingerprint (walked points
-    # otherwise under-fill the transverse directions of fixed-depth level
-    # sets). Each round proposes a hop perpendicular to a secant normal
-    # (the walk's own below-target -> above-target crossing direction; no
-    # gradient evaluations needed), then corrects curvature drift by
-    # bisecting toward the on-target current point. Cap and bounds are
-    # checked arithmetically before any evaluation is spent; failed
-    # rounds revert and shrink the hop.
+    # Tangential randomization: spend leftover walk budget moving the
+    # representative ALONG its iso-likelihood shell, so walked points do
+    # not under-fill the transverse directions of fixed-depth level sets.
+    # Each round hops perpendicular to the Broyden normal estimate, then
+    # Newton-corrects any depth drift back onto the target (midpoint
+    # fallback). Cap and bounds are checked before any evaluation is
+    # spent; failed rounds revert and shrink the hop.
     # ------------------------------------------------------------------ #
     def _enter_tangent_phase(self):
         """Arm the tangent phase; returns the first task list or None

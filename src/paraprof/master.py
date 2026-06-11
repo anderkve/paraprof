@@ -354,7 +354,6 @@ def _volume_event_loop(comm, sampler, state, initial_jobs, job_source,
 
     if pending_sends:
         MPI.Request.Waitall(pending_sends)
-    return tasks_completed
 
 
 def run_volume_sampling(comm, sampler, projection_results, myrank=0):
