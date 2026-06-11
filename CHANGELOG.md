@@ -71,11 +71,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a secant normal from the walk's own target crossing — no gradient
   evaluations), with curvature drift corrected by bisection toward the
   on-target point, failed rounds reverting with a halved hop, and cap/
-  bounds checked arithmetically before any evaluation. This partially
-  removes the aim-ray fingerprint in fixed-depth cross-sections at zero
-  extra stage cost (Rosenbrock-4D transverse spread ratio at fixed
-  depth: 0.77->0.85-0.88 shallow, 0.52->0.63 at the band edge), while
-  the depth-law marginals and the uniform probe subset are unchanged.
+  bounds checked arithmetically before any evaluation. The shell
+  normal is a Broyden secant estimate, rank-1 updated from every
+  tangent evaluation at zero cost, and drift corrections are Newton
+  steps along it (midpoint fallback), so the normal tracks curvature
+  and corrections preserve the tangential displacement. This removes
+  the aim-ray fingerprint in fixed-depth cross-sections at zero extra
+  stage cost for the default budget (Rosenbrock-4D fixed-depth
+  transverse spread ratio 0.52-0.77 -> 0.72-0.81 at interior_steps=8)
+  and converts extra budget into full spread in the band interior
+  (~0.96-1.0 at interior_steps=16-32, +5-12% stage cost), while the
+  depth-law marginals and the uniform probe subset are unchanged.
   Each walk targets a drawn depth `ΔlnL = roi_threshold · U^γ` with the
   exponent set by `depth_law`: `'uniform_dlnl'` (γ=1, default — equal
   representation at every fit-quality level, robust under tighter

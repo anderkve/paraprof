@@ -188,7 +188,12 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_entry_point = None
         # Tangential-randomization state (final walk phase, funded by the
         # walk budget left over after the depth target is reached).
-        self._tan_normal = None
+        # _tan_grad is a running secant/Broyden estimate of the scaled-
+        # space logL gradient, rank-1 updated from every tangent
+        # evaluation, so the shell normal tracks curvature as the point
+        # moves and corrections can step along the gradient (Newton)
+        # instead of pulling back toward the previous position.
+        self._tan_grad = None
         self._tan_h = 0.0
         self._tan_correct_left = 0
         self.tangent_moves = 0
@@ -536,7 +541,7 @@ class VolumeSearchJob(LBFGSBJob):
             normal = cur_s - (np.asarray(ref) - self._lo) / self._extent
             norm = float(np.linalg.norm(normal))
             if norm > 1e-9:
-                self._tan_normal = normal / norm
+                self._tan_grad = normal / norm
                 break
         else:
             return None
@@ -570,10 +575,14 @@ class VolumeSearchJob(LBFGSBJob):
         spending evaluations); None when no usable direction remains."""
         cur_s = (self.interior_point - self._lo) / self._extent
         anchor_s = (self.anchor - self._lo) / self._extent
+        g_norm = float(np.linalg.norm(self._tan_grad))
+        if g_norm < 1e-12:
+            return None
+        n_hat = self._tan_grad / g_norm
         h = self._tan_h
         for _ in range(20):
             g = np.random.standard_normal(len(cur_s))
-            v = g - np.dot(g, self._tan_normal) * self._tan_normal
+            v = g - np.dot(g, n_hat) * n_hat
             norm = float(np.linalg.norm(v))
             if norm < 1e-12:
                 continue
@@ -596,6 +605,18 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_steps_left -= 1
         tol = WALK_DEPTH_TOL_FRAC * self.band_depth
 
+        # Secant/Broyden rank-1 update of the gradient estimate from this
+        # evaluation and the on-target current point: the normal then
+        # tracks shell curvature as accepted hops move the point, at zero
+        # evaluation cost.
+        if np.isfinite(logl):
+            d = (params - self.interior_point) / self._extent
+            d2 = float(np.dot(d, d))
+            if d2 > 1e-18:
+                resid = (logl - self.interior_logl) \
+                    - float(np.dot(self._tan_grad, d))
+                self._tan_grad = self._tan_grad + (resid / d2) * d
+
         on_target = (self._violation(logl) == 0.0
                      and dist <= self._walk_dist_cap + 1e-12
                      and abs(logl - self._walk_target_logl) <= tol)
@@ -607,11 +628,28 @@ class VolumeSearchJob(LBFGSBJob):
             self.tangent_moves += 1
             self._tan_correct_left = TANGENT_CORRECTIONS
         elif self._tan_correct_left > 0 and self._walk_steps_left > 0:
-            # Curvature drift: bisect between the off-target point and the
-            # on-target current position.
+            # Curvature drift: Newton-correct along the estimated gradient
+            # (preserves the tangential displacement, unlike bisecting
+            # back toward the current point); fall back to the midpoint
+            # when the model step is unreasonable or leaves cap/bounds.
             self._tan_correct_left -= 1
-            mid = 0.5 * (params + self.interior_point)
-            return [{'params': mid,
+            cand = None
+            g2 = float(np.dot(self._tan_grad, self._tan_grad))
+            if np.isfinite(logl) and g2 > 1e-18:
+                step_s = self._tan_grad \
+                    * ((self._walk_target_logl - logl) / g2)
+                if float(np.linalg.norm(step_s)) <= self._tan_h:
+                    cand_s = (params - self._lo) / self._extent + step_s
+                    cand_p = self._lo + cand_s * self._extent
+                    anchor_s = (self.anchor - self._lo) / self._extent
+                    if np.all(cand_p >= self._lo) \
+                            and np.all(cand_p <= self._hi) \
+                            and float(np.linalg.norm(cand_s - anchor_s)) \
+                            <= self._walk_dist_cap + 1e-12:
+                        cand = cand_p
+            if cand is None:
+                cand = 0.5 * (params + self.interior_point)
+            return [{'params': cand,
                      'context': {'type': self.type, 'job_id': self.id,
                                  'sub_type': 'VOLUME_TANGENT'}}]
         else:

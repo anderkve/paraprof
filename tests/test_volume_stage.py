@@ -1047,16 +1047,24 @@ class TestTangentPhase:
         assert np.linalg.norm(
             (out[0]['params'] - np.array([2.0, 2.0])) / 10.0) <= 0.1 + 1e-9
 
-    def test_drifted_hop_corrected_by_bisection(self, sampler, monkeypatch):
+    def test_drifted_hop_newton_corrected(self, sampler, monkeypatch):
         anchor_set = make_anchor_set()
         job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
-        # Off-target (curvature drift): correction bisects toward the
-        # on-target current point [2.5, 2.0].
+        # Off-target proposal at [2.5, 2.5] (drift -1.5 over a hop of 0.05
+        # scaled): the Broyden update turns the initial unit +x gradient
+        # estimate into [1, -30], and the correction is a Newton step
+        # along it — preserving the tangential displacement instead of
+        # bisecting back toward [2.5, 2.0].
         out = job.process_result(result_for(out[0], -2.5))
-        np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
-        # The midpoint is on-target: accepted as the new representative.
+        np.testing.assert_allclose(job._tan_grad, [1.0, -30.0])
+        g = np.array([1.0, -30.0])
+        step = g * (1.5 / float(g @ g))      # Newton: target - logl = 1.5
+        expected = np.array([2.5, 2.5]) + step * 10.0
+        np.testing.assert_allclose(out[0]['params'], expected)
+        assert abs(out[0]['params'][1] - 2.25) > 0.2  # not the midpoint
+        # The corrected point is on-target: accepted as the new rep.
         out = job.process_result(result_for(out[0], -0.9))
-        np.testing.assert_allclose(job.interior_point, [2.5, 2.25])
+        np.testing.assert_allclose(job.interior_point, expected)
         assert job.tangent_moves == 1
 
     def test_failed_round_reverts_and_shrinks(self, sampler, monkeypatch):
