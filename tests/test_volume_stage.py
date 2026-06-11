@@ -616,7 +616,7 @@ from paraprof.exceptions import ConfigurationError
 
 class TestInteriorSteps:
 
-    def make_walk_job(self, sampler, anchor_set, steps=4):
+    def make_walk_job(self, sampler, anchor_set, steps=8):
         return VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
                                KAPPA, np.array([2.5, 2.0]),
                                interior_steps=steps)
@@ -624,7 +624,7 @@ class TestInteriorSteps:
     def test_config_validation(self):
         cfg = normalize_volume_config({'interior_steps': 3}, roi_threshold=4.0)
         assert cfg['interior_steps'] == 3
-        assert normalize_volume_config({}, 4.0)['interior_steps'] == 0
+        assert normalize_volume_config({}, 4.0)['interior_steps'] == 8
         for bad in (-1, 1.5, True, 'x'):
             with pytest.raises(ConfigurationError, match="interior_steps"):
                 normalize_volume_config({'interior_steps': bad}, 4.0)
@@ -632,7 +632,7 @@ class TestInteriorSteps:
     def test_hit_starts_walk_along_inward_direction(self, sampler,
                                                     monkeypatch):
         anchor_set = make_anchor_set()
-        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        job = self.make_walk_job(sampler, anchor_set, steps=8)
         # U -> 0 gives a depth target at the very top of the band, so the
         # walk runs until the step cap or a non-improving step.
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
@@ -648,13 +648,18 @@ class TestInteriorSteps:
         # scaled = 0.25 unscaled.
         np.testing.assert_allclose(out[0]['params'], [2.75, 2.0])
 
-        # Accept two improving in-band steps, then a worse one ends it.
+        # Accept two improving in-band steps; positions beyond [3.0, 2.0]
+        # leave the cap, so the walk works through its bounded shrink/
+        # re-aim ladder and finishes with the deepest in-band point.
         out = job.process_result(result_for(out[0], -0.8))
         np.testing.assert_allclose(out[0]['params'], [3.0, 2.0])
         out = job.process_result(result_for(out[0], -0.5))
         assert len(out) == 1
-        out = job.process_result(result_for(out[0], -0.9))  # not deeper
-        assert out == [] and job.is_finished() and job.success
+        for _ in range(12):
+            if job.is_finished():
+                break
+            out = job.process_result(result_for(out[0], -0.9))
+        assert job.is_finished() and job.success
         np.testing.assert_allclose(job.interior_point, [3.0, 2.0])
         assert job.interior_logl == -0.5
         assert job.outcome() == 'hit'
@@ -665,7 +670,7 @@ class TestInteriorSteps:
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
         tasks = job.start()
         out = job.process_result(result_for(tasks[0], -1.0))
-        # Single step of radius 0.1: lands at scaled dist 0.15 > cap 0.1,
+        # Single step of 2*radius: lands at scaled dist 0.25 > cap 0.1,
         # so the step is rejected even though it is deeper.
         out2 = job.process_result(result_for(out[0], -0.1))
         assert out2 == [] and job.is_finished()
@@ -673,7 +678,7 @@ class TestInteriorSteps:
 
     def test_walk_bisects_toward_depth_target(self, sampler, monkeypatch):
         anchor_set = make_anchor_set()
-        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        job = self.make_walk_job(sampler, anchor_set, steps=8)
         # d=2, band_depth=4: U=0.25 -> target logL = 0 - 4*0.25 = -1.0;
         # entry at -2.0 is shallower, so the walk runs.
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
@@ -700,7 +705,7 @@ class TestInteriorSteps:
     def test_shallow_depth_target_finishes_at_entry(self, sampler,
                                                      monkeypatch):
         anchor_set = make_anchor_set()
-        job = self.make_walk_job(sampler, anchor_set, steps=4)
+        job = self.make_walk_job(sampler, anchor_set, steps=8)
         # U -> 1 gives a depth target at the band edge, which the entry
         # point already satisfies: no walk.
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1.0)
@@ -737,8 +742,11 @@ class TestInteriorSteps:
         assert not job.is_finished()
         assert len(out) == 1
         assert out[0]['context']['sub_type'] == 'VOLUME_INTERIOR'
-        # Reject the step: job finishes; interior point = walk origin
-        # (the best in-band point), outcome projected.
+        # Reject the step: the walk re-aims once (empty pool: same
+        # direction); a second rejection finishes the job with the walk
+        # origin (the best in-band point) as the interior point.
+        out = job.process_result(result_for(out[0], -10.0))
+        assert len(out) == 1 and not job.is_finished()      # re-aimed
         out = job.process_result(result_for(out[0], -10.0))
         assert out == [] and job.is_finished()
         assert job.outcome() == 'projected'
@@ -843,3 +851,131 @@ class TestDepthLaw:
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         assert result['stats']['rep_depth_histogram'] is None
+
+
+class TestWalkAiming:
+    """The walk aims at the nearest known point at least as deep as the
+    target (scan pool / initial maxima), falling back to the inward
+    (entry - anchor) ray when none qualifies."""
+
+    def inject_pool_point(self, sampler, point, logl):
+        sampler.global_solution_pool.append(
+            (logl, 0, {'full_params': np.asarray(point, dtype=float),
+                       'fitness': logl, 'grid_idx': None}))
+
+    def test_walk_aims_at_pool_point(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        # A known deep point straight "north" of the entry, inside the
+        # anchor's cap ball; the naive inward ray would go "east"
+        # (entry - anchor = +x).
+        self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        # Step radius/4 = 0.025 scaled = 0.25 unscaled, toward +y.
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
+
+    def test_initial_maxima_used_as_candidates(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        sampler.initial_maxima.append({'point': np.array([2.5, 2.8]),
+                                       'target_val': 0.0})
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
+
+    def test_out_of_band_passthrough_within_cap(self, sampler, monkeypatch):
+        """Out-of-band points within the cap advance the march (thin
+        out-of-band slivers across straight chords are crossed, never
+        adopted as representatives)."""
+        anchor_set = make_anchor_set()
+        self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=6)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        # Step lands out of band but within the cap: march continues.
+        out = job.process_result(result_for(out[0], -10.0))
+        assert len(out) == 1 and not job.is_finished()
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.0 + 4 * 6/36])
+        # The out-of-band point never became the representative.
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
+        # Crossing the target finishes within tolerance (target -1.0).
+        out = job.process_result(result_for(out[0], -1.0))
+        assert out == [] and job.is_finished()
+        assert job.interior_logl == -1.0
+
+    def test_out_of_cap_steps_shrink_then_reaim(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        # Entry close to the cap rim, empty pool: the fallback +x ray
+        # leaves the cap immediately, so the ladder fires: two halvings,
+        # one re-aim (same direction, step reset), two more halvings.
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.99, 2.0]), interior_steps=6)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        step = 2.0 * 0.1 / 6 * 10.0   # unscaled step length
+        np.testing.assert_allclose(out[0]['params'], [2.99 + step, 2.0])
+        seq = [2.99 + 0.5 * step, 2.99 + 0.25 * step,   # two halvings
+               2.99 + step,                              # re-aim, reset
+               2.99 + 0.5 * step, 2.99 + 0.25 * step]    # two halvings
+        for expected_x in seq:
+            out = job.process_result(result_for(out[0], -1.5))
+            assert len(out) == 1
+            np.testing.assert_allclose(out[0]['params'], [expected_x, 2.0])
+        # Budget exhausted: finish at the entry point.
+        out = job.process_result(result_for(out[0], -1.5))
+        assert out == [] and job.is_finished()
+        np.testing.assert_allclose(job.interior_point, [2.99, 2.0])
+
+    def test_march_advances_through_in_band_dips(self, sampler, monkeypatch):
+        """Straight chords through non-convex basins dip; in-band dips
+        must advance the march instead of stalling it."""
+        anchor_set = make_anchor_set()
+        self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        # In-band dip: accepted, march continues along the ray.
+        out = job.process_result(result_for(out[0], -3.0))
+        assert len(out) == 1 and not job.is_finished()
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.5])
+        # Next step crosses the target (-1.0) within tolerance-ish: the
+        # overshoot (0.5 > tol 0.2) triggers bisection between the dip
+        # point and the crossing point.
+        out = job.process_result(result_for(out[0], -0.5))
+        assert len(out) == 1
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.375])
+        # Midpoint below the target: becomes the bracket's lower end and
+        # bisection continues with the remaining budget.
+        out = job.process_result(result_for(out[0], -1.05))
+        assert len(out) == 1
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.4375])
+        # Within tolerance of the target: done with the refined point.
+        out = job.process_result(result_for(out[0], -0.95))
+        assert out == [] and job.is_finished()
+        assert job.interior_logl == -0.95
+
+    def test_out_of_reach_aim_projected_onto_cap_sphere(self, sampler,
+                                                        monkeypatch):
+        """An aim candidate beyond the walk's distance cap is replaced by
+        its projection onto the cap sphere around the anchor, so the walk
+        heads for the deepest reachable location instead of exiting the
+        cap immediately."""
+        anchor_set = make_anchor_set()
+        # Candidate straight north of anchor 0 at scaled distance 0.2,
+        # outside the hit cap (= coverage radius 0.1): projected aim is
+        # anchor + 0.1 * (0, 1) = (2.0, 3.0).
+        self.inject_pool_point(sampler, [2.0, 4.0], 0.0)
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        out = job.process_result(result_for(job.start()[0], -2.0))
+        # Direction from entry (2.5, 2.0) toward (2.0, 3.0), scaled:
+        # (-0.05, 0.1)/|.| ; one step of 0.025.
+        d = np.array([-0.05, 0.1]) / np.linalg.norm([-0.05, 0.1])
+        expected = np.array([2.5, 2.0]) + 0.025 * 10.0 * d
+        np.testing.assert_allclose(out[0]['params'], expected)

@@ -47,10 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-tag row counts and the tag legend (non-finite values serialized as
   null). Results also land on `sampler.volume_stage_result`, and every
   stage evaluation flows to `samples_output_file` as usual.
-  Experimental `interior_steps` option: searches take up to k cheap
-  randomized steps into the band after entering it (inward continuation
-  of the projection line, distance-capped to preserve coverage),
-  removing the band-edge concentration of search-found representatives.
+  `interior_steps` option (default 8; 0 disables): searches take up to
+  k cheap steps into the band after entering it, removing the band-edge
+  concentration of search-found representatives at a few percent of the
+  stage cost. Walks aim at the nearest scan-known point at least as
+  deep as the drawn target (global pool / initial maxima; aim points
+  beyond the distance cap are projected onto the cap sphere; direction
+  choice costs no evaluations) — the aiming is what makes the depth
+  laws hold on asymmetric/multimodal targets, where a fixed inward ray
+  misses the small deep cores and censors the law toward volume-like.
+  Marches pass straight through logL dips and thin out-of-band slivers
+  (only in-band points are adopted), bisect toward the target on
+  crossing, use a shrink/re-aim ladder on out-of-cap steps, and size
+  steps so the budget can traverse the cap ball's diameter. Depth
+  targets are drawn adaptively: every representative (probe, harvest,
+  byproduct, walked) counts toward the law's per-depth quota, so walks
+  compensate the passive points' edge-heavy depth mix and the COMBINED
+  representative set converges to the law; walked representatives are
+  locked against replacement by closer band-edge byproducts. Walks stay
+  distance-capped, preserving all coverage guarantees.
   Each walk targets a drawn depth `ΔlnL = roi_threshold · U^γ` with the
   exponent set by `depth_law`: `'uniform_dlnl'` (γ=1, default — equal
   representation at every fit-quality level, robust under tighter

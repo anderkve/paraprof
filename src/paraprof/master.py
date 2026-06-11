@@ -453,6 +453,13 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     if config['search'] != 'none':
         kappa = sampler.volume_penalty_strength / sampler.roi_threshold ** 2
         depth_exponent = depth_law_exponent(config['depth_law'], sampler.dims)
+        # Adaptive depth-target quota (roi mode): walks draw from the
+        # law's residual need so depths censored by local reachability
+        # get retried at other anchors.
+        draw_depth_target = None
+        if config['mode'] == 'roi' and config['interior_steps'] > 0:
+            state.init_depth_quota(sampler.roi_threshold, depth_exponent)
+            draw_depth_target = state.draw_depth_target
         next_job_id = 1
         search_cursor = 0
 
@@ -463,8 +470,13 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                 search_cursor += 1
                 # Skip anchors that were never probed (budget or
                 # probe_all_anchors=False on a covered anchor) and anchors
-                # covered meanwhile (harvest, probe, or a search byproduct).
+                # covered meanwhile (harvest, probe, or a search
+                # byproduct). Passive reps count toward the depth quota so
+                # the walks compensate for their (usually band-edge-heavy)
+                # depth mix.
                 if not anchor_set.probed[k] or anchor_set.covered[k]:
+                    if anchor_set.covered[k] and draw_depth_target is not None:
+                        state.record_rep_depth(anchor_set.rep_logls[k])
                     continue
                 if np.isfinite(anchor_set.rep_dists[k]):
                     warm = anchor_set.rep_points[k]
@@ -474,7 +486,8 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                     next_job_id, sampler, anchor_set, k, band_lo, band_hi,
                     kappa, warm, max_iter=config['search_max_iter'],
                     interior_steps=config['interior_steps'],
-                    depth_exponent=depth_exponent)
+                    depth_exponent=depth_exponent,
+                    draw_depth_target=draw_depth_target)
                 next_job_id += 1
                 return job
             return None

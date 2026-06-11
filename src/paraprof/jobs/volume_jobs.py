@@ -121,7 +121,8 @@ class VolumeSearchJob(LBFGSBJob):
 
     def __init__(self, job_id, sampler, anchor_set, anchor_index,
                  band_lo, band_hi, kappa, start_params, max_iter=None,
-                 interior_steps=0, band_depth=None, depth_exponent=None):
+                 interior_steps=0, band_depth=None, depth_exponent=None,
+                 draw_depth_target=None):
         start_params = np.asarray(start_params, dtype=float)
         super().__init__(
             job_id, 'VOLUME_SEARCH', sampler,
@@ -152,6 +153,9 @@ class VolumeSearchJob(LBFGSBJob):
         # Exponent γ of the depth-target draw t = band_depth·U^γ (see
         # volume.depth_law_exponent). None = the quadratic-basin volume law.
         self.depth_exponent = depth_exponent
+        # Stage-level adaptive draw (VolumeStageState.draw_depth_target);
+        # overrides the i.i.d. draw so censored bins get retried.
+        self.draw_depth_target = draw_depth_target
 
         self.hit = False
         self.best_inband_point = None
@@ -175,6 +179,10 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_target_logl = np.inf
         self._walk_bisecting = False
         self._walk_low_point = None
+        self._walk_reaimed = False
+        self._walk_fail_count = 0
+        self._march_point = None
+        self._aim_cache = None
         self._final_success = None
 
     def _scaled_dist(self, params):
@@ -292,32 +300,101 @@ class VolumeSearchJob(LBFGSBJob):
         self.interior_logl = float(origin_logl)
         self.interior_dist = float(origin_dist)
 
-        # Depth target: logL >= band_top - band_depth * U^γ, with band_top
-        # the band's upper logL edge (global max at stage start) and γ the
-        # configured depth law (volume.depth_law_exponent).
+        # Depth target: logL >= band_top - t, with band_top the band's
+        # upper logL edge (global max at stage start) and the depth t drawn
+        # either adaptively at stage level (quota over the law's residual
+        # need) or i.i.d. from the law t = band_depth·U^γ.
         band_top = self.band_lo + self.band_depth
-        exponent = self.depth_exponent
-        if exponent is None:
-            exponent = 2.0 / max(len(self.anchor), 1)
-        u = float(np.random.random())
-        self._walk_target_logl = band_top - self.band_depth * u ** exponent
+        if self.draw_depth_target is not None:
+            target_depth = float(self.draw_depth_target())
+        else:
+            exponent = self.depth_exponent
+            if exponent is None:
+                exponent = 2.0 / max(len(self.anchor), 1)
+            u = float(np.random.random())
+            target_depth = self.band_depth * u ** exponent
+        self._walk_target_logl = band_top - target_depth
         if self.interior_logl >= self._walk_target_logl:
             return None
 
-        direction = (self.interior_point - self.anchor) / self._extent
+        self._march_point = self.interior_point.copy()
+        self._walk_dist_cap = float(dist_cap)
+        self._walk_dir_scaled = self._walk_aim_direction(self.interior_point)
+        # Step length sized so the full step budget can traverse the cap
+        # ball's diameter (a rim entry may need to cross to the far side);
+        # the bisection phase restores depth precision afterwards.
+        self._walk_step = 2.0 * self.coverage_radius / self.interior_steps
+        self._walk_steps_left = self.interior_steps
+        self.status = 'INTERIOR_WALK'
+        return [self._interior_task()]
+
+    def _aim_candidates(self):
+        """Known deep points from the scan (global pool + initial maxima),
+        as ``(points, logls)`` arrays. Snapshotted once per job."""
+        if self._aim_cache is None:
+            points, logls = [], []
+            for fitness, _, entry in getattr(self.sampler,
+                                             'global_solution_pool', []):
+                if np.isfinite(fitness):
+                    points.append(np.asarray(entry['full_params'],
+                                             dtype=float))
+                    logls.append(float(fitness))
+            for maximum in getattr(self.sampler, 'initial_maxima', []):
+                val = float(maximum['target_val'])
+                if np.isfinite(val):
+                    points.append(np.asarray(maximum['point'], dtype=float))
+                    logls.append(val)
+            self._aim_cache = (
+                np.asarray(points, dtype=float).reshape(-1, len(self.anchor)),
+                np.asarray(logls, dtype=float),
+            )
+        return self._aim_cache
+
+    def _walk_aim_direction(self, origin):
+        """Scaled-space unit direction for the walk: toward the nearest
+        known point at least as deep as the target.
+
+        A fixed inward ray misses the small high-likelihood cores of
+        asymmetric basins (the walk then stalls below its depth target),
+        but the scan already knows where deep points are — the pool and
+        the initial-maxima registry. An aim point beyond the walk's
+        distance cap is replaced by its projection onto the cap sphere
+        around the anchor (the deepest *reachable* location toward it),
+        so the walk does not immediately exit the cap. Falls back to the
+        inward continuation of (origin - anchor) when no candidate
+        qualifies, which is the symmetric-basin geometry where that ray
+        is ideal.
+        """
+        origin_scaled = (np.asarray(origin, dtype=float) - self._lo) \
+            / self._extent
+        anchor_scaled = (self.anchor - self._lo) / self._extent
+        points, logls = self._aim_candidates()
+        if len(points):
+            deep_enough = logls >= self._walk_target_logl
+            if deep_enough.any():
+                cands = (points[deep_enough] - self._lo) / self._extent
+                d2 = np.einsum('ij,ij->i', cands - origin_scaled,
+                               cands - origin_scaled)
+                aim = cands[int(np.argmin(d2))]
+                rel = aim - anchor_scaled
+                rel_norm = float(np.linalg.norm(rel))
+                if np.isfinite(self._walk_dist_cap) \
+                        and rel_norm > self._walk_dist_cap > 0:
+                    aim = anchor_scaled + rel * (self._walk_dist_cap
+                                                 / rel_norm)
+                direction = aim - origin_scaled
+                norm = float(np.linalg.norm(direction))
+                if norm > 1e-9:
+                    return direction / norm
+        direction = origin_scaled - anchor_scaled
         norm = float(np.linalg.norm(direction))
         if norm < 1e-12:
             direction = np.random.standard_normal(len(direction))
             norm = float(np.linalg.norm(direction))
-        self._walk_dir_scaled = direction / norm
-        self._walk_step = self.coverage_radius / self.interior_steps
-        self._walk_steps_left = self.interior_steps
-        self._walk_dist_cap = float(dist_cap)
-        self.status = 'INTERIOR_WALK'
-        return [self._interior_task()]
+        return direction / norm
 
     def _interior_task(self):
-        scaled = ((self.interior_point - self._lo) / self._extent
+        scaled = ((self._march_point - self._lo) / self._extent
                   + self._walk_step * self._walk_dir_scaled)
         params = np.clip(self._lo + scaled * self._extent, self._lo, self._hi)
         return {'params': params,
@@ -336,23 +413,52 @@ class VolumeSearchJob(LBFGSBJob):
         tol = WALK_DEPTH_TOL_FRAC * self.band_depth
 
         if not self._walk_bisecting:
-            # Marching phase: fixed steps inward until the target is
-            # crossed (or a step is rejected / the budget runs out).
-            if acceptable and logl > self.interior_logl:
-                below_target = self.interior_point.copy()
-                self.interior_point = params.copy()
-                self.interior_logl = logl
-                self.interior_dist = dist
-                if logl >= self._walk_target_logl:
+            # Marching phase: fixed steps along the aim ray until the
+            # target is crossed. Any within-cap step advances the march —
+            # including logL dips and out-of-band points (curved band
+            # sheets put thin out-of-band slivers across straight chords;
+            # the walk passes through them, spending budget, and only
+            # in-band points are ever adopted as representatives). Only
+            # leaving the distance cap stalls the walk.
+            if dist <= self._walk_dist_cap + 1e-12:
+                below_target = self._march_point.copy()
+                self._march_point = params.copy()
+                if in_band and logl > self.interior_logl:
+                    self.interior_point = params.copy()
+                    self.interior_logl = logl
+                    self.interior_dist = dist
+                if in_band and logl >= self._walk_target_logl:
                     # Crossed the target: refine toward it by bisection if
                     # the overshoot is large and budget remains, so the
                     # realized depth is not quantized to the step lattice.
+                    self.interior_point = params.copy()
+                    self.interior_logl = logl
+                    self.interior_dist = dist
                     if self._walk_steps_left > 0 \
                             and logl - self._walk_target_logl > tol:
                         self._walk_bisecting = True
                         self._walk_low_point = below_target
                         return [self._bisect_task()]
                 elif self._walk_steps_left > 0:
+                    return [self._interior_task()]
+            elif self._walk_steps_left > 0 \
+                    and self.interior_logl < self._walk_target_logl:
+                # The step left the distance cap below the target. The cap
+                # boundary lies between the march position and the failed
+                # step, so shrink the step (twice per aim) and retry before
+                # spending the one re-aim toward the nearest known deeper
+                # point. All retries spend walk budget.
+                if self._walk_fail_count < 2:
+                    self._walk_fail_count += 1
+                    self._walk_step *= 0.5
+                    return [self._interior_task()]
+                if not self._walk_reaimed:
+                    self._walk_reaimed = True
+                    self._walk_fail_count = 0
+                    self._walk_step = (2.0 * self.coverage_radius
+                                       / self.interior_steps)
+                    self._walk_dir_scaled = self._walk_aim_direction(
+                        self._march_point)
                     return [self._interior_task()]
         else:
             # Bisection phase: tighten the bracket around the target depth.

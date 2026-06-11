@@ -44,7 +44,7 @@ VOLUME_CONFIG_DEFAULTS = {
     'search': 'lbfgsb',         # tier-3 method: 'lbfgsb' or 'none' (probe-only)
     'probe_all_anchors': True,  # probe even harvest-covered anchors (uniform subset)
     'search_max_iter': None,    # per-anchor L-BFGS-B cap (None = lbfgsb_max_iter)
-    'interior_steps': 0,        # experimental: post-entry steps into the band
+    'interior_steps': 8,        # post-entry steps into the band (0 = off)
     'depth_law': 'uniform_dlnl',  # interior-walk depth target: 'volume',
                                   # 'uniform_dlnl' or 'uniform_sigma'
     'harvest_files': None,      # extra sample files for tier 1
@@ -398,6 +398,9 @@ class AnchorSet:
         self.rep_logls = np.full(n, -np.inf)
         self.rep_dists = np.full(n, np.inf)
         self.rep_source = np.full(n, SOURCE_NONE, dtype=np.int8)
+        # Depth-targeted (walked) reps are locked against replacement by
+        # passive closest-wins offers, which concentrate at the band edge.
+        self.rep_walked = np.zeros(n, dtype=bool)
         self.probed = np.zeros(n, dtype=bool)
         self.probe_logls = np.full(n, np.nan)
 
@@ -435,6 +438,8 @@ class AnchorSet:
         exact distance tie). Returns True if accepted. The caller is
         responsible for the band check.
         """
+        if self.rep_walked[anchor_index]:
+            return False
         better = (dist < self.rep_dists[anchor_index]
                   or (dist == self.rep_dists[anchor_index]
                       and logl > self.rep_logls[anchor_index]))
@@ -685,6 +690,9 @@ class VolumeStageState:
         self.searched = np.zeros(n, dtype=bool)
         self.search_hit = np.zeros(n, dtype=bool)
         self.unbudgeted = np.zeros(n, dtype=bool)
+        # Adaptive depth-quota state (armed by init_depth_quota; roi mode).
+        self._quota_probs = None
+        self._quota_achieved = None
         # Closest-approach records for anchors whose search never reached the
         # band (the "hole" diagnostic): the evaluation with the smallest band
         # violation, with its logL and scaled distance to the anchor.
@@ -695,6 +703,55 @@ class VolumeStageState:
 
     def in_band(self, logl):
         return self.band_lo <= logl <= self.band_hi
+
+    def init_depth_quota(self, band_depth, exponent, n_bins=10):
+        """Arm adaptive depth-target drawing for the interior walks.
+
+        Walk depth targets are censored by what each anchor's neighborhood
+        can reach, so i.i.d. draws under-fill the hard (usually deep) bins.
+        Instead, each draw picks a depth bin in proportion to the law's
+        *residual* need given what walks have achieved so far, then draws
+        the exact law restricted to that bin. Hard targets are thereby
+        retried until anchors that can fulfill them do, and the realized
+        marginal converges to the requested law as long as enough anchors
+        can reach each depth.
+        """
+        edges = np.linspace(0.0, band_depth, n_bins + 1)
+        cdf = (edges / band_depth) ** (1.0 / exponent)
+        self._quota_band_depth = float(band_depth)
+        self._quota_exponent = float(exponent)
+        self._quota_edges = edges
+        self._quota_cdf = cdf
+        self._quota_probs = np.diff(cdf)
+        self._quota_achieved = np.zeros(n_bins)
+
+    def draw_depth_target(self):
+        """Depth target (ΔlnL below the band top) for the next walk."""
+        need = (self._quota_probs * (self._quota_achieved.sum() + 1.0)
+                - self._quota_achieved)
+        np.clip(need, 0.0, None, out=need)
+        weights = need if need.sum() > 0 else self._quota_probs
+        b = int(np.random.choice(len(weights), p=weights / weights.sum()))
+        # Exact law restricted to the chosen bin (inverse CDF on the
+        # bin's CDF segment).
+        u = np.random.uniform(self._quota_cdf[b], self._quota_cdf[b + 1])
+        return self._quota_band_depth * u ** self._quota_exponent
+
+    def record_rep_depth(self, logl):
+        """Count a representative's depth toward the quota achievements.
+
+        Called for walked representatives and for passively covered
+        anchors alike (probe hits, harvest reps, and byproduct coverage
+        from other anchors' searches — the latter concentrate near the
+        band edge), so the walks' adaptive draws compensate and the
+        *combined* representative set converges to the requested law.
+        """
+        if self._quota_probs is None or not np.isfinite(logl):
+            return
+        depth = self.band_lo + self._quota_band_depth - logl
+        width = self._quota_edges[1] - self._quota_edges[0]
+        b = int(np.clip(depth // width, 0, len(self._quota_achieved) - 1))
+        self._quota_achieved[b] += 1
 
     def budget_left(self):
         return self.eval_budget is None or self.evals_used < self.eval_budget
@@ -724,15 +781,17 @@ class VolumeStageState:
                 job.best_inband_dist, SOURCE_SEARCH,
             )
         if getattr(job, 'interior_point', None) is not None:
-            # Interior-steps mode (experimental): the job deliberately walked
-            # away from the band edge, so depth beats the closest-wins rule
-            # for this anchor's representative. Coverage is unaffected: the
-            # walk is distance-capped (within the radius for hits).
+            # Interior-steps mode: the job deliberately walked away from
+            # the band edge, so depth beats the closest-wins rule for this
+            # anchor's representative. Coverage is unaffected: the walk is
+            # distance-capped (within the radius for hits).
             aset = self.anchor_set
             aset.rep_points[k] = job.interior_point
             aset.rep_logls[k] = job.interior_logl
             aset.rep_dists[k] = job.interior_dist
             aset.rep_source[k] = SOURCE_SEARCH
+            aset.rep_walked[k] = True
+            self.record_rep_depth(job.interior_logl)
         if job.best_viol_point is not None and \
                 job.best_viol < self.closest_violations[k]:
             self.closest_points[k] = job.best_viol_point
