@@ -46,6 +46,17 @@ def make_anchor_set(coverage_radius=0.1):
     return AnchorSet(anchors, bounds, coverage_radius=coverage_radius)
 
 
+def drain_tangent(job, out, feed=-3.0):
+    """Feed off-target results until the tangent phase exhausts its
+    budget and the job finishes; returns the final (empty) task list."""
+    for _ in range(25):
+        if job.is_finished() or not out:
+            break
+        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        out = job.process_result(result_for(out[0], feed))
+    return out
+
+
 def result_for(task, target_val, user_gradient=None):
     """Worker-result dict for a task, as the master would receive it."""
     return {
@@ -695,10 +706,14 @@ class TestInteriorSteps:
         out = job.process_result(result_for(out[0], -1.05))
         assert len(out) == 1
         np.testing.assert_allclose(out[0]['params'], [2.6875, 2.0])
-        # Within tolerance of the target: done, and the representative is
-        # the refined point, not the overshot one.
+        # Within tolerance of the target: the depth search is done and the
+        # leftover budget goes to tangential randomization; off-target
+        # tangent feeds leave the refined representative in place.
         out = job.process_result(result_for(out[0], -0.95))
-        assert out == [] and job.is_finished() and job.success
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        drain_tangent(job, out)
+        assert job.is_finished() and job.success
         assert job.interior_logl == -0.95
         np.testing.assert_allclose(job.interior_point, [2.6875, 2.0])
 
@@ -804,7 +819,13 @@ class TestDepthLaw:
                               KAPPA, np.array([2.5, 2.0]), interior_steps=4,
                               depth_exponent=1.0)
         out = job.process_result(result_for(job.start()[0], -1.0))
-        assert out == [] and job.is_finished()
+        # The at-target entry skips the depth search; the untouched budget
+        # funds tangential randomization instead.
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        drain_tangent(job, out)
+        assert job.is_finished()
+        assert job.interior_logl == -1.0
 
         # gamma=2 (uniform_sigma): target = -4*0.0625 = -0.25 -> deeper
         # than the entry, walk runs.
@@ -902,9 +923,13 @@ class TestWalkAiming:
         np.testing.assert_allclose(out[0]['params'], [2.5, 2.0 + 4 * 6/36])
         # The out-of-band point never became the representative.
         np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
-        # Crossing the target finishes within tolerance (target -1.0).
+        # Crossing the target within tolerance hands the leftover budget
+        # to the tangent phase.
         out = job.process_result(result_for(out[0], -1.0))
-        assert out == [] and job.is_finished()
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        drain_tangent(job, out)
+        assert job.is_finished()
         assert job.interior_logl == -1.0
 
     def test_out_of_cap_steps_shrink_then_reaim(self, sampler, monkeypatch):
@@ -954,9 +979,13 @@ class TestWalkAiming:
         out = job.process_result(result_for(out[0], -1.05))
         assert len(out) == 1
         np.testing.assert_allclose(out[0]['params'], [2.5, 2.4375])
-        # Within tolerance of the target: done with the refined point.
+        # Within tolerance of the target: depth search done; the leftover
+        # budget funds tangent rounds before the job finishes.
         out = job.process_result(result_for(out[0], -0.95))
-        assert out == [] and job.is_finished()
+        assert len(out) == 1
+        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        drain_tangent(job, out)
+        assert job.is_finished()
         assert job.interior_logl == -0.95
 
     def test_out_of_reach_aim_projected_onto_cap_sphere(self, sampler,
@@ -979,3 +1008,90 @@ class TestWalkAiming:
         d = np.array([-0.05, 0.1]) / np.linalg.norm([-0.05, 0.1])
         expected = np.array([2.5, 2.0]) + 0.025 * 10.0 * d
         np.testing.assert_allclose(out[0]['params'], expected)
+
+
+class TestTangentPhase:
+    """Tangential randomization: leftover walk budget moves the on-target
+    representative along its iso-likelihood shell."""
+
+    def make_at_target_job(self, sampler, anchor_set, monkeypatch, steps=8):
+        """A hit job whose entry sits exactly at the drawn depth target
+        (-1.0), so the whole budget goes to tangent rounds."""
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+                              KAPPA, np.array([2.5, 2.0]),
+                              interior_steps=steps, depth_exponent=1.0)
+        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
+        # Tangent hops always propose "north" (perpendicular to the
+        # entry-anchor secant normal, which is +x here).
+        monkeypatch.setattr(np.random, 'standard_normal',
+                            lambda *a, **k: np.array([0.0, 1.0]))
+        out = job.process_result(result_for(job.start()[0], -1.0))
+        assert out and out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
+        return job, out
+
+    def test_accepted_hop_moves_representative(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
+        # Hop scale: max(travel=0, 2*step) = 2 * (2*0.1/8) = 0.05 scaled
+        # = 0.5 unscaled, perpendicular to +x: due north.
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.5])
+        # On-target result (within tol 0.2 of -1.0): the rep moves.
+        out = job.process_result(result_for(out[0], -1.1))
+        assert not job.is_finished()
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.5])
+        assert job.interior_logl == -1.1
+        assert job.tangent_moves == 1
+        # Next round proposes from the new position, shrinking the hop
+        # as needed to stay inside the cap ball.
+        assert out[0]['params'][1] > 2.5
+        assert np.linalg.norm(
+            (out[0]['params'] - np.array([2.0, 2.0])) / 10.0) <= 0.1 + 1e-9
+
+    def test_drifted_hop_corrected_by_bisection(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
+        # Off-target (curvature drift): correction bisects toward the
+        # on-target current point [2.5, 2.0].
+        out = job.process_result(result_for(out[0], -2.5))
+        np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
+        # The midpoint is on-target: accepted as the new representative.
+        out = job.process_result(result_for(out[0], -0.9))
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.25])
+        assert job.tangent_moves == 1
+
+    def test_failed_round_reverts_and_shrinks(self, sampler, monkeypatch):
+        anchor_set = make_anchor_set()
+        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
+        h0 = job._tan_h
+        # Proposal and both corrections miss: round reverts, hop halves.
+        for _ in range(3):
+            out = job.process_result(result_for(out[0], -3.5))
+        assert not job.is_finished()
+        np.testing.assert_allclose(job.interior_point, [2.5, 2.0])
+        assert job.interior_logl == -1.0
+        assert job._tan_h == pytest.approx(0.5 * h0)
+        assert job.tangent_moves == 0
+
+    def test_budget_exhaustion_finishes_with_success(self, sampler,
+                                                     monkeypatch):
+        anchor_set = make_anchor_set()
+        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch,
+                                           steps=2)
+        out = job.process_result(result_for(out[0], -1.1))   # eval 1
+        out = job.process_result(result_for(out[0], -1.05))  # eval 2
+        assert out == [] and job.is_finished() and job.success and job.hit
+        assert job.interior_logl == -1.05
+
+    def test_proposals_respect_cap_without_evaluations(self, sampler,
+                                                       monkeypatch):
+        anchor_set = make_anchor_set()
+        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
+        # Every proposed hop must stay inside the cap ball around the
+        # anchor — checked arithmetically before the task is issued.
+        for _ in range(6):
+            if job.is_finished() or not out:
+                break
+            dist = np.linalg.norm(
+                (out[0]['params'] - np.array([2.0, 2.0])) / 10.0)
+            assert dist <= 0.1 + 1e-9
+            out = job.process_result(result_for(out[0], -1.1))

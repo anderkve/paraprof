@@ -65,7 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compensate the passive points' edge-heavy depth mix and the COMBINED
   representative set converges to the law; walked representatives are
   locked against replacement by closer band-edge byproducts. Walks stay
-  distance-capped, preserving all coverage guarantees.
+  distance-capped, preserving all coverage guarantees. Budget left
+  over after a walk reaches its depth target funds *tangential
+  randomization*: hops along the iso-likelihood shell (perpendicular to
+  a secant normal from the walk's own target crossing — no gradient
+  evaluations), with curvature drift corrected by bisection toward the
+  on-target point, failed rounds reverting with a halved hop, and cap/
+  bounds checked arithmetically before any evaluation. This partially
+  removes the aim-ray fingerprint in fixed-depth cross-sections at zero
+  extra stage cost (Rosenbrock-4D transverse spread ratio at fixed
+  depth: 0.77->0.85-0.88 shallow, 0.52->0.63 at the band edge), while
+  the depth-law marginals and the uniform probe subset are unchanged.
   Each walk targets a drawn depth `ΔlnL = roi_threshold · U^γ` with the
   exponent set by `depth_law`: `'uniform_dlnl'` (γ=1, default — equal
   representation at every fit-quality level, robust under tighter

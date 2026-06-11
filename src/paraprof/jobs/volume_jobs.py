@@ -23,6 +23,9 @@ VIOLATION_CLAMP = 1e100
 # from the drawn depth target.
 WALK_DEPTH_TOL_FRAC = 0.05
 
+# Depth corrections allowed per tangential round before the round reverts.
+TANGENT_CORRECTIONS = 2
+
 
 class VolumeProbeJob(Job):
     """Evaluate the target once at each of the given anchors (tier 2).
@@ -182,6 +185,13 @@ class VolumeSearchJob(LBFGSBJob):
         self._walk_reaimed = False
         self._walk_fail_count = 0
         self._march_point = None
+        self._walk_entry_point = None
+        # Tangential-randomization state (final walk phase, funded by the
+        # walk budget left over after the depth target is reached).
+        self._tan_normal = None
+        self._tan_h = 0.0
+        self._tan_correct_left = 0
+        self.tangent_moves = 0
         self._aim_cache = None
         self._final_success = None
 
@@ -210,8 +220,11 @@ class VolumeSearchJob(LBFGSBJob):
         return -ddist2 - 2.0 * self.kappa * violation * sign * grad
 
     def process_result(self, result):
-        if result['context'].get('sub_type') == 'VOLUME_INTERIOR':
+        sub_type = result['context'].get('sub_type')
+        if sub_type == 'VOLUME_INTERIOR':
             return self._process_interior_result(result)
+        if sub_type == 'VOLUME_TANGENT':
+            return self._process_tangent_result(result)
 
         logl = result['target_val']
         params = np.asarray(result['params'], dtype=float)
@@ -232,7 +245,8 @@ class VolumeSearchJob(LBFGSBJob):
             self.best_viol_dist = dist
             self.best_viol = violation
 
-        if self.status == 'INTERIOR_WALK' or self._is_finished:
+        if self.status in ('INTERIOR_WALK', 'TANGENT_WALK') \
+                or self._is_finished:
             return []
 
         if violation == 0.0 and dist <= self.coverage_radius:
@@ -315,9 +329,22 @@ class VolumeSearchJob(LBFGSBJob):
             target_depth = self.band_depth * u ** exponent
         self._walk_target_logl = band_top - target_depth
         if self.interior_logl >= self._walk_target_logl:
+            tol = WALK_DEPTH_TOL_FRAC * self.band_depth
+            if abs(self.interior_logl - self._walk_target_logl) <= tol:
+                # The entry already sits at the drawn depth: spend the
+                # whole walk budget on tangential randomization instead.
+                self._walk_entry_point = self.interior_point.copy()
+                self._walk_dist_cap = float(dist_cap)
+                self._walk_step = (2.0 * self.coverage_radius
+                                   / self.interior_steps)
+                self._walk_steps_left = self.interior_steps
+                tasks = self._enter_tangent_phase()
+                if tasks is not None:
+                    return tasks
             return None
 
         self._march_point = self.interior_point.copy()
+        self._walk_entry_point = self.interior_point.copy()
         self._walk_dist_cap = float(dist_cap)
         self._walk_dir_scaled = self._walk_aim_direction(self.interior_point)
         # Step length sized so the full step budget can traverse the cap
@@ -474,14 +501,129 @@ class VolumeSearchJob(LBFGSBJob):
             if self._walk_steps_left > 0 \
                     and self.interior_logl - self._walk_target_logl > tol:
                 return [self._bisect_task()]
-        self._finish_walk()
-        return []
+        return self._maybe_tangent_or_finish()
 
     def _bisect_task(self):
         params = 0.5 * (self._walk_low_point + self.interior_point)
         return {'params': params,
                 'context': {'type': self.type, 'job_id': self.id,
                             'sub_type': 'VOLUME_INTERIOR'}}
+
+    # ------------------------------------------------------------------ #
+    # Tangential randomization: once the depth target is reached, spend
+    # any leftover walk budget moving the point ALONG its iso-likelihood
+    # shell, erasing the aim ray's directional fingerprint (walked points
+    # otherwise under-fill the transverse directions of fixed-depth level
+    # sets). Each round proposes a hop perpendicular to a secant normal
+    # (the walk's own below-target -> above-target crossing direction; no
+    # gradient evaluations needed), then corrects curvature drift by
+    # bisecting toward the on-target current point. Cap and bounds are
+    # checked arithmetically before any evaluation is spent; failed
+    # rounds revert and shrink the hop.
+    # ------------------------------------------------------------------ #
+    def _enter_tangent_phase(self):
+        """Arm the tangent phase; returns the first task list or None
+        (no budget, or no usable hop direction)."""
+        if self._walk_steps_left <= 0:
+            return None
+        cur_s = (self.interior_point - self._lo) / self._extent
+        # Secant normal: the direction along which the walk crossed the
+        # target depth; entry/anchor fallbacks for at-entry cases.
+        for ref in (self._walk_low_point, self._walk_entry_point,
+                    self.anchor):
+            if ref is None:
+                continue
+            normal = cur_s - (np.asarray(ref) - self._lo) / self._extent
+            norm = float(np.linalg.norm(normal))
+            if norm > 1e-9:
+                self._tan_normal = normal / norm
+                break
+        else:
+            return None
+        travel = 0.0
+        if self._walk_entry_point is not None:
+            travel = float(np.linalg.norm(
+                cur_s - (self._walk_entry_point - self._lo) / self._extent))
+        self._tan_h = max(travel, 2.0 * self._walk_step)
+        self._tan_correct_left = TANGENT_CORRECTIONS
+        task = self._tangent_task()
+        if task is None:
+            return None
+        self.status = 'TANGENT_WALK'
+        return [task]
+
+    def _maybe_tangent_or_finish(self):
+        """Terminal of the interior walk: enter the tangent phase when the
+        representative sits at the drawn depth and budget remains."""
+        tol = WALK_DEPTH_TOL_FRAC * self.band_depth
+        if self.interior_point is not None \
+                and self._violation(self.interior_logl) == 0.0 \
+                and abs(self.interior_logl - self._walk_target_logl) <= tol:
+            tasks = self._enter_tangent_phase()
+            if tasks is not None:
+                return tasks
+        self._finish_walk()
+        return []
+
+    def _tangent_task(self):
+        """One tangential hop proposal (cap and bounds pre-checked without
+        spending evaluations); None when no usable direction remains."""
+        cur_s = (self.interior_point - self._lo) / self._extent
+        anchor_s = (self.anchor - self._lo) / self._extent
+        h = self._tan_h
+        for _ in range(20):
+            g = np.random.standard_normal(len(cur_s))
+            v = g - np.dot(g, self._tan_normal) * self._tan_normal
+            norm = float(np.linalg.norm(v))
+            if norm < 1e-12:
+                continue
+            cand_s = cur_s + h * (v / norm)
+            cand = self._lo + cand_s * self._extent
+            if np.all(cand >= self._lo) and np.all(cand <= self._hi) \
+                    and float(np.linalg.norm(cand_s - anchor_s)) \
+                    <= self._walk_dist_cap + 1e-12:
+                self._tan_h = h
+                return {'params': cand,
+                        'context': {'type': self.type, 'job_id': self.id,
+                                    'sub_type': 'VOLUME_TANGENT'}}
+            h *= 0.8
+        return None
+
+    def _process_tangent_result(self, result):
+        logl = float(result['target_val'])
+        params = np.asarray(result['params'], dtype=float)
+        dist = self._scaled_dist(params)
+        self._walk_steps_left -= 1
+        tol = WALK_DEPTH_TOL_FRAC * self.band_depth
+
+        on_target = (self._violation(logl) == 0.0
+                     and dist <= self._walk_dist_cap + 1e-12
+                     and abs(logl - self._walk_target_logl) <= tol)
+        if on_target:
+            # Accept the move; start a fresh round from the new position.
+            self.interior_point = params.copy()
+            self.interior_logl = logl
+            self.interior_dist = dist
+            self.tangent_moves += 1
+            self._tan_correct_left = TANGENT_CORRECTIONS
+        elif self._tan_correct_left > 0 and self._walk_steps_left > 0:
+            # Curvature drift: bisect between the off-target point and the
+            # on-target current position.
+            self._tan_correct_left -= 1
+            mid = 0.5 * (params + self.interior_point)
+            return [{'params': mid,
+                     'context': {'type': self.type, 'job_id': self.id,
+                                 'sub_type': 'VOLUME_TANGENT'}}]
+        else:
+            # Round failed: revert and try a smaller hop next round.
+            self._tan_h *= 0.5
+            self._tan_correct_left = TANGENT_CORRECTIONS
+        if self._walk_steps_left > 0 and self._tan_h > 1e-6:
+            task = self._tangent_task()
+            if task is not None:
+                return [task]
+        self._finish_walk()
+        return []
 
     def _finish_walk(self):
         self.status = 'FINISHED'
