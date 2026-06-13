@@ -53,6 +53,9 @@ def parse_args():
     p.add_argument('--eval-budget', type=int, default=None)
     p.add_argument('--sigma-frac', type=float, default=None,
                    help='umbrella sigma / roi; default = one shell spacing')
+    p.add_argument('--partner-level-window', type=float, default=0.0,
+                   help='lnL window for a stretch partner home level; '
+                        '0 = strict shells, <0 = full pool')
     p.add_argument('--label', default='')
     return p.parse_args()
 
@@ -139,12 +142,21 @@ if rank == 0:
             theta[g * K:(g + 1) * K] = pick
             level[g * K:(g + 1) * K] = shell_level[g]
 
-        # Per-shell red/black halves (global indices).
-        base = (np.arange(G) * K)[:, None]
-        evenh = (base + np.arange(0, K, 2)).ravel()
-        oddh = (base + np.arange(1, K, 2)).ravel()
-        shell_even = evenh.reshape(G, K // 2)
-        shell_odd = oddh.reshape(G, K // 2)
+        # Global red/black parity; a stretch partner is drawn from the frozen
+        # half within a home-level window of the walker (w shells either side;
+        # w=0 -> strict shells, w=G -> the whole pool). Home level is fixed,
+        # so windowing partner choice on it preserves detailed balance.
+        shell_idx = np.repeat(np.arange(G), K)
+        parity = np.arange(N) % 2
+        spacing = roi_volume / G
+        w = G if args.partner_level_window < 0 else int(
+            round(args.partner_level_window / spacing))
+        idx_by = [[np.flatnonzero((shell_idx == g) & (parity == p))
+                   for p in (0, 1)] for g in range(G)]
+        partner_pool = [[np.concatenate([idx_by[g2][p]
+                         for g2 in range(max(0, g - w), min(G, g + w + 1))])
+                         for p in (0, 1)] for g in range(G)]
+        active_by_parity = [np.flatnonzero(parity == p) for p in (0, 1)]
 
         workers = [r for r in range(comm.Get_size()) if r != rank]
         records = []
@@ -182,18 +194,18 @@ if rank == 0:
         for _ in range(n_sweeps):
             if evals >= eval_budget:
                 break
-            for active, partners in ((shell_even, shell_odd),
-                                     (shell_odd, shell_even)):
-                # Build one stretch proposal per active walker.
+            for p_a in (0, 1):
+                p_f = 1 - p_a
+                # One stretch proposal per active walker.
                 items, meta = [], {}
-                for g in range(G):
-                    pool = partners[g]
-                    for k in active[g]:
-                        j = pool[rng.integers(len(pool))]
-                        z = float(draw_z(rng, 1)[0])
-                        prop = theta[j] + z * (theta[k] - theta[j])
-                        meta[k] = z
-                        items.append((k, prop))
+                for k in active_by_parity[p_a]:
+                    k = int(k)
+                    pool = partner_pool[shell_idx[k]][p_f]
+                    j = int(pool[rng.integers(len(pool))])
+                    z = float(draw_z(rng, 1)[0])
+                    prop = theta[j] + z * (theta[k] - theta[j])
+                    meta[k] = z
+                    items.append((k, prop))
                 res = eval_batch(items)
                 evals += len(items)
                 for k, (lnl, p) in res.items():
@@ -217,6 +229,8 @@ if rank == 0:
             'roi_threshold': roi_threshold, 'roi_volume': roi_volume,
             'sigma': sigma, 'grid': args.grid, 'global_max': float(global_max),
             'n_levels': G, 'walkers_per_level': K, 'n_walkers': N,
+            'partner_level_window': args.partner_level_window,
+            'partner_window_shells': int(w),
             'n_sweeps': int(n_sweeps),
             'n_projection_evals': int(n_projection_evals),
             'eval_budget': int(eval_budget),
