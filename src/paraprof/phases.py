@@ -4,8 +4,7 @@ Every evaluation paraprof records streams into the single
 ``samples_output_file`` as a row ``[params..., logL, phase]``, where
 ``phase`` is one of the integer constants below identifying the algorithm
 stage that produced the point. Filtering on this column recovers any
-subset — e.g. the volume-sampling probes (the uniform draw used for the
-band volume estimate), or just the refinement points.
+subset — e.g. the volume-sampling evaluations, or just the refinement points.
 
 The phase is derived master-side from the producing job's ``type`` (see
 :data:`JOB_TYPE_TO_PHASE`), so no MPI payload changes are needed.
@@ -16,8 +15,7 @@ PHASE_INITIAL = 0         # initial optimization (global maxima / basin detectio
 PHASE_SCAN = 1            # projection-grid scan (activation, DE, grid polish)
 PHASE_REFINE = 2          # grid refinement and patching waves
 PHASE_SUSPECT = 3         # suspect-cell recheck
-PHASE_VOLUME_PROBE = 4    # volume sampling: anchor probe (the uniform subset)
-PHASE_VOLUME_SEARCH = 5   # volume sampling: anchored search (incl. interior walk)
+PHASE_VOLUME = 4          # volume sampling (umbrella-ensemble walkers)
 
 # Map each job's ``type`` string to the phase its evaluations belong to.
 JOB_TYPE_TO_PHASE = {
@@ -33,8 +31,7 @@ JOB_TYPE_TO_PHASE = {
     'REFINEMENT_LBFGSB': PHASE_REFINE,
     'SUSPECT_RECHECK': PHASE_SUSPECT,
     'SUSPECT_RECHECK_LBFGSB': PHASE_SUSPECT,
-    'VOLUME_PROBE': PHASE_VOLUME_PROBE,
-    'VOLUME_SEARCH': PHASE_VOLUME_SEARCH,
+    'VOLUME': PHASE_VOLUME,
 }
 
 # Human-readable description per phase (e.g. for documentation / summaries).
@@ -44,8 +41,7 @@ PHASE_LEGEND = {
     PHASE_SCAN: 'projection-grid scan (activation, DE, grid polish)',
     PHASE_REFINE: 'grid refinement and patching',
     PHASE_SUSPECT: 'suspect-cell recheck',
-    PHASE_VOLUME_PROBE: 'volume sampling: anchor probe (the uniform subset)',
-    PHASE_VOLUME_SEARCH: 'volume sampling: anchored search',
+    PHASE_VOLUME: 'volume sampling (umbrella-ensemble walkers)',
 }
 
 

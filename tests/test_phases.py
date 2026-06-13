@@ -7,8 +7,7 @@ from paraprof.phases import (
     PHASE_INITIAL,
     PHASE_SCAN,
     PHASE_UNKNOWN,
-    PHASE_VOLUME_PROBE,
-    PHASE_VOLUME_SEARCH,
+    PHASE_VOLUME,
     phase_for_job_type,
 )
 
@@ -16,8 +15,7 @@ from paraprof.phases import (
 def test_phase_for_job_type():
     assert phase_for_job_type('INITIAL_POINT_EVAL') == PHASE_INITIAL
     assert phase_for_job_type('LBFGSB') == PHASE_SCAN
-    assert phase_for_job_type('VOLUME_PROBE') == PHASE_VOLUME_PROBE
-    assert phase_for_job_type('VOLUME_SEARCH') == PHASE_VOLUME_SEARCH
+    assert phase_for_job_type('VOLUME') == PHASE_VOLUME
     # Unmapped / missing types fall back.
     assert phase_for_job_type('NOT_A_JOB') == PHASE_UNKNOWN
     assert phase_for_job_type(None) == PHASE_UNKNOWN

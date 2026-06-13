@@ -628,15 +628,14 @@ def _marginalize_param_to_2d(param_grid, dim_i, dim_j):
 
 def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
                         grid_solution=None, parameter_names=None):
-    """Scatter the volume-sampling stage's tagged samples over two parameters.
+    """Scatter the volume-sampling stage's in-band samples over two parameters.
 
     ``volume_result`` is the dict from ``run_volume_sampling`` /
-    ``sampler.volume_stage_result`` (must not be a skipped result);
-    ``dims`` is the pair of parameter indices to use as axes. Samples are
-    colored by their provenance tag (harvest / probe / search / hole
-    closest-approach). Pass an ``export_grid_solution()`` dict whose
-    ``projection_dims`` equal ``dims`` as ``grid_solution`` to draw the
-    profile likelihood (relative to its maximum) underneath.
+    ``sampler.volume_stage_result`` (must not be a skipped result); ``dims``
+    is the pair of parameter indices to use as axes. Samples are coloured by
+    their logL. Pass an ``export_grid_solution()`` dict whose
+    ``projection_dims`` equal ``dims`` as ``grid_solution`` to draw the profile
+    likelihood (relative to its maximum) underneath.
 
     ``plot_settings`` keys (all optional): ``dpi`` (300), ``filetype``
     ('png'), ``vmin``/``vmax`` (background range relative to best-fit
@@ -650,9 +649,6 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
         logger.info("\nMatplotlib not found. Skipping visualization.")
         return
 
-    from .volume import TAG_HARVEST, TAG_HOLE, TAG_PROBE, TAG_SEARCH, \
-        assemble_volume_rows
-
     if volume_result.get('skipped'):
         logger.info("Volume stage was skipped; nothing to plot.")
         return
@@ -663,8 +659,11 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
     filetype = plot_settings.get('filetype', 'png')
     output_path = _resolve_output_path(filename, plot_settings)
 
-    rows = assemble_volume_rows(volume_result)
+    samples = volume_result['samples']
+    n_dims = samples.shape[1] - 1 if len(samples) else 0
     d0, d1 = dims
+    band_lo = volume_result.get('band_lo_final')
+    gmax = volume_result.get('global_max')
 
     fig, ax = plt.subplots(figsize=(8, 7))
 
@@ -688,36 +687,23 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
             # Transpose so axis 0 of the grid runs along x.
             mesh = ax.pcolormesh(
                 axes_[0], axes_[1], (grid - ref).T,
-                vmin=vmin, vmax=vmax, cmap='viridis', shading='nearest',
+                vmin=vmin, vmax=vmax, cmap='Greys_r', shading='nearest',
             )
             fig.colorbar(mesh, ax=ax,
                          label=r'$\ln L - \ln L_\mathrm{max}$ (profile)')
 
-    styles = [
-        (TAG_HARVEST, 'harvest', 'tab:green', 'o'),
-        (TAG_PROBE, 'probe (uniform subset)', 'tab:cyan', 's'),
-        (TAG_SEARCH, 'search', 'tab:orange', 'o'),
-        (TAG_HOLE, 'hole closest approach', 'tab:red', 'x'),
-    ]
-    for tag, label, color, marker in styles:
-        mask = rows[:, -1] == tag if len(rows) else np.zeros(0, dtype=bool)
-        if not mask.any():
-            continue
-        # Unfilled markers ('x') reject edgecolors.
-        edge = {} if marker == 'x' else {'edgecolors': 'black',
-                                         'linewidths': 0.3}
-        ax.scatter(rows[mask, d0], rows[mask, d1], s=14, c=color,
-                   marker=marker,
-                   label=f"{label} ({int(np.count_nonzero(mask))})",
-                   zorder=3, **edge)
+    if len(samples):
+        sc = ax.scatter(samples[:, d0], samples[:, d1], s=8,
+                        c=samples[:, n_dims], cmap='viridis',
+                        vmin=band_lo, vmax=gmax, linewidths=0, zorder=3)
+        fig.colorbar(sc, ax=ax, label=r'$\ln L$ (volume samples)')
 
     names = parameter_names or {}
     ax.set_xlabel(names.get(d0, f"$x_{{{d0}}}$") if isinstance(names, dict)
                   else names[d0])
     ax.set_ylabel(names.get(d1, f"$x_{{{d1}}}$") if isinstance(names, dict)
                   else names[d1])
-    ax.set_title("Volume samples")
-    ax.legend(loc='upper right', fontsize=8)
+    ax.set_title(f"Volume samples ({len(samples)} in-band)")
 
     fig.tight_layout()
     out = f"{output_path}_volume_{d0}_{d1}.{filetype}"

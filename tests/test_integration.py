@@ -432,163 +432,11 @@ def test_suspect_recheck_fixes_rosenbrock_strip():
     )
 
 
-# 4-D sphere with a 2D projection followed by the ROI volume-sampling stage.
-# The runner re-evaluates every reported representative so the test can
-# assert the search/report decoupling: stored logL values are exact and
-# in-band regardless of the penalized search objective.
+# 4-D sphere with a 2D projection followed by the ensemble volume-sampling
+# stage. The runner re-evaluates the in-band samples (from the in-memory
+# result, so no CSV rounding) to assert stored logL values are exact and
+# inside the band, and reports the lnL spread to check lnL-filling.
 VOLUME_RUNNER = textwrap.dedent("""
-    import json
-    import os
-    import sys
-    import numpy as np
-    from mpi4py import MPI
-
-    from paraprof import (
-        ProfileProjector, run_all_projections, terminate_workers, worker_main,
-        set_log_level,
-    )
-    set_log_level('WARNING')
-
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-
-    def target(p):
-        return -float(np.sum(np.asarray(p) ** 2))
-
-    bounds = np.array([[-5.0, 5.0]] * 4)
-    projections = [
-        {'dims': [0, 1], 'grid_points': [6, 6], 'optimization_method': 'lbfgsb'},
-    ]
-    workdir = sys.argv[1]
-
-    np.random.seed(20260610)
-
-    if rank == 0:
-        with ProfileProjector(
-            target_func=target,
-            bounds=bounds,
-            projections=projections,
-            roi_threshold=4.0,
-            n_initial_optimizations=4,
-            max_patching_waves=2,
-            lbfgsb_max_iter=15,
-            samples_output_file=os.path.join(workdir, 'samples.csv'),
-            volume_sampling={
-                'n_anchors': 30,
-                'output_file': os.path.join(workdir, 'volume_samples.csv'),
-            },
-        ) as sampler:
-            comm.bcast((sampler.target_func, sampler.grad_func), root=0)
-            run_all_projections(
-                comm=comm, sampler=sampler, projections=projections,
-                save_plots=False, myrank=rank,
-            )
-            vol = sampler.volume_stage_result
-            stats = vol['stats']
-
-            # Re-evaluate every in-band representative: stored logL must be
-            # exact and inside the final band.
-            band_lo = vol['band_lo_final']
-            resolved = np.isin(vol['anchor_status'], ['covered', 'projected'])
-            max_err = 0.0
-            reps_in_band = True
-            for k in np.flatnonzero(resolved):
-                logl = target(vol['rep_points'][k])
-                max_err = max(max_err, abs(logl - vol['rep_logls'][k]))
-                reps_in_band &= (logl >= band_lo)
-
-            # Phase-4 outputs: tagged sample file + JSON summary.
-            from paraprof import read_samples
-            out_rows = read_samples(vol['output_file'])
-            with open(vol['summary_file']) as f:
-                summary = json.load(f)
-
-            payload = {
-                'skipped': vol['skipped'],
-                'output_rows': out_rows.shape[0],
-                'output_cols': out_rows.shape[1],
-                'output_tags': sorted(set(out_rows[:, -1].tolist())),
-                'rows_by_tag': {str(k): v for k, v in vol['rows_by_tag'].items()},
-                'summary_n_rows': summary['n_rows'],
-                'summary_band_lo': summary['band_lo_final'],
-                'summary_volume_estimate': summary['stats']['volume_estimate'],
-                'n_anchors': stats['n_anchors'],
-                'n_covered': stats['n_covered'],
-                'n_projected': stats['n_projected'],
-                'n_holes': stats['n_holes'],
-                'n_unbudgeted': stats['n_unbudgeted'],
-                'n_uncovered': stats['n_uncovered'],
-                'n_probed': stats['n_probed'],
-                'evals_used': stats['evals_used'],
-                'volume_estimate': stats['volume_estimate'],
-                'prefilter_acceptance': stats['prefilter_acceptance'],
-                'uniform_subset_size': int(np.count_nonzero(vol['uniform_subset'])),
-                'max_rep_err': max_err,
-                'reps_in_band': bool(reps_in_band),
-            }
-            print('RESULT', json.dumps(payload), flush=True)
-        terminate_workers(comm, rank)
-    else:
-        worker_main(comm, rank)
-""")
-
-
-def test_volume_sampling_stage(tmp_path):
-    """End-to-end ROI volume sampling on a 4-D sphere: every anchor must be
-    resolved, representatives must carry exact in-band logL values, and the
-    probe stage must produce the uniform-subset bookkeeping."""
-    result = _run_runner(VOLUME_RUNNER, str(tmp_path))
-
-    assert not result['skipped']
-    n = result['n_anchors']
-    assert n == 30
-
-    # Status partition is exhaustive.
-    total = (result['n_covered'] + result['n_projected'] + result['n_holes']
-             + result['n_unbudgeted'] + result['n_uncovered'])
-    assert total == n
-
-    # No budget was set and the search ran for every probe miss.
-    assert result['n_unbudgeted'] == 0
-    assert result['n_uncovered'] == 0
-
-    # The sphere ROI (a ball) is reachable from any anchor, so searches
-    # should essentially never end as holes; allow a little line-search
-    # flakiness but require the bulk to resolve as covered/projected.
-    assert result['n_holes'] <= 3
-    assert result['n_covered'] + result['n_projected'] >= n - 3
-    assert result['n_covered'] >= 1
-
-    # probe_all_anchors default: every anchor probed, uniform subset and
-    # volume estimate available.
-    assert result['n_probed'] == n
-    assert result['volume_estimate'] is not None
-    assert result['volume_estimate'] >= 0.0
-    assert 0.0 < result['prefilter_acceptance'] < 1.0
-    assert result['evals_used'] >= n
-
-    # Search/report decoupling: representatives carry their true logL and
-    # sit inside the final band.
-    assert result['max_rep_err'] < 1e-9
-    assert result['reps_in_band']
-
-    # Phase-4 outputs: one tagged row per resolved anchor (plus hole
-    # closest-approach rows, zero here), 4 params + logL + tag columns,
-    # and a JSON summary consistent with the in-memory result.
-    assert result['output_rows'] == result['n_covered'] + result['n_projected']
-    assert result['output_cols'] == 6
-    assert set(result['output_tags']) <= {0.0, 1.0, 2.0, 3.0}
-    assert sum(result['rows_by_tag'].values()) == result['output_rows']
-    assert result['summary_n_rows'] == result['output_rows']
-    assert result['summary_band_lo'] is not None
-    assert result['summary_volume_estimate'] == pytest.approx(
-        result['volume_estimate'])
-
-
-# Probe-only volume sampling on the 4-D sphere: with many uniform probes the
-# band volume estimate must statistically match the analytic ROI volume
-# (a 4-ball of radius 2: pi^2 r^4 / 2).
-GAUSS_VOLUME_RUNNER = textwrap.dedent("""
     import json
     import os
     import sys
@@ -609,11 +457,11 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
 
     bounds = np.array([[-5.0, 5.0]] * 4)
     projections = [
-        {'dims': [0, 1], 'grid_points': [10, 10], 'optimization_method': 'lbfgsb'},
+        {'dims': [0, 1], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
     ]
     workdir = sys.argv[1]
 
-    np.random.seed(20260611)
+    np.random.seed(20260610)
 
     if rank == 0:
         with ProfileProjector(
@@ -626,8 +474,9 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'n_anchors': 400, 'search': 'none',
-                'output_file': os.path.join(workdir, 'volume.csv'),
+                'n_walkers': 60,
+                'n_steps': 15,
+                'output_file': os.path.join(workdir, 'volume_samples.csv'),
             },
         ) as sampler:
             comm.bcast((sampler.target_func, sampler.grad_func), root=0)
@@ -637,16 +486,36 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
             )
             vol = sampler.volume_stage_result
             stats = vol['stats']
-            rows = read_samples(vol['output_file'])
+            samples = vol['samples']
+            band_lo = vol['band_lo_final']
+            logls = samples[:, 4]
+
+            # Re-evaluate the in-band samples: stored logL must be exact and
+            # inside the final band (search/report decoupling).
+            max_err = 0.0
+            for row in samples:
+                max_err = max(max_err, abs(target(row[:4]) - row[4]))
+
+            out_rows = read_samples(vol['output_file'])
+            with open(vol['summary_file']) as f:
+                summary = json.load(f)
+
             payload = {
-                'volume_estimate': stats['volume_estimate'],
-                'volume_estimate_err': stats['volume_estimate_err'],
-                'n_probed': stats['n_probed'],
-                'n_probe_hits': stats['n_probe_hits'],
-                'n_holes': stats['n_holes'],
-                'uniform_subset_size': int(np.count_nonzero(vol['uniform_subset'])),
-                'n_tag1_rows': int(np.count_nonzero(rows[:, -1] == 1.0)),
-                'tags_seen': sorted(set(rows[:, -1].tolist())),
+                'skipped': vol['skipped'],
+                'n_samples': int(len(samples)),
+                'n_cols': int(samples.shape[1]),
+                'max_err': float(max_err),
+                'all_in_band': bool(np.all(logls >= band_lo)),
+                'band_lo': float(band_lo),
+                'logl_min': float(logls.min()),
+                'logl_max': float(logls.max()),
+                'n_top': int(np.count_nonzero(logls > -1.0)),
+                'n_deep': int(np.count_nonzero(logls < -3.0)),
+                'n_evals': stats['n_evals'],
+                'mean_acceptance': stats['mean_acceptance'],
+                'output_rows': int(out_rows.shape[0]),
+                'summary_n_samples': summary['n_samples'],
+                'summary_band_lo': summary['band_lo_final'],
             }
             print('RESULT', json.dumps(payload), flush=True)
         terminate_workers(comm, rank)
@@ -655,36 +524,35 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
 """)
 
 
-def test_volume_estimate_matches_analytic_value():
-    """Probe-only run with 400 uniform probes: the reported band volume
-    estimate must bracket the analytic ROI volume within its own quoted
-    uncertainty (4 sigma to keep the test stable), and the uniform-subset
-    bookkeeping must be consistent across the result and the output file."""
-    with tempfile.TemporaryDirectory() as workdir:
-        result = _run_runner(GAUSS_VOLUME_RUNNER, workdir)
+def test_volume_sampling_stage(tmp_path):
+    """End-to-end ensemble volume sampling on a 4-D sphere: in-band samples
+    carry exact logL values, fill the band in lnL, and round-trip to disk."""
+    result = _run_runner(VOLUME_RUNNER, str(tmp_path))
 
-    import math
-    true_volume = math.pi ** 2 * 2.0 ** 4 / 2.0  # 4-ball, r=2
-    assert result['n_probed'] == 400
-    assert result['n_probe_hits'] >= 5, "too few probe hits to validate"
-    err = result['volume_estimate_err']
-    assert err > 0
-    assert abs(result['volume_estimate'] - true_volume) < 4.0 * err, (
-        f"volume estimate {result['volume_estimate']} +/- {err} vs "
-        f"analytic {true_volume}"
-    )
-    # Uniform subset == in-band probes == tag-1 rows in the output file.
-    assert result['uniform_subset_size'] == result['n_probe_hits']
-    assert result['n_tag1_rows'] == result['n_probe_hits']
-    # search='none': anchors are never classified as holes.
-    assert result['n_holes'] == 0
-    assert set(result['tags_seen']) <= {0.0, 1.0}
+    assert not result['skipped']
+    assert result['n_cols'] == 5                       # 4 params + logL
+    assert result['n_samples'] > 50                    # plenty in-band
+    assert result['n_evals'] >= 60
+
+    # Search/report decoupling: stored logL is exact and inside the band.
+    assert result['max_err'] < 1e-9
+    assert result['all_in_band']
+    assert result['logl_min'] >= result['band_lo'] - 1e-9
+    assert result['logl_max'] <= 1e-9
+
+    # lnL-filling: samples span the band, with points near the top and deep.
+    assert result['logl_max'] - result['logl_min'] > 2.5
+    assert result['n_top'] >= 1
+    assert result['n_deep'] >= 1
+
+    # Outputs round-trip.
+    assert result['output_rows'] == result['n_samples']
+    assert result['summary_n_samples'] == result['n_samples']
+    assert result['summary_band_lo'] == pytest.approx(result['band_lo'])
 
 
-# Two-island target with a void between them. 1D projections on x0 and x1
-# give an envelope covering four sign-quadrants of the (x0, x1) plane, but
-# only the (+,+) and (-,-) quadrants hold real ROI islands: anchors in the
-# void quadrants must end up projected onto a real island, never covered.
+# Two-island target with a void between: the pooled affine ensemble must
+# populate both islands (multimodal coverage via diverse seeds).
 TWO_ISLAND_RUNNER = textwrap.dedent("""
     import json
     import os
@@ -702,11 +570,10 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
     rank = comm.Get_rank()
 
     C1 = np.array([2.5, 2.5, 0.0, 0.0])
-    C2 = -C1
 
     def target(p):
         p = np.asarray(p)
-        return -float(min(np.sum((p - C1) ** 2), np.sum((p - C2) ** 2)))
+        return -float(min(np.sum((p - C1) ** 2), np.sum((p + C1) ** 2)))
 
     bounds = np.array([[-5.0, 5.0]] * 4)
     projections = [
@@ -728,7 +595,7 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=20,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'n_anchors': 80, 'min_spacing': 0.15,
+                'n_walkers': 120, 'n_steps': 20,
                 'output_file': os.path.join(workdir, 'volume.csv'),
             },
         ) as sampler:
@@ -738,53 +605,11 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
                 save_plots=False, myrank=rank,
             )
             vol = sampler.volume_stage_result
-            anchors = vol['anchors']
-            status = vol['anchor_status']
-            reps = vol['rep_points']
-
-            # Quadrant of the (x0, x1) plane per anchor; islands are ++/--.
-            island_q = (anchors[:, 0] > 0) == (anchors[:, 1] > 0)
-            # Deep-void anchors: solidly inside a void quadrant.
-            deep_void = (~island_q & (np.abs(anchors[:, 0]) > 1.5)
-                         & (np.abs(anchors[:, 1]) > 1.5))
-
-            resolved = np.isin(status, ['covered', 'projected'])
-            band_lo = vol['band_lo_final']
-            # Harvested representatives round-trip through the CSV sample
-            # file (%.10e, 10 significant digits), so re-evaluation matches
-            # the stored logL only to ~1e-8; use a tolerance reflecting that.
-            reps_ok = True
-            rep_island_pos = 0
-            rep_island_neg = 0
-            for k in np.flatnonzero(resolved):
-                logl = target(reps[k])
-                reps_ok &= abs(logl - vol['rep_logls'][k]) < 1e-6
-                reps_ok &= logl >= band_lo - 1e-6
-                if reps[k][0] > 0 and reps[k][1] > 0:
-                    rep_island_pos += 1
-                if reps[k][0] < 0 and reps[k][1] < 0:
-                    rep_island_neg += 1
-
+            s = vol['samples']
             payload = {
-                'n_anchors': int(len(anchors)),
-                'n_island_anchors': int(np.count_nonzero(island_q)),
-                'n_void_anchors': int(np.count_nonzero(~island_q)),
-                'n_deep_void': int(np.count_nonzero(deep_void)),
-                'deep_void_covered': int(np.count_nonzero(
-                    deep_void & (status == 'covered'))),
-                'deep_void_resolved': int(np.count_nonzero(
-                    deep_void & np.isin(status, ['projected', 'hole']))),
-                'covered_pos_island': int(np.count_nonzero(
-                    (status == 'covered') & (anchors[:, 0] > 0)
-                    & (anchors[:, 1] > 0))),
-                'covered_neg_island': int(np.count_nonzero(
-                    (status == 'covered') & (anchors[:, 0] < 0)
-                    & (anchors[:, 1] < 0))),
-                'reps_ok': bool(reps_ok),
-                'rep_island_pos': rep_island_pos,
-                'rep_island_neg': rep_island_neg,
-                'n_uncovered': int(np.count_nonzero(status == 'uncovered')),
-                'n_unbudgeted': int(np.count_nonzero(status == 'unbudgeted')),
+                'n_samples': int(len(s)),
+                'n_pos_island': int(np.count_nonzero((s[:, 0] > 0) & (s[:, 1] > 0))),
+                'n_neg_island': int(np.count_nonzero((s[:, 0] < 0) & (s[:, 1] < 0))),
             }
             print('RESULT', json.dumps(payload), flush=True)
         terminate_workers(comm, rank)
@@ -793,35 +618,11 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
 """)
 
 
-def test_two_islands_and_void_between_them():
-    """Disconnected ROI: both islands get covered anchors; anchors in the
-    envelope's void quadrants (where the cylinder intersection overestimates
-    the true ROI) are never covered — their representatives get projected
-    onto a real island, which is exactly the void diagnostic."""
+def test_two_islands_multimodal_coverage():
+    """Disconnected ROI: the pooled ensemble populates both islands."""
     with tempfile.TemporaryDirectory() as workdir:
         result = _run_runner(TWO_ISLAND_RUNNER, workdir)
 
-    # The envelope admits both island and void quadrants.
-    assert result['n_island_anchors'] > 0
-    assert result['n_void_anchors'] > 0
-    assert result['n_deep_void'] > 0
-
-    # Multi-island coverage: both real islands have covered anchors.
-    assert result['covered_pos_island'] >= 1
-    assert result['covered_neg_island'] >= 1
-    # Representatives populate both islands.
-    assert result['rep_island_pos'] >= 1
-    assert result['rep_island_neg'] >= 1
-
-    # The void signal: no deep-void anchor can be covered (the nearest true
-    # ROI point is far beyond the coverage radius), and their searches
-    # resolve them as projected (or, rarely, hole).
-    assert result['deep_void_covered'] == 0
-    assert result['deep_void_resolved'] == result['n_deep_void']
-
-    # Everything resolved (no budget set, search enabled).
-    assert result['n_uncovered'] == 0
-    assert result['n_unbudgeted'] == 0
-
-    # Search/report decoupling holds on a disconnected target too.
-    assert result['reps_ok']
+    assert result['n_samples'] > 50
+    assert result['n_pos_island'] >= 1
+    assert result['n_neg_island'] >= 1

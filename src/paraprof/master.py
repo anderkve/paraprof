@@ -260,126 +260,83 @@ def run_all_projections(comm, sampler, projections,
     return all_results
 
 
-def _volume_event_loop(comm, sampler, state, initial_jobs, job_source,
-                       inflight_cap, logger, myrank=0):
-    """Drive volume-stage jobs to completion (a slim master event loop).
+def _volume_eval_batch(comm, sampler, logger, items, myrank):
+    """Evaluate a batch of ``(idx, params)`` on the worker pool.
 
-    ``job_source`` is None or a callable returning the next job (or None
-    when exhausted); it is only consulted while the evaluation budget
-    allows and fewer than ``inflight_cap`` jobs are active. Every received
-    result goes through the shared bookkeeping path: worker-error logging,
-    ``_register_target_call`` (sample file), global-max tracking, and the
-    stage state's budget/representative accounting.
+    Each result is logged to the sample file under ``PHASE_VOLUME`` and the
+    global max is tracked. Returns ``{idx: (logL, params)}``. Items in a batch
+    are independent (the red/black split guarantees it), so the whole batch can
+    be in flight at once.
     """
-    active_jobs = {}
-    task_queue = collections.deque()
-    free_workers = [r for r in range(comm.Get_size()) if r != myrank]
-    pending_sends = []
-    tasks_sent = 0
-    tasks_completed = 0
+    out = {}
+    free = [r for r in range(comm.Get_size()) if r != myrank]
+    queue = collections.deque(items)
+    pending = []
+    received = 0
+    while received < len(items):
+        while free and queue:
+            idx, params = queue.popleft()
+            wr = free.pop()
+            pending.append(comm.isend(
+                {'params': params, 'context': {'type': 'VOLUME', 'idx': idx}},
+                dest=wr))
+        result = comm.recv(source=MPI.ANY_SOURCE)
+        free.append(result['context']['worker_rank'])
+        received += 1
+        _log_worker_error(result, sampler, logger)
+        target_val = result['target_val']
+        sampler._register_target_call(
+            result['params'], target_val, phase=phase_for_job_type('VOLUME'))
+        if target_val > sampler.global_max_target_val:
+            logger.warning(
+                f"--- Volume sampling found a NEW GLOBAL MAX: "
+                f"{target_val:.6e} (previous: "
+                f"{sampler.global_max_target_val:.6e}) ---")
+            sampler.global_max_target_val = target_val
+        out[result['context']['idx']] = (
+            target_val, np.asarray(result['params'], dtype=float))
+    if pending:
+        MPI.Request.Waitall(pending)
+    return out
 
-    def _finish_job(job):
-        job.on_finish(None)
-        if job.type == 'VOLUME_SEARCH':
-            state.record_search_job(job)
-        del active_jobs[job.id]
-        # Early termination (a hit mid-gradient) can leave queued tasks
-        # behind; drop them so workers aren't spent on a finished job.
-        if task_queue:
-            kept = [t for t in task_queue if t['context']['job_id'] != job.id]
-            if len(kept) != len(task_queue):
-                task_queue.clear()
-                task_queue.extend(kept)
 
-    def _admit(job):
-        active_jobs[job.id] = job
-        tasks = job.start()
-        task_queue.extend(tasks)
-        if not tasks and job.is_finished():
-            _finish_job(job)
+def _read_scan_samples(sampler):
+    """Read this run's logged samples as ``(M, n_dims + 1)`` ``[params, logL]``.
 
-    for job in initial_jobs:
-        _admit(job)
+    Returns None when there is no readable sample file (warm start then falls
+    back to envelope seeds).
+    """
+    import os
 
-    while True:
-        # --- Refill the in-flight job set from the source ---
-        while (job_source is not None and len(active_jobs) < inflight_cap
-               and state.budget_left()):
-            job = job_source()
-            if job is None:
-                job_source = None
-                break
-            _admit(job)
+    from .sample_io import read_samples
 
-        if (not active_jobs and not task_queue
-                and tasks_sent == tasks_completed
-                and (job_source is None or not state.budget_left())):
-            break
-
-        # --- Process all available results ---
-        while comm.Iprobe(source=MPI.ANY_SOURCE):
-            result = comm.recv(source=MPI.ANY_SOURCE)
-            free_workers.append(result['context']['worker_rank'])
-            tasks_completed += 1
-
-            _log_worker_error(result, sampler, logger)
-            _log_user_gradient_error(result, sampler, logger)
-            sampler._register_target_call(
-                result['params'], result['target_val'],
-                phase=phase_for_job_type(result['context'].get('type')))
-
-            target_val = result['target_val']
-            if target_val > sampler.global_max_target_val:
-                logger.warning(
-                    f"--- Volume sampling found a NEW GLOBAL MAX: "
-                    f"{target_val:.6e} (previous: "
-                    f"{sampler.global_max_target_val:.6e}) ---"
-                )
-                sampler.global_max_target_val = target_val
-
-            # Probe jobs do their own exact per-anchor bookkeeping.
-            state.note_eval(result['params'], target_val,
-                            offer=result['context'].get('type') != 'VOLUME_PROBE')
-
-            job = active_jobs.get(result['context'].get('job_id'))
-            if job is None:
-                continue
-            task_queue.extend(job.process_result(result))
-            if job.is_finished():
-                _finish_job(job)
-
-        # --- Dispatch tasks to free workers ---
-        while free_workers and task_queue:
-            worker_rank = free_workers.pop(0)
-            task = task_queue.popleft()
-            pending_sends.append(comm.isend(task, dest=worker_rank))
-            tasks_sent += 1
-
-    if pending_sends:
-        MPI.Request.Waitall(pending_sends)
+    path = getattr(sampler, 'samples_output_file', None)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        rows = read_samples(path)
+    except (OSError, ValueError):
+        return None
+    if rows.size == 0 or rows.shape[1] < sampler.dims + 1:
+        return None
+    return rows[:, :sampler.dims + 1]
 
 
 def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     """Run the post-projection volume-sampling stage (master side).
 
-    Collects a stratified, well-spread set of in-band samples via the
-    three-tier funnel (harvest -> probe -> anchored search) described in
-    docs/volume_sampling_plan.md, using the projection grids in
-    ``projection_results`` (the list returned by ``run_all_projections``)
-    as the prefilter. Requires ``sampler.volume_sampling_config`` (the
-    ``volume_sampling`` constructor argument) and live workers.
-
-    Returns the stage-result dict (also stored on
-    ``sampler.volume_stage_result``); when the stage cannot run, a dict
-    with ``skipped=True`` and a ``reason``.
+    Populates the ROI ``{logL > global_max - roi_threshold}`` with an
+    affine-invariant ensemble of umbrella walkers (see
+    docs/volume_sampling_plan.md), seeded inside the ProjectionEnvelope built
+    from ``projection_results``. Requires ``sampler.volume_sampling_config``
+    and live workers. Returns the stage-result dict (also stored on
+    ``sampler.volume_stage_result``); a dict with ``skipped=True`` and a
+    ``reason`` when it cannot run.
     """
     from .volume import (
-        ProjectionEnvelope, VolumeStageState, depth_law_exponent,
-        finalize_volume_stage, generate_anchors, harvest_existing_samples,
-        resolve_harvest_files, volume_band, write_volume_output,
-    )
-    from .jobs.volume_jobs import (
-        SEARCH_PENALTY_STRENGTH, VolumeProbeJob, VolumeSearchJob,
+        ProjectionEnvelope, assign_levels, draw_envelope_seeds, draw_stretch,
+        lnl_histogram, umbrella_logpi, volume_band, warm_start_positions,
+        write_volume_output,
     )
 
     logger = setup_logger(rank=myrank)
@@ -393,8 +350,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
 
     logger.info("=" * 80)
     logger.info(
-        f"=== Volume sampling stage (roi_threshold: {config['roi_threshold']}) ==="
-    )
+        f"=== Volume sampling stage (roi_threshold: {config['roi_threshold']}) ===")
     logger.info("=" * 80)
 
     def _skip(reason):
@@ -403,7 +359,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
         sampler.volume_stage_result = result
         return result
 
-    # The harvest tier reads the run's own sample file; make it complete.
+    # Make the run's own sample file complete (warm start reads it).
     sampler._flush_samples_buffer()
 
     global_max_start = sampler.global_max_target_val
@@ -413,104 +369,121 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
         return _skip(
             "a projection grids the full parameter space, so the grid "
             "already covers the volume (a finer grid adds the same "
-            "information)"
-        )
+            "information)")
 
-    stage_threshold = config['roi_threshold']
+    roi = config['roi_threshold']
+    sigma = config['sigma_frac'] * roi
+    window = config['partner_level_window']
     band_lo, prefilter_delta = volume_band(config, global_max_start)
-    anchor_set = generate_anchors(
-        envelope, sampler.bounds, config['n_anchors'], prefilter_delta,
-        min_spacing=config['min_spacing'])
-    if anchor_set.n_anchors == 0:
-        return _skip("no anchors found inside the projection envelope")
+    rng = np.random.default_rng()
+    n_dims = sampler.dims
 
-    # --- Tier 1: harvest existing samples ---
-    harvest_existing_samples(
-        anchor_set,
-        resolve_harvest_files(config, sampler.samples_output_file),
-        band_lo)
+    # Seed walkers inside the envelope (shrink the ensemble if the prefilter
+    # region yields fewer seeds than requested).
+    seeds = draw_envelope_seeds(envelope, sampler.bounds, config['n_walkers'],
+                                prefilter_delta, seed=int(rng.integers(2**31)))
+    if len(seeds) < 2:
+        return _skip("fewer than 2 seeds found inside the projection envelope")
+    n_walkers = len(seeds)
+    levels = assign_levels(n_walkers, global_max_start, roi)
 
-    state = VolumeStageState(anchor_set, band_lo,
-                             eval_budget=config['eval_budget'])
-    n_workers = max(comm.Get_size() - 1, 1)
-    inflight_cap = max(2, n_workers)
+    # Warm-start from scan samples near each level (reuses the scan's work).
+    theta = seeds.copy()
+    if config['warm_start']:
+        scan = _read_scan_samples(sampler)
+        if scan is not None and len(scan):
+            theta = warm_start_positions(
+                levels, sigma, scan[:, :n_dims], scan[:, n_dims], seeds, rng)
 
-    # --- Tier 2: direct probes at the anchors ---
-    if config['probe_all_anchors']:
-        probe_targets = np.arange(anchor_set.n_anchors)
-    else:
-        probe_targets = np.flatnonzero(~anchor_set.covered)
-    if config['eval_budget'] is not None \
-            and len(probe_targets) > config['eval_budget']:
-        state.unbudgeted[probe_targets[config['eval_budget']:]] = True
-        probe_targets = probe_targets[:config['eval_budget']]
-        logger.warning(
-            f"--- Volume sampling: eval_budget ({config['eval_budget']}) "
-            f"truncates the probe stage to {len(probe_targets)} anchors ---"
-        )
+    n_steps = config['n_steps']
+    eval_budget = config['eval_budget'] or n_walkers * (n_steps + 1)
+    half = [np.flatnonzero(np.arange(n_walkers) % 2 == p) for p in (0, 1)]
 
-    if len(probe_targets):
-        probe_job = VolumeProbeJob(0, sampler, anchor_set, probe_targets,
-                                   band_lo)
-        _volume_event_loop(comm, sampler, state, [probe_job], None,
-                           inflight_cap, logger, myrank)
+    logger.info(
+        f"--- Volume sampling: {n_walkers} walkers, sigma={sigma:.3g}, "
+        f"budget {eval_budget} evals "
+        f"({'full pool' if window is None else f'level window {window:g}'}) ---")
 
-    # --- Tier 3: anchored searches for anchors whose probe missed ---
-    if config['search'] != 'none':
-        kappa = SEARCH_PENALTY_STRENGTH / stage_threshold ** 2
-        depth_exponent = depth_law_exponent(config['depth_law'], sampler.dims)
-        # Adaptive depth-target quota: walks draw from the law's residual
-        # need so depths censored by local reachability get retried at
-        # other anchors.
-        draw_depth_target = None
-        if config['interior_steps'] > 0:
-            state.init_depth_quota(stage_threshold, depth_exponent)
-            draw_depth_target = state.draw_depth_target
-        next_job_id = 1
-        search_cursor = 0
+    # Seed evaluation for every walker.
+    lnl_cur = np.empty(n_walkers)
+    all_evals = []   # (params, logL) for every evaluation
+    seed_res = _volume_eval_batch(
+        comm, sampler, logger,
+        [(i, theta[i].copy()) for i in range(n_walkers)], myrank)
+    for i, (lnl, p) in seed_res.items():
+        lnl_cur[i] = lnl
+        theta[i] = p
+        all_evals.append((p, lnl))
+    n_evals = n_walkers
+    n_acc = n_prop = 0
 
-        def next_search_job():
-            nonlocal next_job_id, search_cursor
-            while search_cursor < anchor_set.n_anchors:
-                k = search_cursor
-                search_cursor += 1
-                # Skip anchors that were never probed (budget or
-                # probe_all_anchors=False on a covered anchor) and anchors
-                # covered meanwhile (harvest, probe, or a search
-                # byproduct). Passive reps count toward the depth quota so
-                # the walks compensate for their (usually band-edge-heavy)
-                # depth mix.
-                if not anchor_set.probed[k] or anchor_set.covered[k]:
-                    if anchor_set.covered[k] and draw_depth_target is not None:
-                        state.record_rep_depth(anchor_set.rep_logls[k])
-                    continue
-                if np.isfinite(anchor_set.rep_dists[k]):
-                    warm = anchor_set.rep_points[k]
+    n_sweeps = max(eval_budget // n_walkers - 1, 1)
+    for _ in range(n_sweeps):
+        if n_evals >= eval_budget:
+            break
+        for p_a in (0, 1):
+            active, frozen = half[p_a], half[1 - p_a]
+            if len(active) == 0 or len(frozen) == 0:
+                continue
+            items, meta = [], {}
+            for k in active:
+                k = int(k)
+                if window is None:
+                    pool = frozen
                 else:
-                    warm = anchor_set.anchors[k]
-                job = VolumeSearchJob(
-                    next_job_id, sampler, anchor_set, k, band_lo,
-                    kappa, warm, max_iter=config['search_max_iter'],
-                    interior_steps=config['interior_steps'],
-                    band_depth=stage_threshold,
-                    depth_exponent=depth_exponent,
-                    draw_depth_target=draw_depth_target)
-                next_job_id += 1
-                return job
-            return None
+                    pool = frozen[np.abs(levels[frozen] - levels[k]) <= window]
+                    if len(pool) == 0:
+                        pool = frozen
+                j = int(pool[rng.integers(len(pool))])
+                z = float(draw_stretch(rng, 1)[0])
+                meta[k] = z
+                items.append((k, theta[j] + z * (theta[k] - theta[j])))
+            res = _volume_eval_batch(comm, sampler, logger, items, myrank)
+            n_evals += len(items)
+            n_prop += len(items)
+            for k, (lnl, p) in res.items():
+                all_evals.append((p, lnl))
+                log_acc = ((n_dims - 1) * np.log(meta[k])
+                           + umbrella_logpi(lnl, levels[k], sigma)
+                           - umbrella_logpi(lnl_cur[k], levels[k], sigma))
+                if np.log(rng.uniform()) < log_acc:
+                    theta[k] = p
+                    lnl_cur[k] = lnl
+                    n_acc += 1
 
-        _volume_event_loop(comm, sampler, state, [], next_search_job,
-                           inflight_cap, logger, myrank)
-
-    # --- Finalize: classify anchors against the final global max ---
     sampler._flush_samples_buffer()
-    result = finalize_volume_stage(
-        state, config,
-        global_max_start, sampler.global_max_target_val,
-        search_enabled=(config['search'] != 'none'))
-    stats = result['stats']
 
-    # --- Write the tagged sample file and the JSON summary ---
+    # Band membership against the (possibly improved) final global max.
+    global_max_final = sampler.global_max_target_val
+    band_lo_final = global_max_final - roi
+    params = np.array([p for p, _ in all_evals])
+    logls = np.array([lv for _, lv in all_evals])
+    in_band = np.isfinite(logls) & (logls >= band_lo_final)
+    samples = (np.column_stack([params[in_band], logls[in_band]])
+               if in_band.any() else np.empty((0, n_dims + 1)))
+
+    stats = {
+        'n_walkers': n_walkers,
+        'n_steps': n_steps,
+        'n_sweeps': int(n_sweeps),
+        'n_evals': int(n_evals),
+        'n_in_band': int(in_band.sum()),
+        'in_band_fraction': float(in_band.mean()) if len(logls) else 0.0,
+        'mean_acceptance': float(n_acc / n_prop) if n_prop else float('nan'),
+        'sigma': sigma,
+        'global_max_drift': global_max_final - global_max_start,
+        'lnl_histogram': lnl_histogram(logls[in_band], band_lo_final,
+                                       global_max_final),
+    }
+    result = {
+        'skipped': False, 'reason': None,
+        'samples': samples,
+        'band_lo_initial': band_lo,
+        'band_lo_final': band_lo_final,
+        'global_max': global_max_final,
+        'stats': stats,
+    }
+
     try:
         write_volume_output(result, config)
     except (OSError, ValueError) as e:
@@ -518,37 +491,17 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
 
     logger.info("=" * 80)
     logger.info("--- Volume sampling complete ---")
+    logger.info(f"  Walkers: {n_walkers}, evaluations: {n_evals}")
     logger.info(
-        f"  Anchors: {stats['n_anchors']} "
-        f"(coverage radius {stats['coverage_radius']:.4g}, scaled units)"
-    )
-    logger.info(
-        f"  Covered: {stats['n_covered']} (harvest "
-        f"{stats['n_covered_harvest']}, probe {stats['n_covered_probe']}, "
-        f"search {stats['n_covered_search']})"
-    )
-    logger.info(
-        f"  Projected: {stats['n_projected']}, holes: {stats['n_holes']}, "
-        f"unbudgeted: {stats['n_unbudgeted']}, "
-        f"uncovered: {stats['n_uncovered']}"
-    )
-    logger.info(f"  Stage evaluations: {stats['evals_used']}")
-    logger.info(
-        f"  Prefilter acceptance: {stats['prefilter_acceptance']:.3g}; "
-        f"probe acceptance: {stats['probe_acceptance']:.3g}"
-    )
-    if stats['volume_estimate'] is not None:
-        logger.info(
-            f"  Band volume estimate: {stats['volume_estimate']:.6g} "
-            f"+/- {stats['volume_estimate_err']:.2g}"
-        )
+        f"  In-band samples: {stats['n_in_band']} "
+        f"(fraction {stats['in_band_fraction']:.3g}); "
+        f"mean acceptance {stats['mean_acceptance']:.3g}")
     if stats['global_max_drift'] > 0:
         logger.warning(
             f"  Global max improved by {stats['global_max_drift']:.6g} "
-            f"during volume sampling; band membership was re-derived, but "
-            f"the projection results themselves may be stale -- consider "
-            f"re-running the projections."
-        )
+            f"during volume sampling; band membership was re-derived, but the "
+            f"projection results themselves may be stale -- consider "
+            f"re-running the projections.")
     logger.info("=" * 80)
 
     sampler.volume_stage_result = result
