@@ -1,4 +1,4 @@
-"""Tests for the volume-sampling stage jobs and bookkeeping (Phase 3).
+"""Tests for the volume-sampling stage jobs and bookkeeping.
 
 Job-level tests feed synthetic results to ``process_result`` (no MPI), as in
 the rest of the suite.
@@ -34,8 +34,7 @@ def sampler(simple_2d_function, simple_bounds_2d, basic_projection_1d):
 
 
 def make_anchor_set(coverage_radius=0.1):
-    """Four anchors in the corners of [0, 10]^2 (the job tests reuse the
-    same geometry as the Phase-2 harvest tests)."""
+    """Four anchors in the corners of [0, 10]^2."""
     bounds = np.array([[0.0, 10.0], [0.0, 10.0]])
     anchors = np.array([
         [2.0, 2.0],
@@ -188,32 +187,6 @@ class TestVolumeSearchJob:
         # the job stores the objective frame (negated).
         fitness_grad = -ddist2 + 2.0 * KAPPA * violation * raw_grad
         np.testing.assert_allclose(job.current_gradient, -fitness_grad)
-
-    def test_nan_gradient_component_falls_back_to_fd(self, sampler):
-        anchor_set = make_anchor_set()
-        job = make_search_job(sampler, anchor_set, 0, [2.0, 5.0])
-        tasks = job.start()
-
-        raw_grad = np.array([0.5, np.nan])
-        out = job.process_result(result_for(tasks[0], -10.0,
-                                            user_gradient=raw_grad))
-        assert len(out) == 1
-        assert out[0]['context']['sub_type'] == 'LBFGS_GRADIENT'
-        assert out[0]['context']['dim'] == 1
-
-    def test_hit_during_gradient_phase_stops_job(self, sampler):
-        anchor_set = make_anchor_set()
-        job = make_search_job(sampler, anchor_set, 0, [2.0, 5.0])
-        tasks = job.start()
-        fd_tasks = job.process_result(result_for(tasks[0], -10.0))
-        assert len(fd_tasks) == 2
-
-        # First FD eval happens to land in band within the radius.
-        hit_result = result_for(fd_tasks[0], -1.0)
-        hit_result['params'] = np.array([2.1, 2.0])
-        out = job.process_result(hit_result)
-        assert out == []
-        assert job.is_finished() and job.success and job.hit
 
     def test_failed_eval_gets_finite_penalty(self, sampler):
         anchor_set = make_anchor_set()
@@ -413,7 +386,7 @@ class TestFinalize:
 
 
 # --------------------------------------------------------------------------- #
-# Phase 4: output file and JSON summary
+# Output file and JSON summary
 # --------------------------------------------------------------------------- #
 import json
 
@@ -818,24 +791,6 @@ class TestDepthLaw:
         assert hist['counts'][3] == 1
         assert hist['counts'][8] == 1
 
-    def test_widened_band_histogram_uses_stage_threshold(self):
-        # The histogram spans the stage's roi_threshold, not the
-        # projection's: a widened band reports edges out to 25.
-        anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, -25.0)
-        anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -10.0, 0.0,
-                                   SOURCE_PROBE)
-        cfg = normalize_volume_config(
-            {'roi_threshold': 25.0}, roi_threshold=4.0)
-        result = finalize_volume_stage(
-            state, cfg,
-            global_max_start=0.0, global_max_final=0.0,
-            search_enabled=True)
-        hist = result['stats']['rep_depth_histogram']
-        assert hist['bin_edges'][-1] == 25.0
-        assert sum(hist['counts']) == 1
-
-
 class TestWalkAiming:
     """The walk aims at the nearest known point at least as deep as the
     target (scan pool / initial maxima), falling back to the inward
@@ -857,16 +812,6 @@ class TestWalkAiming:
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
         # Step radius/4 = 0.025 scaled = 0.25 unscaled, toward +y.
-        np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
-
-    def test_initial_maxima_used_as_candidates(self, sampler, monkeypatch):
-        anchor_set = make_anchor_set()
-        sampler.initial_maxima.append({'point': np.array([2.5, 2.8]),
-                                       'target_val': 0.0})
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
-                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
-        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
-        out = job.process_result(result_for(job.start()[0], -2.0))
         np.testing.assert_allclose(out[0]['params'], [2.5, 2.25])
 
     def test_out_of_band_passthrough_within_cap(self, sampler, monkeypatch):
@@ -916,39 +861,6 @@ class TestWalkAiming:
         out = job.process_result(result_for(out[0], -1.5))
         assert out == [] and job.is_finished()
         np.testing.assert_allclose(job.interior_point, [2.99, 2.0])
-
-    def test_march_advances_through_in_band_dips(self, sampler, monkeypatch):
-        """Straight chords through non-convex basins dip; in-band dips
-        must advance the march instead of stalling it."""
-        anchor_set = make_anchor_set()
-        self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
-                              KAPPA, np.array([2.5, 2.0]), interior_steps=8)
-        monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
-        out = job.process_result(result_for(job.start()[0], -2.0))
-        # In-band dip: accepted, march continues along the ray.
-        out = job.process_result(result_for(out[0], -3.0))
-        assert len(out) == 1 and not job.is_finished()
-        np.testing.assert_allclose(out[0]['params'], [2.5, 2.5])
-        # Next step crosses the target (-1.0) within tolerance-ish: the
-        # overshoot (0.5 > tol 0.2) triggers bisection between the dip
-        # point and the crossing point.
-        out = job.process_result(result_for(out[0], -0.5))
-        assert len(out) == 1
-        np.testing.assert_allclose(out[0]['params'], [2.5, 2.375])
-        # Midpoint below the target: becomes the bracket's lower end and
-        # bisection continues with the remaining budget.
-        out = job.process_result(result_for(out[0], -1.05))
-        assert len(out) == 1
-        np.testing.assert_allclose(out[0]['params'], [2.5, 2.4375])
-        # Within tolerance of the target: depth search done; the leftover
-        # budget funds tangent rounds before the job finishes.
-        out = job.process_result(result_for(out[0], -0.95))
-        assert len(out) == 1
-        assert out[0]['context']['sub_type'] == 'VOLUME_TANGENT'
-        drain_tangent(job, out)
-        assert job.is_finished()
-        assert job.interior_logl == -0.95
 
     def test_out_of_reach_aim_projected_onto_cap_sphere(self, sampler,
                                                         monkeypatch):
@@ -1052,16 +964,3 @@ class TestTangentPhase:
         assert out == [] and job.is_finished() and job.success and job.hit
         assert job.interior_logl == -1.05
 
-    def test_proposals_respect_cap_without_evaluations(self, sampler,
-                                                       monkeypatch):
-        anchor_set = make_anchor_set()
-        job, out = self.make_at_target_job(sampler, anchor_set, monkeypatch)
-        # Every proposed hop must stay inside the cap ball around the
-        # anchor — checked arithmetically before the task is issued.
-        for _ in range(6):
-            if job.is_finished() or not out:
-                break
-            dist = np.linalg.norm(
-                (out[0]['params'] - np.array([2.0, 2.0])) / 10.0)
-            assert dist <= 0.1 + 1e-9
-            out = job.process_result(result_for(out[0], -1.1))

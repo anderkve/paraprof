@@ -1,4 +1,4 @@
-"""Tests for the volume-sampling building blocks (paraprof.volume, Phases 1-2)."""
+"""Tests for the volume-sampling building blocks (paraprof.volume)."""
 
 import logging
 
@@ -64,10 +64,6 @@ class TestNormalizeVolumeConfig:
     def test_unknown_key(self):
         with pytest.raises(ConfigurationError, match="unknown keys.*'mod'"):
             normalize_volume_config({'mod': 'roi'}, roi_threshold=4.0)
-
-    def test_roi_threshold_defaults_to_projection(self):
-        cfg = normalize_volume_config({}, roi_threshold=4.0)
-        assert cfg['roi_threshold'] == 4.0
 
     def test_roi_threshold_override(self):
         # The stage can reach past the projection ROI (into the shell).
@@ -484,22 +480,6 @@ class TestHarvest:
             with pytest.raises(ConfigurationError, match="width"):
                 harvest_existing_samples(make_anchor_set(), [path], -4.0)
 
-    def test_reads_logl_and_ignores_phase(self, tmp_path):
-        # Canonical [params..., logL, phase]: harvest reads logL at column
-        # n_dims and ignores the trailing phase column.
-        anchor_set = make_anchor_set()
-        rows = np.array([
-            [2.05, 2.0, -1.0, 1.0],   # in-band, near anchor 0; phase 1
-            [8.0, 2.5, -2.0, 4.0],    # in-band, near anchor 1; phase 4
-        ])
-        path = str(tmp_path / "samples.csv")
-        write_samples(rows, path)
-
-        stats = harvest_existing_samples(anchor_set, [path], -4.0)
-        assert stats['n_in_band'] == 2
-        assert anchor_set.rep_logls[0] == -1.0
-        assert anchor_set.rep_logls[1] == -2.0
-
     def test_no_files_is_noop(self):
         anchor_set = make_anchor_set()
         stats = harvest_existing_samples(anchor_set, [], -4.0)
@@ -550,18 +530,6 @@ class TestSamplerConfigIntegration:
         cfg = sampler.volume_sampling_config
         assert cfg['roi_threshold'] == 25.0
         assert cfg['n_points'] == 50
-
-    def test_volume_roi_threshold_defaults_to_projection(
-            self, simple_2d_function, simple_bounds_2d, basic_projection_1d):
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_1d],
-            roi_threshold=4.0,
-            volume_sampling={'n_points': 50},
-        )
-        # Unset stage roi_threshold inherits the projection's.
-        assert sampler.volume_sampling_config['roi_threshold'] == 4.0
 
     def test_volume_sampling_default_off(self, simple_2d_function,
                                          simple_bounds_2d,

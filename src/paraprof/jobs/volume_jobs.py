@@ -1,13 +1,11 @@
 """Jobs for the volume-sampling stage (tiers 2 and 3 of the funnel).
 
 ``VolumeProbeJob`` evaluates the target once at each anchor point (tier 2).
-``VolumeSearchJob`` runs an anchored L-BFGS-B search (tier 3) for an anchor
+``VolumeSearchJob`` runs an anchored L-BFGS-B search (tier 3) for anchors
 whose probe failed: it minimizes the bounds-scaled distance to the anchor
-plus a hinged band-violation penalty, terminating at the first evaluation
-that lands in-band within the coverage radius. The penalized objective
-steers the *search only*; reported representatives always carry their true
-logL, so band membership stays re-derivable (see
-docs/volume_sampling_plan.md).
+plus a hinged band-violation penalty, terminating at the first in-band point
+within the coverage radius. The penalized objective steers the search only;
+recorded representatives always carry their true logL.
 """
 import numpy as np
 
@@ -100,26 +98,14 @@ class VolumeProbeJob(Job):
 class VolumeSearchJob(LBFGSBJob):
     """Anchored search (tier 3): pull an evaluation into the band near the anchor.
 
-    Maximized fitness: ``-(dist² + κ·v²)`` with ``dist`` the bounds-scaled
-    Euclidean distance to the anchor and ``v`` the band violation
-    ``max(0, band_lo - logL)``. The whole L-BFGS-B
-    machinery (FD gradients, line search, ftol) is inherited and runs on
-    the transformed values: ``process_result`` rewrites each raw result
-    before delegating to the base class.
-
-    Gradients: the distance term is analytic, so an evaluation *inside* the
-    band gets a fully analytic gradient and spends zero FD evaluations
-    (credited to ``target_calls_saved_by_user_gradient``, since it rides
-    the user-gradient path). Outside the band, a user ``grad_func``
-    contributes via the chain rule; otherwise plain FD runs on the
-    transformed objective.
-
-    The job ends successfully at the first evaluation that is in-band and
-    within ``coverage_radius`` of the anchor (a covering point, not a
-    stationary one). Otherwise it runs the base machinery to termination
-    and the outcome is classified from what was seen: ``projected`` (some
-    in-band point, all beyond the radius) or ``hole`` (never in-band; the
-    minimum-violation evaluation is kept as the closest approach).
+    Maximized fitness: ``-(dist² + κ·v²)`` where ``dist`` is the bounds-scaled
+    distance to the anchor and ``v = max(0, band_lo - logL)`` is the band
+    violation. In-band evaluations get a fully analytic gradient (distance term
+    only); out-of-band evaluations chain-rule a user ``grad_func`` if provided,
+    otherwise fall back to FD. The job ends at the first in-band point within
+    the coverage radius (``hit``), or at L-BFGS-B termination classified as
+    ``projected`` (some in-band point beyond the radius) or ``hole`` (never
+    in-band; closest-approach point recorded).
     """
 
     # Distance slack for interior walks from 'projected' entry points: the

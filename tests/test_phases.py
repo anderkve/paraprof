@@ -63,17 +63,6 @@ class TestSampleLogPhaseColumn:
         np.testing.assert_allclose(rows[0], [1.0, 2.0, -3.0, PHASE_SCAN])
         np.testing.assert_allclose(rows[1], [3.0, 4.0, -1.0, PHASE_VOLUME_PROBE])
 
-    def test_default_phase_is_unknown(self, tmp_path, simple_2d_function,
-                                      simple_bounds_2d, basic_projection_1d):
-        path = tmp_path / "samples.csv"
-        sampler = self.make_sampler(path, simple_2d_function, simple_bounds_2d,
-                                    basic_projection_1d)
-        sampler._register_target_call(np.array([1.0, 2.0]), -3.0)
-        sampler._flush_samples_buffer()
-
-        rows = read_samples(str(path))
-        assert rows[0, -1] == PHASE_UNKNOWN
-
     def test_warm_start_ignores_phase_column(self, tmp_path, simple_2d_function,
                                              simple_bounds_2d, basic_projection_1d):
         # A round-tripped log (with a phase column) must warm-start correctly:

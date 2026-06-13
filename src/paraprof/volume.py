@@ -61,21 +61,16 @@ ANCHOR_DRAW_BATCH = 4096
 # Default cap on envelope-tested draws: this many per requested anchor.
 DEFAULT_DRAW_CAP_FACTOR = 10_000
 
-# Provenance of an anchor's representative sample (the funnel tier that
-# produced it). The output file's tag column uses the same values, plus
-# TAG_HOLE for closest-approach rows.
+# Funnel tier that found an anchor's representative (SOURCE_*) and the
+# corresponding tag value in the volume output file (TAG_*).
+# TAG_HOLE rows are NOT in-band; they are closest-approach diagnostics.
 SOURCE_NONE = 0
 SOURCE_HARVEST = 1
 SOURCE_PROBE = 2
 SOURCE_SEARCH = 3
 
-# Output-file tag column. Tags 0-2 rows are in-band representatives and
-# encode which tier found them; tag-1 rows are additionally the
-# (QMC-)uniform subset. Tag-3 rows are the closest-approach points of
-# "hole" anchors and are NOT in-band — they are diagnostics for why the
-# band is unreachable there.
 TAG_HARVEST = 0.0
-TAG_PROBE = 1.0
+TAG_PROBE = 1.0    # the uniform subset (in-band anchor probes)
 TAG_SEARCH = 2.0
 TAG_HOLE = 3.0
 
@@ -358,14 +353,11 @@ class AnchorSet:
     """Anchors plus prefilter statistics and per-anchor sample records.
 
     ``rep_points/_logls/_dists/_source`` hold each anchor's best in-band
-    *representative* sample so far — nearest first, higher logL on distance
-    ties — at any distance, with the funnel tier that produced it
-    (``SOURCE_*``). The record serves two roles: within ``coverage_radius``
-    it covers the anchor, at any distance it is the warm start for the
-    anchor's tier-3 search. ``probed``/``probe_logls`` record the tier-2
-    direct probes (kept separately and unconditionally, so the uniform
-    subset and the volume estimate can be re-derived after global-max
-    drift).
+    representative (nearest first; higher logL on ties). Within
+    ``coverage_radius`` it marks the anchor as covered; beyond it provides a
+    warm start for the tier-3 search. ``probed``/``probe_logls`` record tier-2
+    probes unconditionally so the uniform subset and volume estimate remain
+    re-derivable after global-max drift.
     """
 
     def __init__(self, anchors, bounds, coverage_radius,
@@ -657,16 +649,10 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo,
 class VolumeStageState:
     """Mutable bookkeeping for one volume-sampling stage run (MPI-free).
 
-    The orchestrator (``master.run_volume_sampling``) feeds it: every stage
-    evaluation goes through :meth:`note_eval` (budget counting, opportunistic
-    representative updates), finished search jobs through
-    :meth:`record_search_job`. :func:`finalize_volume_stage` turns it into
-    the stage result.
-
-    The band stored here is the stage's *initial* band; final classification
-    re-derives membership from stored logL values against the final global
-    maximum, so a mid-stage global-max improvement shifts the reported band
-    without invalidating the records.
+    Fed by the orchestrator via :meth:`note_eval` (budget counting, opportunistic
+    representative updates) and :meth:`record_search_job`. The initial band is
+    stored; :func:`finalize_volume_stage` re-derives final membership from stored
+    logL values against the final global max, so mid-stage drift is handled.
     """
 
     def __init__(self, anchor_set, band_lo, eval_budget=None):
@@ -696,14 +682,9 @@ class VolumeStageState:
     def init_depth_quota(self, band_depth, exponent, n_bins=10):
         """Arm adaptive depth-target drawing for the interior walks.
 
-        Walk depth targets are censored by what each anchor's neighborhood
-        can reach, so i.i.d. draws under-fill the hard (usually deep) bins.
-        Instead, each draw picks a depth bin in proportion to the law's
-        *residual* need given what walks have achieved so far, then draws
-        the exact law restricted to that bin. Hard targets are thereby
-        retried until anchors that can fulfill them do, and the realized
-        marginal converges to the requested law as long as enough anchors
-        can reach each depth.
+        Each draw picks a bin in proportion to the law's residual need and
+        draws from the law restricted to that bin, so under-filled (hard)
+        depth bins are retried until enough anchors can reach them.
         """
         edges = np.linspace(0.0, band_depth, n_bins + 1)
         cdf = (edges / band_depth) ** (1.0 / exponent)
@@ -727,13 +708,11 @@ class VolumeStageState:
         return self._quota_band_depth * u ** self._quota_exponent
 
     def record_rep_depth(self, logl):
-        """Count a representative's depth toward the quota achievements.
+        """Count a representative's depth toward the quota.
 
-        Called for walked representatives and for passively covered
-        anchors alike (probe hits, harvest reps, and byproduct coverage
-        from other anchors' searches — the latter concentrate near the
-        band edge), so the walks' adaptive draws compensate and the
-        *combined* representative set converges to the requested law.
+        Called for walked reps and passively covered anchors alike, so the
+        adaptive draws compensate for edge-concentrated passive hits and the
+        combined representative set converges to the requested depth law.
         """
         if self._quota_probs is None or not np.isfinite(logl):
             return
@@ -791,23 +770,11 @@ def finalize_volume_stage(state, config,
     """Classify every anchor and assemble the stage-result dict.
 
     Band membership is re-derived from stored logL values against
-    ``global_max_final``, so representatives collected before a mid-stage
-    global-max improvement are reclassified rather than trusted. Anchor
-    statuses:
-
-    - ``covered``: in-band representative within the coverage radius
-      (``rep_source`` says which tier found it).
-    - ``projected``: in-band representative beyond the radius (boundary-
-      projected by the search).
-    - ``hole``: searched, but no in-band point was ever seen; the
-      closest-approach record is the diagnostic.
-    - ``unbudgeted``: never probed/searched because the evaluation budget
-      ran out.
-    - ``uncovered``: everything else (e.g. probe missed and search disabled).
-
-    The volume estimate (box volume x prefilter acceptance x probe
-    acceptance, with a binomial uncertainty from the probe count) is only
-    computed when ``probe_all_anchors`` kept the probe set uniform.
+    ``global_max_final``. Anchor statuses: ``covered`` (in-band rep within
+    coverage radius), ``projected`` (in-band rep beyond radius), ``hole``
+    (searched but never in-band), ``unbudgeted`` (budget ran out before probing),
+    ``uncovered`` (everything else). The volume estimate is only computed when
+    ``probe_all_anchors`` kept the probe set uniform.
     """
     aset = state.anchor_set
     n = aset.n_anchors
