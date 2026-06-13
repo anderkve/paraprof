@@ -241,3 +241,6 @@ results_*/
 
 # allow_early_DE_exit replicate-study output
 allow_early_DE_exit_replicate_report.json
+
+# Umbrella-walker prototype data (regenerable)
+umbrella_*.csv
