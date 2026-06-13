@@ -12,46 +12,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
   stage that produced the point (`paraprof.PHASE_*`, described in
   `PHASE_LEGEND`): initial optimization, scan, refinement, suspect recheck, and
-  the two volume-sampling phases (probe / search). Filtering on this column
-  recovers any subset from the single file — e.g. the volume probes for the band
-  volume estimate. Sample rows are now `n_dims + 2` columns throughout: the
-  warm-start reader and volume harvest read params/logL by position and ignore
-  the trailing phase column, so a run's log round-trips.
+  volume sampling. Filtering on this column recovers any subset from the single
+  file. Sample rows are now `n_dims + 2` columns throughout: the warm-start
+  reader reads params/logL by position and ignores the trailing phase column,
+  so a run's log round-trips.
 
 ### Added
 - **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
-  post-projection stage that collects a stratified, well-spread sample set
-  inside the ROI `{logL > global_max - roi_threshold}`. The stage's
-  `roi_threshold` defaults to the projection's but can be set larger to also
-  explore the shell outside the good-fit region.
-  Enabled by the new `ProfileProjector` argument `volume_sampling` (a config
-  dict, validated at construction) and run automatically by
-  `run_all_projections`; also exposed standalone as `run_volume_sampling`.
-  Targets a grid of scrambled-Sobol *anchors* drawn inside a prefilter built
-  from the converged projection grids (`ProjectionEnvelope`), via a three-tier
-  funnel: harvest of existing samples (zero evaluations), one direct probe per
-  anchor, and an anchored L-BFGS-B search for probe misses. In-band probes
-  form a tagged (QMC-)uniform subset and yield an unbiased **band volume
-  estimate** with a binomial uncertainty. Reported representatives always
-  carry their true logL, and band membership is re-derived against the final
-  global maximum. Per-anchor outcomes: `covered` / `projected` / `hole` /
-  `unbudgeted` / `uncovered`.
-  - `interior_steps` (default 8; 0 disables) walks each search a few steps
-    into the band to a drawn depth target, so representatives span fit quality
-    rather than piling at the band edge; leftover budget is spent on
-    tangential randomization across the iso-likelihood shell. `depth_law`
-    (`'uniform_dlnl'` default, `'uniform_sigma'`, `'volume'`) sets the depth
-    distribution; the realized distribution is reported as
-    `rep_depth_histogram`.
-  - Outputs: a provenance-tagged sample file (`output_file`, csv/h5; rows
-    `[params..., logL, tag]`, tag 0=harvest, 1=probe/uniform-subset, 2=search,
-    3=hole closest-approach which is *not* in-band) and a JSON summary
-    (`summary_file`). Results also land on `sampler.volume_stage_result`, and
-    every stage evaluation flows to `samples_output_file` as usual. The stage
-    skips itself when a projection grids the full parameter space.
-  - Extras: `plot_volume_samples`, `examples/run_volume_sampling.py`,
-    `benchmarks/volume_sampling_benchmark.py`,
-    `benchmarks/volume_vs_profile_benchmark.py`.
+  post-projection stage that populates the ROI
+  `{logL > global_max - roi_threshold}` with a sample set that balances
+  space-filling and lnL-filling. The stage's `roi_threshold` defaults to the
+  projection's but can be set larger to also explore the shell outside the
+  good-fit region. Enabled by the new `ProfileProjector` argument
+  `volume_sampling` (a config dict, validated at construction) and run
+  automatically by `run_all_projections`; also exposed standalone as
+  `run_volume_sampling`.
+  - Uses an **affine-invariant ensemble of umbrella walkers**: `n_walkers`
+    walkers each carry a continuous *home level* spanning the band uniformly
+    in ΔlnL and target a log-Gaussian in logL around it (width
+    `sigma_frac·roi_threshold`), so the ensemble tiles the lnL range. Walkers
+    are moved with the Goodman–Weare stretch move (`n_steps` red/black sweeps,
+    partners pooled across the whole ensemble — `partner_level_window`
+    optionally localizes them), which handles curved/stretched geometries with
+    no step, gradient, or covariance tuning. They are seeded inside the
+    `ProjectionEnvelope` and warm-started (`warm_start`) from logged scan
+    samples near each level. `eval_budget` optionally caps the total work.
+  - Outputs: the in-band sample file (`output_file`, csv/h5; rows
+    `[params..., logL]`) and a JSON summary (`summary_file`) with the
+    walker/step/evaluation counts, in-band fraction, mean acceptance,
+    global-max drift, and the logL histogram of the in-band samples. Results
+    also land on `sampler.volume_stage_result`; every stage evaluation flows to
+    `samples_output_file` under `PHASE_VOLUME`. The stage skips itself when a
+    projection grids the full parameter space.
+  - Extras: `plot_volume_samples`, `examples/run_volume_sampling.py`.
 
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **on by default**). Every active grid cell normally spends at least

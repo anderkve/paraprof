@@ -147,7 +147,7 @@ Only the L-BFGS-B paths use the gradient; DE is gradient-free. `sampler.target_c
 
 ### Sample file formats
 
-Every evaluated point is one row of the **single** sample log: `[params…, logL, phase]` — `n_dims` parameter values, the target value, and an integer **phase** tag identifying the algorithm stage that produced the point. Filtering on the phase column recovers any subset (e.g. the volume-sampling probes used for the band volume estimate), so the whole run lives in one file. The format follows the `samples_output_file` extension:
+Every evaluated point is one row of the **single** sample log: `[params…, logL, phase]` — `n_dims` parameter values, the target value, and an integer **phase** tag identifying the algorithm stage that produced the point. Filtering on the phase column recovers any subset (e.g. the volume-sampling evaluations), so the whole run lives in one file. The format follows the `samples_output_file` extension:
 
 | Extension        | Format      | Notes                                                                 |
 |------------------|-------------|-----------------------------------------------------------------------|
@@ -162,8 +162,7 @@ Phase values (`paraprof.PHASE_*`, with descriptions in `paraprof.PHASE_LEGEND`):
 | `1` | `PHASE_SCAN` | projection-grid scan (activation, DE, grid polish) |
 | `2` | `PHASE_REFINE` | grid refinement and patching |
 | `3` | `PHASE_SUSPECT` | suspect-cell recheck |
-| `4` | `PHASE_VOLUME_PROBE` | volume sampling: anchor probe (the uniform subset) |
-| `5` | `PHASE_VOLUME_SEARCH` | volume sampling: anchored search |
+| `4` | `PHASE_VOLUME` | volume sampling (umbrella-ensemble walkers) |
 
 Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file (the warm-start reader reads params and logL by position and ignores the phase column). They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
 
@@ -172,7 +171,7 @@ To pool several independent runs (or convert between formats), use `combine_samp
 ```python
 import glob
 import numpy as np
-from paraprof import combine_samples, read_samples, write_samples, PHASE_VOLUME_PROBE
+from paraprof import combine_samples, read_samples, write_samples, PHASE_VOLUME
 
 combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
 
@@ -181,7 +180,7 @@ n_dims = samples.shape[1] - 2
 params, target, phase = samples[:, :n_dims], samples[:, n_dims], samples[:, -1]
 
 write_samples(samples[target > target.max() - 4.0], "roi.csv")        # filter by logL
-volume_probes = samples[phase == PHASE_VOLUME_PROBE]                   # filter by phase
+volume_samples = samples[phase == PHASE_VOLUME]                        # filter by phase
 ```
 
 `read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
@@ -193,9 +192,10 @@ A profile-likelihood scan concentrates its samples on the low-dimensional profil
 ```python
 sampler = ProfileProjector(
     ...,
-    samples_output_file="samples.csv",   # feeds the harvest tier
+    samples_output_file="samples.csv",   # walkers warm-start from these
     volume_sampling={
-        'n_anchors': 1000,      # number of stratified anchor points
+        'n_walkers': 1000,      # ensemble size
+        'n_steps': 30,          # stretch sweeps per walker
         'output_file': "volume_samples.csv",
         # 'roi_threshold': 25.0,  # widen the stage's ROI to also sample
         #                         # the shell outside the good-fit region
@@ -203,33 +203,31 @@ sampler = ProfileProjector(
 )
 ```
 
-After the projections finish, the stage collects one well-spread, in-band sample per *anchor* — scrambled-Sobol points drawn inside the **projection envelope** (the converged profile grids are rigorous upper bounds on logL, so regions whose projection falls in a below-threshold cell of *any* computed projection are excluded for free). Each anchor goes through a three-tier funnel, each tier strictly cheaper per point than the next: **harvest** (cover the anchor from already-logged samples, zero evaluations), **probe** (one evaluation at the anchor), and **anchored search** (a short L-BFGS-B run pulling an evaluation into the band near the anchor; the penalized objective steers the search only — reported samples always carry their true logL). Run `examples/run_volume_sampling.py` for a complete example, `benchmarks/volume_sampling_benchmark.py` for the cost/coverage comparison against probe-only rejection, and `benchmarks/volume_vs_profile_benchmark.py` for a side-by-side comparison (figures + coverage metrics) of the volume set against the samples the profiling stage itself collects — the latter pile up at the conditional optima and the top of the likelihood, while the volume set tracks the uniform in-ROI reference.
+After the projections finish, the stage populates the ROI `{logL > global_max − roi_threshold}` with a sample set that balances **space-filling** (spread through the volume, including thin valleys and disconnected islands) and **lnL-filling** (spread across fit quality, not piled at the band edge where most of the volume lives). It runs an **affine-invariant ensemble of umbrella walkers**: each of `n_walkers` walkers carries a fixed *home level* spanning the band uniformly in ΔlnL and targets a log-Gaussian in logL around it, so the ensemble tiles the lnL range. Walkers are moved with the Goodman–Weare stretch move (partners pooled across the whole ensemble), which handles stretched/curved geometries with no step-size, gradient, or covariance tuning. They are seeded inside the **projection envelope** (the converged profile grids are rigorous upper bounds on logL, so regions whose projection falls in a below-threshold cell of *any* computed projection are excluded for free) and warm-started from logged scan samples near each level, reusing the scan's work. Run `examples/run_volume_sampling.py` for a complete example.
 
-Every evaluation the stage makes also streams into the run's main sample log under the volume phases (`PHASE_VOLUME_PROBE`, `PHASE_VOLUME_SEARCH`), so the raw probes/search points are recoverable by filtering that file. The stage additionally writes a **curated** representative set — one well-spread point per anchor, which a phase filter can't reconstruct (it's a post-hoc per-anchor selection) — and a small summary:
+Every evaluation the stage makes streams into the run's main sample log under `PHASE_VOLUME`, so the raw points are recoverable by filtering that file. The stage also writes the curated in-band sample set and a summary:
 
 Outputs (paths configurable via `output_file`/`summary_file`):
 
 | Output | Content |
 |--------|---------|
-| `volume_samples.csv` (or `.h5`) | One row `[params..., logL, tag]` per resolved anchor (the curated stratified set). Tags: `0` harvested, `1` probe — together the in-band rows are the stratified sample set; tag-`1` rows alone are a **uniform** (randomized-QMC) draw from the band; `2` search; `3` hole closest-approach (**not** in-band — diagnostics for anchors whose band was unreachable). |
-| `volume_samples_summary.json` | Statistics: per-status anchor counts, acceptances, evaluations spent, and an unbiased **band volume estimate** with binomial uncertainty (box volume × prefilter acceptance × probe acceptance). |
-| `sampler.volume_stage_result` | Everything in memory: anchors, per-anchor status (`covered`/`projected`/`hole`/`unbudgeted`/`uncovered`), representatives with provenance, closest-approach records. |
+| `volume_samples.csv` (or `.h5`) | One row `[params..., logL]` per in-band evaluation — the populated ROI sample set. |
+| `volume_samples_summary.json` | Statistics: walker/step/evaluation counts, in-band fraction, mean acceptance, global-max drift, and the logL histogram of the in-band samples (to check the achieved lnL spread). |
+| `sampler.volume_stage_result` | The same in memory, plus the `samples` array. |
 
 Useful knobs:
 
-- `n_anchors` — number of stratified anchor points (≈ output sample count). Sets the *coverage resolution*; it is independent of `eval_budget`, which caps the *work*.
-- `eval_budget` — hard cap on the stage's total evaluations; once it is reached the remaining anchors are reported `unbudgeted`. To bound the volume stage to the same cost as the projection scan, set this to the projection evaluation count rather than tying `n_anchors` to it.
-- `min_spacing` — Poisson-disk anchor spacing in bounds-scaled units (also the coverage radius).
-- `search='none'` — probe-only mode (no anchored search).
-- `probe_all_anchors=False` — skip probes on harvest-covered anchors; cheaper, but forfeits the uniform subset and volume estimate.
-- `harvest_files` — extra sample files for the harvest tier.
-- `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample further out, into the shell around the good-fit region (the band always runs all the way up to the global max).
-- `interior_steps` (default 8; `0` disables) — steps each search takes into the band after entering it, so representatives span fit quality instead of piling at the band edge. Larger values give finer within-level-set spread at proportionally more evaluations.
-- `depth_law` — depth distribution of the interior-walk samples: `'uniform_dlnl'` (default; equal representation at every ΔlnL, robust under tighter re-cuts), `'uniform_sigma'` (uniform in the 1-dof significance `Z = √(2ΔlnL)`, denser near the top), or `'volume'` (uniform in parameter volume, edge-concentrated in high dimensions). The realized distribution is reported as `rep_depth_histogram` in the summary.
+- `n_walkers` — ensemble size (≈ output sample count scales with it). Sets the coverage resolution.
+- `n_steps` — stretch sweeps per walker; longer chains mix better, especially in stiff/curved geometries.
+- `eval_budget` — optional hard cap on total evaluations (default `n_walkers·(n_steps+1)`). Set it to the projection evaluation count to bound the volume stage to the same cost as the scan.
+- `sigma_frac` (default `0.05`) — umbrella width σ as a fraction of `roi_threshold`. Smaller pins each walker more tightly to its level (sharper lnL-filling, lower acceptance).
+- `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample into the shell outside the good-fit region (the band always runs up to the global max).
+- `partner_level_window` (default `None` = full pool) — restrict stretch partners to walkers within this lnL window of a walker's home level; lower it to trade a little extra acceptance for locality.
+- `warm_start` (default `True`) — seed walkers from logged scan samples near each level instead of plain envelope draws.
 
-Use `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the tagged samples over a 2D profile map.
+Use `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the in-band samples (coloured by logL) over a 2D profile map.
 
-Caveats: the output is *stratified coverage* (every feature at the resolution scale is represented regardless of its volume), **not** a uniform draw — except the tag-`1` probe subset, which is uniform regardless of `depth_law`. `depth_law` controls the ΔlnL marginal; positions within a fixed-depth level set are only approximately uniform (the interior walk recovers most of the within-set spread, more with larger `interior_steps`). `projected` points are enriched near the band boundary; islands the original scan missed are inherited as misses; in high dimensions read "well-spread representatives", not "dense filling" (covering a d-dimensional volume at spacing r needs ~(1/r)^d points). A `hole` anchor means the search never reached the band — its closest-approach row shows how close it got; an anchor `projected` from far away signals a void between the projection envelope and the true band. Harvested CSV rows round-trip at ~10 significant digits (HDF5 is exact).
+Caveats: the samples are MCMC draws, so they are **autocorrelated** — read them as well-spread coverage of the ROI, not as an i.i.d. uniform draw. The lnL spread tracks the requested home-level tiling but the very top of the band can be under-filled (the peak is a small target for a short walk); raise `n_steps` or `n_walkers` if you need it denser there. Islands the original scan missed can still be missed (walkers are seeded inside the projection envelope); in high dimensions read "well-spread representatives", not "dense filling" (covering a d-dimensional volume at spacing r needs ~(1/r)^d points). Stiff/curved geometries are handled by the affine-invariant move, but very narrow valleys mix faster with more `n_steps`.
 
 ### Advanced configuration
 
