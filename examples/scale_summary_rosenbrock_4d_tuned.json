@@ -1,0 +1,29 @@
+{
+  "function": "rosenbrock_4d",
+  "label": "tuned",
+  "projection_roi_threshold": 8.0,
+  "volume_roi_threshold": 10.0,
+  "grid": 20,
+  "n_projection_evals": 15642,
+  "volume_eval_budget": null,
+  "volume_n_anchors": 5000,
+  "interior_steps": 24,
+  "n_volume_evals": 224232,
+  "total_evals": 239874,
+  "global_max": -1.9595299515732214e-12,
+  "projection_seconds": 2.5,
+  "volume_seconds": 37.0,
+  "volume_stats": {
+    "n_anchors": 5000,
+    "evals_used": 224232,
+    "n_covered": 3732,
+    "n_covered_probe": 2280,
+    "n_covered_search": 1428,
+    "n_projected": 1265,
+    "n_holes": 3,
+    "n_unbudgeted": 0,
+    "prefilter_acceptance": 0.0008887855940684134,
+    "probe_acceptance": 0.456,
+    "volume_estimate": 8.404015283842796
+  }
+}
