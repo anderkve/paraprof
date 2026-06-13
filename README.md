@@ -181,9 +181,10 @@ sampler = ProfileProjector(
     ...,
     samples_output_file="samples.csv",   # feeds the harvest tier
     volume_sampling={
-        'mode': 'roi',          # or 'shell': the band between shell_threshold and roi_threshold
         'n_points': 1000,       # target number of well-spread samples
         'output_file': "volume_samples.csv",
+        # 'roi_threshold': 25.0,  # widen the stage's ROI to also sample
+        #                         # the shell outside the good-fit region
     },
 )
 ```
@@ -206,6 +207,7 @@ Useful knobs:
 - `search='none'` — probe-only mode (no anchored search).
 - `probe_all_anchors=False` — skip probes on harvest-covered anchors; cheaper, but forfeits the uniform subset and volume estimate.
 - `harvest_files` — extra sample files for the harvest tier.
+- `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample further out, into the shell around the good-fit region (the band always runs all the way up to the global max).
 - `interior_steps` (default 8; `0` disables) — steps each search takes into the band after entering it, so representatives span fit quality instead of piling at the band edge. Larger values give finer within-level-set spread at proportionally more evaluations.
 - `depth_law` — depth distribution of the interior-walk samples: `'uniform_dlnl'` (default; equal representation at every ΔlnL, robust under tighter re-cuts), `'uniform_sigma'` (uniform in the 1-dof significance `Z = √(2ΔlnL)`, denser near the top), or `'volume'` (uniform in parameter volume, edge-concentrated in high dimensions). The realized distribution is reported as `rep_depth_histogram` in the summary.
 - `advanced_config['volume']['penalty_strength']` — the search's band-violation penalty scale.

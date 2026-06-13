@@ -1,14 +1,16 @@
 """
-Example: ROI/shell volume sampling after a profile-likelihood scan.
+Example: volume sampling after a profile-likelihood scan.
 
 After scanning two 2D projections of the 4D Himmelblau log-likelihood,
 the volume-sampling stage collects a stratified, well-spread set of
-samples in the full 4D good-fit region (``mode='roi'``) or in a band just
-outside it (``mode='shell'``) — the parts of parameter space the profile
-surfaces themselves never cover. See docs/volume_sampling_plan.md for the
+samples in the full 4D good-fit region — the parts of parameter space the
+profile surfaces themselves never cover. Passing a threshold on the
+command line widens the stage's own ROI beyond the projection's
+``roi_threshold`` (the default), so the sampling reaches into the shell
+outside the good-fit region. See docs/volume_sampling_plan.md for the
 design. Run with MPI:
 
-    mpiexec -n <ncores> python run_volume_sampling.py [roi|shell]
+    mpiexec -n <ncores> python run_volume_sampling.py [roi_threshold]
 
 Required: at least 2 MPI ranks (1 master + 1+ workers).
 
@@ -34,7 +36,10 @@ myrank = comm.Get_rank()
 
 np.random.seed(750123)
 
-MODE = sys.argv[1] if len(sys.argv) > 1 else 'roi'
+# Optional: the volume stage's own ROI threshold (ΔlnL band depth).
+# Defaults to the projection's roi_threshold; a larger value also explores
+# the shell outside the good-fit region.
+VOLUME_ROI_THRESHOLD = float(sys.argv[1]) if len(sys.argv) > 1 else None
 
 log_likelihood, param_bounds, _ = get_test_function('himmelblau_4d')
 
@@ -56,8 +61,9 @@ if myrank == 0:
         samples_output_file="samples.csv",
 
         volume_sampling={
-            'mode': MODE,                # 'roi' or 'shell'
-            'shell_threshold': 25.0,     # outer edge (shell mode only)
+            # None = use the projection's roi_threshold; larger reaches
+            # into the shell outside the good-fit region.
+            'roi_threshold': VOLUME_ROI_THRESHOLD,
             'n_points': 500,             # anchors = target sample count
             'output_file': "volume_samples.csv",
         },
@@ -70,7 +76,7 @@ if myrank == 0:
         vol = sampler.volume_stage_result
         if not vol['skipped']:
             stats = vol['stats']
-            print(f"\nVolume sampling ({MODE}):")
+            print("\nVolume sampling:")
             print(f"  covered {stats['n_covered']}, projected "
                   f"{stats['n_projected']}, holes {stats['n_holes']} "
                   f"of {stats['n_anchors']} anchors "
@@ -86,7 +92,7 @@ if myrank == 0:
                         or res['coarse_solution'])
                 plot_volume_samples(
                     vol, dims=tuple(grid['projection_dims']),
-                    filename=f"volume_plot_{MODE}",
+                    filename="volume_plot",
                     grid_solution=grid,
                 )
 else:

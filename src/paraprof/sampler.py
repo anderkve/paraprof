@@ -241,7 +241,9 @@ class ProfileProjector:
         volume_sampling : dict, optional
             Configuration for the post-projection volume-sampling stage,
             which collects a stratified, well-spread sample set inside the
-            ROI (``mode='roi'``) or in a shell around it (``mode='shell'``).
+            stage's ROI ``{logL > global_max - roi_threshold}``. The stage's
+            ``roi_threshold`` defaults to the projection's but can be set
+            larger to also explore the shell outside the projection ROI.
             Validated at construction; see ``volume.VOLUME_CONFIG_DEFAULTS``
             for the keys and ``docs/volume_sampling_plan.md`` for the
             design. Default: None (stage disabled).

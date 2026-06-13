@@ -149,7 +149,7 @@ def master(workdir):
             ('probe-only', {'search': 'none'}),
             ('full funnel', {}),
         ]:
-            cfg = {'mode': 'roi', 'n_points': N_POINTS,
+            cfg = {'n_points': N_POINTS,
                    'output_file': os.path.join(workdir, f'{label}.csv')}
             cfg.update(overrides)
             sampler.volume_sampling_config = normalize_volume_config(

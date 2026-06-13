@@ -1,11 +1,14 @@
-"""Stratified ROI/shell volume sampling (see docs/volume_sampling_plan.md).
+"""Stratified volume sampling (see docs/volume_sampling_plan.md).
 
 After the projections complete, the volume-sampling stage collects a
-stratified, well-spread set of samples inside the region of interest
-(``mode='roi'``) or in a shell around it (``mode='shell'``), via a
-three-tier funnel: harvest of existing samples, direct probes at
-scrambled-Sobol anchor points, and an anchored search for anchors whose
-probe failed.
+stratified, well-spread set of samples inside the stage's region of
+interest — ``{logL > global_max - roi_threshold}`` — via a three-tier
+funnel: harvest of existing samples, direct probes at scrambled-Sobol
+anchor points, and an anchored search for anchors whose probe failed.
+
+The stage's ``roi_threshold`` defaults to the projection's but can be set
+larger to reach into the shell around the projection ROI (the band is
+always one-sided: every point down to ``global_max - roi_threshold``).
 
 This module holds the master-side building blocks (no MPI):
 
@@ -36,8 +39,8 @@ from .exceptions import ConfigurationError
 from .logger import get_logger
 
 VOLUME_CONFIG_DEFAULTS = {
-    'mode': 'roi',              # 'roi' or 'shell'
-    'shell_threshold': 25.0,    # outer ΔlnL; inner edge is roi_threshold (shell mode)
+    'roi_threshold': None,      # ΔlnL band depth; None = projection's roi_threshold.
+                                # Larger reaches into the shell outside the ROI.
     'n_points': 1000,           # target number of anchors
     'min_spacing': None,        # optional Poisson-disk radius (bounds-scaled units)
     'eval_budget': None,        # hard cap on stage evaluations (None = unlimited)
@@ -126,26 +129,16 @@ def normalize_volume_config(config, roi_threshold):
     cfg = dict(VOLUME_CONFIG_DEFAULTS)
     cfg.update(config)
 
-    if cfg['mode'] not in ('roi', 'shell'):
+    if cfg['roi_threshold'] is None:
+        cfg['roi_threshold'] = roi_threshold
+    thresh = cfg['roi_threshold']
+    if isinstance(thresh, bool) or not isinstance(thresh, (int, float, np.floating, np.integer)) \
+            or not np.isfinite(thresh) or thresh <= 0:
         raise ConfigurationError(
-            f"volume_sampling['mode'] must be 'roi' or 'shell', got {cfg['mode']!r}",
-            parameter="volume_sampling.mode", value=cfg['mode'],
+            "volume_sampling['roi_threshold'] must be a positive finite number or None",
+            parameter="volume_sampling.roi_threshold", value=thresh,
         )
-
-    shell = cfg['shell_threshold']
-    if isinstance(shell, bool) or not isinstance(shell, (int, float, np.floating, np.integer)) \
-            or not np.isfinite(shell) or shell <= 0:
-        raise ConfigurationError(
-            "volume_sampling['shell_threshold'] must be a positive finite number",
-            parameter="volume_sampling.shell_threshold", value=shell,
-        )
-    cfg['shell_threshold'] = float(shell)
-    if cfg['mode'] == 'shell' and cfg['shell_threshold'] <= roi_threshold:
-        raise ConfigurationError(
-            f"volume_sampling['shell_threshold'] ({cfg['shell_threshold']}) must exceed "
-            f"roi_threshold ({roi_threshold}) in shell mode (it is the outer edge of the band)",
-            parameter="volume_sampling.shell_threshold", value=cfg['shell_threshold'],
-        )
+    cfg['roi_threshold'] = float(thresh)
 
     _check_positive_int(cfg, 'n_points')
     _check_positive_int(cfg, 'eval_budget', allow_none=True)
@@ -236,20 +229,16 @@ def depth_law_exponent(depth_law, n_dims):
     }[depth_law]
 
 
-def volume_band(config, roi_threshold, global_max):
-    """The stage's logL band and prefilter threshold for a normalized config.
+def volume_band(config, global_max):
+    """The stage's logL lower edge and prefilter threshold for a config.
 
-    Returns ``(band_lo, band_hi, prefilter_delta)``: a point belongs to the
-    band iff ``band_lo <= logL <= band_hi``. The envelope prefilter uses
-    ``prefilter_delta`` — the *outer* threshold only, since profile values
-    upper-bound logL and therefore can never exclude a point from above
-    (the point under a high-profile cell may still be low-likelihood).
+    Returns ``(band_lo, prefilter_delta)``: a point is in-band iff
+    ``logL >= band_lo``. The band is one-sided (no upper edge — the ROI
+    runs all the way up to the global max), and the envelope prefilter uses
+    the same threshold, since profile values upper-bound logL and so can
+    never exclude a point from above.
     """
-    if config['mode'] == 'shell':
-        return (global_max - config['shell_threshold'],
-                global_max - roi_threshold,
-                config['shell_threshold'])
-    return (global_max - roi_threshold, np.inf, roi_threshold)
+    return (global_max - config['roi_threshold'], config['roi_threshold'])
 
 
 class ProjectionEnvelope:
@@ -574,7 +563,7 @@ def resolve_harvest_files(volume_config, samples_output_file=None):
     return files
 
 
-def harvest_existing_samples(anchor_set, sample_files, band_lo, band_hi,
+def harvest_existing_samples(anchor_set, sample_files, band_lo,
                              chunk_size=None):
     """Tier 1: fill the anchor set's harvest records from existing samples.
 
@@ -617,7 +606,7 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo, band_hi,
             stats['n_samples'] += len(batch)
 
             logls = batch[:, -1]
-            in_band = np.isfinite(logls) & (logls >= band_lo) & (logls <= band_hi)
+            in_band = np.isfinite(logls) & (logls >= band_lo)
             if not in_band.any():
                 continue
             stats['n_in_band'] += int(np.count_nonzero(in_band))
@@ -677,10 +666,9 @@ class VolumeStageState:
     without invalidating the records.
     """
 
-    def __init__(self, anchor_set, band_lo, band_hi, eval_budget=None):
+    def __init__(self, anchor_set, band_lo, eval_budget=None):
         self.anchor_set = anchor_set
         self.band_lo = float(band_lo)
-        self.band_hi = float(band_hi)
         self.eval_budget = eval_budget
         self.evals_used = 0
 
@@ -688,7 +676,7 @@ class VolumeStageState:
         n_dims = len(anchor_set.bounds)
         self.searched = np.zeros(n, dtype=bool)
         self.unbudgeted = np.zeros(n, dtype=bool)
-        # Adaptive depth-quota state (armed by init_depth_quota; roi mode).
+        # Adaptive depth-quota state (armed by init_depth_quota).
         self._quota_probs = None
         self._quota_achieved = None
         # Closest-approach records for anchors whose search never reached the
@@ -700,7 +688,7 @@ class VolumeStageState:
         self.closest_violations = np.full(n, np.inf)
 
     def in_band(self, logl):
-        return self.band_lo <= logl <= self.band_hi
+        return logl >= self.band_lo
 
     def init_depth_quota(self, band_depth, exponent, n_bins=10):
         """Arm adaptive depth-target drawing for the interior walks.
@@ -794,7 +782,7 @@ class VolumeStageState:
             self.closest_violations[k] = job.best_viol
 
 
-def finalize_volume_stage(state, config, roi_threshold,
+def finalize_volume_stage(state, config,
                           global_max_start, global_max_final,
                           search_enabled):
     """Classify every anchor and assemble the stage-result dict.
@@ -820,11 +808,10 @@ def finalize_volume_stage(state, config, roi_threshold,
     """
     aset = state.anchor_set
     n = aset.n_anchors
-    band_lo_f, band_hi_f, _ = volume_band(config, roi_threshold, global_max_final)
+    band_lo_f, _ = volume_band(config, global_max_final)
 
     rep_in_band = (np.isfinite(aset.rep_logls)
-                   & (aset.rep_logls >= band_lo_f)
-                   & (aset.rep_logls <= band_hi_f))
+                   & (aset.rep_logls >= band_lo_f))
     covered = rep_in_band & (aset.rep_dists <= aset.coverage_radius)
     projected = rep_in_band & ~covered
     hole = ~rep_in_band & state.searched
@@ -841,8 +828,7 @@ def finalize_volume_stage(state, config, roi_threshold,
 
     probe_in_band = (aset.probed
                      & np.isfinite(aset.probe_logls)
-                     & (aset.probe_logls >= band_lo_f)
-                     & (aset.probe_logls <= band_hi_f))
+                     & (aset.probe_logls >= band_lo_f))
     n_probed = int(np.count_nonzero(aset.probed))
     n_probe_hits = int(np.count_nonzero(probe_in_band))
     probe_acceptance = n_probe_hits / n_probed if n_probed else np.nan
@@ -863,14 +849,14 @@ def finalize_volume_stage(state, config, roi_threshold,
     def _count(mask):
         return int(np.count_nonzero(mask))
 
-    # Realized depth distribution of the in-band representatives (roi mode):
-    # lets users check the achieved depth law against the requested one
-    # (walks are censored by the distance cap and the locally reachable
-    # likelihood, so the realized distribution can deviate).
+    # Realized depth distribution of the in-band representatives: lets users
+    # check the achieved depth law against the requested one (walks are
+    # censored by the distance cap and the locally reachable likelihood, so
+    # the realized distribution can deviate).
     rep_depth_histogram = None
-    if config['mode'] == 'roi' and rep_in_band.any():
+    if rep_in_band.any():
         depths = global_max_final - aset.rep_logls[rep_in_band]
-        edges = np.linspace(0.0, roi_threshold, 11)
+        edges = np.linspace(0.0, config['roi_threshold'], 11)
         counts, _ = np.histogram(depths, bins=edges)
         rep_depth_histogram = {'bin_edges': edges.tolist(),
                                'counts': counts.tolist()}
@@ -901,7 +887,6 @@ def finalize_volume_stage(state, config, roi_threshold,
     return {
         'skipped': False,
         'reason': None,
-        'mode': config['mode'],
         'anchor_set': aset,
         'anchors': aset.anchors,
         'anchor_status': status,
@@ -916,8 +901,8 @@ def finalize_volume_stage(state, config, roi_threshold,
         'closest_logls': state.closest_logls,
         'closest_dists': state.closest_dists,
         'closest_violations': state.closest_violations,
-        'band_initial': (state.band_lo, state.band_hi),
-        'band_final': (band_lo_f, band_hi_f),
+        'band_lo_initial': state.band_lo,
+        'band_lo_final': band_lo_f,
         'stats': stats,
     }
 
@@ -1033,9 +1018,8 @@ def write_volume_output(result, config):
     summary_path = config['summary_file'] or default_summary_file(
         config['output_file'])
     summary = {
-        'mode': result['mode'],
-        'band_initial': result['band_initial'],
-        'band_final': result['band_final'],
+        'band_lo_initial': result['band_lo_initial'],
+        'band_lo_final': result['band_lo_final'],
         'config': config,
         'stats': result['stats'],
         'output_file': output_path,

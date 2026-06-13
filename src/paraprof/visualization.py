@@ -716,7 +716,7 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
                   else names[d0])
     ax.set_ylabel(names.get(d1, f"$x_{{{d1}}}$") if isinstance(names, dict)
                   else names[d1])
-    ax.set_title(f"Volume samples (mode: {volume_result['mode']})")
+    ax.set_title("Volume samples")
     ax.legend(loc='upper right', fontsize=8)
 
     fig.tight_layout()

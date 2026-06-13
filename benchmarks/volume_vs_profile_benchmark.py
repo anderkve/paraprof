@@ -242,7 +242,7 @@ def master(workdir):
         print(f"\nScan done: {scan_calls} evaluations.", flush=True)
 
         sampler.volume_sampling_config = normalize_volume_config(
-            {'mode': 'roi', 'n_points': N_POINTS,
+            {'n_points': N_POINTS,
              'interior_steps': INTERIOR_STEPS, 'depth_law': DEPTH_LAW,
              'output_file': os.path.join(workdir, 'volume.csv')},
             ROI_THRESHOLD)

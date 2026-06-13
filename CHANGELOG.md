@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
   post-projection stage that collects a stratified, well-spread sample set
-  inside the ROI (`mode='roi'`) or in a shell around it (`mode='shell'`).
+  inside the ROI `{logL > global_max - roi_threshold}`. The stage's
+  `roi_threshold` defaults to the projection's but can be set larger to also
+  explore the shell outside the good-fit region.
   Enabled by the new `ProfileProjector` argument `volume_sampling` (a config
   dict, validated at construction) and run automatically by
   `run_all_projections`; also exposed standalone as `run_volume_sampling`.

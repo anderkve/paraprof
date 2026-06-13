@@ -38,12 +38,11 @@ class VolumeProbeJob(Job):
     """
 
     def __init__(self, job_id, sampler, anchor_set, anchor_indices,
-                 band_lo, band_hi):
+                 band_lo):
         super().__init__(job_id, 'VOLUME_PROBE', sampler)
         self.anchor_set = anchor_set
         self.anchor_indices = np.asarray(anchor_indices, dtype=int)
         self.band_lo = float(band_lo)
-        self.band_hi = float(band_hi)
         self.target_vals = np.full(len(self.anchor_indices), -np.inf)
         self.evals_remaining = len(self.anchor_indices)
 
@@ -80,7 +79,7 @@ class VolumeProbeJob(Job):
             logl = float(self.target_vals[i])
             aset.probed[anchor_idx] = True
             aset.probe_logls[anchor_idx] = logl
-            if np.isfinite(logl) and self.band_lo <= logl <= self.band_hi:
+            if np.isfinite(logl) and logl >= self.band_lo:
                 n_hits += 1
                 aset.offer_to_anchor(anchor_idx, aset.anchors[anchor_idx].copy(),
                                      logl, 0.0, SOURCE_PROBE)
@@ -97,7 +96,7 @@ class VolumeSearchJob(LBFGSBJob):
 
     Maximized fitness: ``-(dist² + κ·v²)`` with ``dist`` the bounds-scaled
     Euclidean distance to the anchor and ``v`` the band violation
-    ``max(0, band_lo - logL) + max(0, logL - band_hi)``. The whole L-BFGS-B
+    ``max(0, band_lo - logL)``. The whole L-BFGS-B
     machinery (FD gradients, line search, ftol) is inherited and runs on
     the transformed values: ``process_result`` rewrites each raw result
     before delegating to the base class.
@@ -123,7 +122,7 @@ class VolumeSearchJob(LBFGSBJob):
     PROJECTED_WALK_SLACK = 1.5
 
     def __init__(self, job_id, sampler, anchor_set, anchor_index,
-                 band_lo, band_hi, kappa, start_params, max_iter=None,
+                 band_lo, kappa, start_params, max_iter=None,
                  interior_steps=0, band_depth=None, depth_exponent=None,
                  draw_depth_target=None):
         start_params = np.asarray(start_params, dtype=float)
@@ -146,10 +145,9 @@ class VolumeSearchJob(LBFGSBJob):
         self._hi = anchor_set.bounds[:, 1]
         self._extent = anchor_set.bounds[:, 1] - anchor_set.bounds[:, 0]
         self.band_lo = float(band_lo)
-        self.band_hi = float(band_hi)
         self.kappa = float(kappa)
         self.interior_steps = int(interior_steps)
-        # Band depth in logL units (roi_threshold for roi mode); sets the
+        # Band depth in logL units (the stage's roi_threshold); sets the
         # interior walk's depth-target scale.
         self.band_depth = float(band_depth) if band_depth is not None \
             else float(sampler.roi_threshold)
@@ -200,14 +198,13 @@ class VolumeSearchJob(LBFGSBJob):
         return float(np.linalg.norm((params - self.anchor) / self._extent))
 
     def _violation(self, logl):
-        v = max(0.0, self.band_lo - logl) + max(0.0, logl - self.band_hi)
-        return min(v, VIOLATION_CLAMP)
+        return min(max(0.0, self.band_lo - logl), VIOLATION_CLAMP)
 
     def _transformed_gradient(self, params, logl, violation, raw_gradient):
         """Gradient of the maximized fitness at ``params`` (None = use FD).
 
         In-band the hinge is locally flat, so the gradient is the analytic
-        distance term alone — no ∇logL needed. Out of band, chain-rule a
+        distance term alone — no ∇logL needed. Below the band, chain-rule a
         user-supplied ∇logL if present (NaN entries fall through to FD
         per dim, as in the base class).
         """
@@ -216,9 +213,9 @@ class VolumeSearchJob(LBFGSBJob):
             return -ddist2
         if raw_gradient is None:
             return None
-        sign = -1.0 if logl < self.band_lo else 1.0
+        # Below the band (v = band_lo - logL), so ∇v = -∇logL.
         grad = np.asarray(raw_gradient, dtype=float)
-        return -ddist2 - 2.0 * self.kappa * violation * sign * grad
+        return -ddist2 + 2.0 * self.kappa * violation * grad
 
     def process_result(self, result):
         sub_type = result['context'].get('sub_type')
@@ -290,7 +287,7 @@ class VolumeSearchJob(LBFGSBJob):
         return out
 
     # ------------------------------------------------------------------ #
-    # Interior walk (roi mode only): steps from the band edge toward a
+    # Interior walk: steps from the band edge toward a
     # drawn depth target (ΔlnL below the band top; see draw_depth_target
     # and depth_law_exponent). It marches along the aim direction
     # (_walk_aim_direction), bisects to land precisely on the target, and
@@ -300,10 +297,9 @@ class VolumeSearchJob(LBFGSBJob):
     def _start_interior_walk(self, origin, origin_logl, origin_dist,
                              dist_cap):
         """Arm the walk; returns the first task list, or None to skip
-        (interior_steps off, shell mode, walk already ran, or the entry
-        point already reaches the drawn depth target)."""
-        if self.interior_steps <= 0 or self._walk_done \
-                or np.isfinite(self.band_hi):
+        (interior_steps off, walk already ran, or the entry point already
+        reaches the drawn depth target)."""
+        if self.interior_steps <= 0 or self._walk_done:
             return None
         self._walk_done = True
         self.interior_point = np.asarray(origin, dtype=float).copy()

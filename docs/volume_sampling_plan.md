@@ -7,13 +7,15 @@ sampling" section.
 ## Goal
 
 After the user-requested projections complete, an optional run stage collects a
-**stratified, well-spread set of samples** in full input-parameter space, either
-inside the region of interest (`mode='roi'`: `logL > logL_max − roi_threshold`) or
-in a shell around it (`mode='shell'`: `logL` between two thresholds). Motivation:
-profile-likelihood scans concentrate samples on low-dimensional profile surfaces
-(measure zero in the ROI volume), but global-fit users also want representative
-points throughout the good-fit volume — and just outside it, to understand from the
-per-point computations *why* neighboring regions fail.
+**stratified, well-spread set of samples** in full input-parameter space, inside
+the stage's region of interest (`logL > logL_max − roi_threshold`). The stage's
+`roi_threshold` defaults to the projection's but can be set larger to also reach
+into the shell around the projection ROI (the band is always one-sided, running
+all the way up to the global max). Motivation: profile-likelihood scans
+concentrate samples on low-dimensional profile surfaces (measure zero in the ROI
+volume), but global-fit users also want representative points throughout the
+good-fit volume — and just outside it, to understand from the per-point
+computations *why* neighboring regions fail.
 
 Design decisions agreed in discussion:
 
@@ -55,8 +57,8 @@ Constructor argument on `ProfileProjector` (validated up front like other config
 
 ```python
 volume_sampling = {
-    'mode': 'roi',              # 'roi' or 'shell'
-    'shell_threshold': 25.0,    # outer ΔlnL; inner edge is roi_threshold (shell mode)
+    'roi_threshold': None,      # ΔlnL band depth; None = projection's roi_threshold.
+                                # Larger reaches into the shell outside the ROI.
     'n_points': 1000,           # target number of anchors
     'min_spacing': None,        # optional Poisson-disk radius (bounds-scaled units);
                                 # None = whatever spacing n_points Sobol anchors give
@@ -97,11 +99,11 @@ Master-side only; no MPI, no workers.
    matching the scan's own expansion logic) or its profile value is below
    `global_max − threshold_delta`.
 
-3. **Threshold semantics.** `mode='roi'` filters with `roi_threshold`. Shell mode
-   filters with the *outer* threshold only — profile values upper-bound `logL`, so
-   high-profile cells cannot exclude shell membership (the point underneath may
-   still be low-likelihood); the inner cut is enforced by actual evaluations in
-   tiers 2/3.
+3. **Threshold semantics.** The prefilter filters with the stage's
+   `roi_threshold`. The band is one-sided (`logL > global_max − roi_threshold`),
+   and profile values only upper-bound `logL`, so high-profile cells can never
+   exclude a point from above; band membership is settled by actual evaluations
+   in tiers 2/3.
 
 4. **Degenerate-case detection.** If any retained projection has
    `len(projection_dims) == n_dims` (direct-eval mode), the grid already covers
@@ -155,10 +157,10 @@ over both file formats; spacing thinning; bounds-scaling of distances.
    objective is computed master-side from the raw `target_val`, so workers are
    untouched. Objective (minimized):
 
-   `dist²(θ, anchor) + κ·hinge(θ)²`, with `hinge = max(0, band_lo − logL)` plus,
-   in shell mode, `max(0, logL − band_hi)`; distances in bounds-scaled units; κ
-   auto-set so a hinge violation of `roi_threshold` costs ~1 unit of scaled
-   distance² (advanced-config `volume.penalty_strength` multiplier, default 1.0).
+   `dist²(θ, anchor) + κ·hinge(θ)²`, with `hinge = max(0, band_lo − logL)`;
+   distances in bounds-scaled units; κ auto-set so a hinge violation of
+   `roi_threshold` costs ~1 unit of scaled distance² (advanced-config
+   `volume.penalty_strength` multiplier, default 1.0).
    Gradient: the distance term is analytic; the hinge term needs ∇logL, which
    reuses the existing finite-difference machinery and the `grad_func` piggyback
    unchanged (chain rule applied master-side). Warm start: the anchor's nearest
@@ -210,9 +212,9 @@ drift reclassification. Job-level tests run without MPI (synthetic results fed t
 ## Phase 5 — Docs, examples, tests, benchmarks
 
 1. Example script: 4D test function (existing `test_functions.py`), all-pairs 2D
-   projections, then ROI volume sampling; a second variant with `mode='shell'`.
-   Visualization helper: scatter of volume samples colored by provenance over a
-   2D projection's contour plot.
+   projections, then volume sampling; a second variant with a widened
+   `roi_threshold` to reach into the shell. Visualization helper: scatter of
+   volume samples colored by provenance over a 2D projection's contour plot.
 2. Validation test: nD Gaussian logL where ROI volume and uniformity are known —
    assert the volume estimate within tolerance and the uniform-subset tag's
    statistical behavior; a two-island target to exercise multi-component coverage;

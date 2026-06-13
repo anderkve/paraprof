@@ -387,7 +387,9 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
         )
 
     logger.info("=" * 80)
-    logger.info(f"=== Volume sampling stage (mode: {config['mode']}) ===")
+    logger.info(
+        f"=== Volume sampling stage (roi_threshold: {config['roi_threshold']}) ==="
+    )
     logger.info("=" * 80)
 
     def _skip(reason):
@@ -409,8 +411,8 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
             "information)"
         )
 
-    band_lo, band_hi, prefilter_delta = volume_band(
-        config, sampler.roi_threshold, global_max_start)
+    stage_threshold = config['roi_threshold']
+    band_lo, prefilter_delta = volume_band(config, global_max_start)
     anchor_set = generate_anchors(
         envelope, sampler.bounds, config['n_points'], prefilter_delta,
         min_spacing=config['min_spacing'])
@@ -421,9 +423,9 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     harvest_existing_samples(
         anchor_set,
         resolve_harvest_files(config, sampler.samples_output_file),
-        band_lo, band_hi)
+        band_lo)
 
-    state = VolumeStageState(anchor_set, band_lo, band_hi,
+    state = VolumeStageState(anchor_set, band_lo,
                              eval_budget=config['eval_budget'])
     n_workers = max(comm.Get_size() - 1, 1)
     inflight_cap = max(2, n_workers)
@@ -444,20 +446,20 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
 
     if len(probe_targets):
         probe_job = VolumeProbeJob(0, sampler, anchor_set, probe_targets,
-                                   band_lo, band_hi)
+                                   band_lo)
         _volume_event_loop(comm, sampler, state, [probe_job], None,
                            inflight_cap, logger, myrank)
 
     # --- Tier 3: anchored searches for anchors whose probe missed ---
     if config['search'] != 'none':
-        kappa = sampler.volume_penalty_strength / sampler.roi_threshold ** 2
+        kappa = sampler.volume_penalty_strength / stage_threshold ** 2
         depth_exponent = depth_law_exponent(config['depth_law'], sampler.dims)
-        # Adaptive depth-target quota (roi mode): walks draw from the
-        # law's residual need so depths censored by local reachability
-        # get retried at other anchors.
+        # Adaptive depth-target quota: walks draw from the law's residual
+        # need so depths censored by local reachability get retried at
+        # other anchors.
         draw_depth_target = None
-        if config['mode'] == 'roi' and config['interior_steps'] > 0:
-            state.init_depth_quota(sampler.roi_threshold, depth_exponent)
+        if config['interior_steps'] > 0:
+            state.init_depth_quota(stage_threshold, depth_exponent)
             draw_depth_target = state.draw_depth_target
         next_job_id = 1
         search_cursor = 0
@@ -482,9 +484,10 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                 else:
                     warm = anchor_set.anchors[k]
                 job = VolumeSearchJob(
-                    next_job_id, sampler, anchor_set, k, band_lo, band_hi,
+                    next_job_id, sampler, anchor_set, k, band_lo,
                     kappa, warm, max_iter=config['search_max_iter'],
                     interior_steps=config['interior_steps'],
+                    band_depth=stage_threshold,
                     depth_exponent=depth_exponent,
                     draw_depth_target=draw_depth_target)
                 next_job_id += 1
@@ -497,7 +500,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     # --- Finalize: classify anchors against the final global max ---
     sampler._flush_samples_buffer()
     result = finalize_volume_stage(
-        state, config, sampler.roi_threshold,
+        state, config,
         global_max_start, sampler.global_max_target_val,
         search_enabled=(config['search'] != 'none'))
     stats = result['stats']

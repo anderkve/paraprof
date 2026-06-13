@@ -20,7 +20,7 @@ from paraprof.volume import (
     normalize_volume_config,
 )
 
-BAND_LO, BAND_HI = -4.0, np.inf
+BAND_LO = -4.0
 KAPPA = 1.0 / 16.0  # penalty_strength 1, roi_threshold 4
 
 
@@ -77,7 +77,7 @@ class TestVolumeProbeJob:
     def test_probe_round_trip(self, sampler):
         anchor_set = make_anchor_set()
         job = VolumeProbeJob(0, sampler, anchor_set, [0, 1, 3],
-                             BAND_LO, BAND_HI)
+                             BAND_LO)
         tasks = job.start()
         assert len(tasks) == 3
         np.testing.assert_allclose(tasks[0]['params'], [2.0, 2.0])
@@ -105,7 +105,7 @@ class TestVolumeProbeJob:
 
     def test_empty_probe_finishes_immediately(self, sampler):
         anchor_set = make_anchor_set()
-        job = VolumeProbeJob(0, sampler, anchor_set, [], BAND_LO, BAND_HI)
+        job = VolumeProbeJob(0, sampler, anchor_set, [], BAND_LO)
         assert job.start() == []
         assert job.is_finished() and job.success
 
@@ -115,7 +115,7 @@ class TestVolumeProbeJob:
 # --------------------------------------------------------------------------- #
 def make_search_job(sampler, anchor_set, anchor_index, start, **kwargs):
     return VolumeSearchJob(1, sampler, anchor_set, anchor_index,
-                           BAND_LO, BAND_HI, KAPPA,
+                           BAND_LO, KAPPA,
                            np.asarray(start, dtype=float), **kwargs)
 
 
@@ -259,7 +259,7 @@ class TestVolumeSearchJob:
 class TestVolumeStageState:
 
     def test_budget_and_eval_counting(self):
-        state = VolumeStageState(make_anchor_set(), BAND_LO, BAND_HI,
+        state = VolumeStageState(make_anchor_set(), BAND_LO,
                                  eval_budget=2)
         assert state.budget_left()
         state.note_eval(np.array([2.0, 2.0]), -10.0)
@@ -270,7 +270,7 @@ class TestVolumeStageState:
 
     def test_note_eval_offers_in_band_to_nearest_anchor(self):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         state.note_eval(np.array([2.1, 2.0]), -1.0)
         assert anchor_set.covered[0]
         assert anchor_set.rep_source[0] == SOURCE_SEARCH
@@ -281,7 +281,7 @@ class TestVolumeStageState:
 
     def test_record_search_job(self):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         job = SimpleNamespace(
             anchor_index=2, hit=False,
             best_inband_point=np.array([2.0, 5.5]), best_inband_logl=-1.0,
@@ -311,7 +311,7 @@ class TestFinalize:
         anchor_set = make_anchor_set()
         anchor_set.n_draws = 1000
         anchor_set.n_prefilter_accepted = 200
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         return anchor_set, state
 
     def test_status_partition_and_stats(self):
@@ -332,7 +332,7 @@ class TestFinalize:
         state.unbudgeted[3] = True
 
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
 
@@ -359,7 +359,7 @@ class TestFinalize:
         anchor_set.probe_logls[:] = [-1.0, -2.0, -10.0, -10.0]
 
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         stats = result['stats']
@@ -373,7 +373,7 @@ class TestFinalize:
         anchor_set.probed[:] = True
         anchor_set.probe_logls[:] = -1.0
         result = finalize_volume_stage(
-            state, roi_config(probe_all_anchors=False), roi_threshold=4.0,
+            state, roi_config(probe_all_anchors=False),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         assert result['stats']['volume_estimate'] is None
@@ -388,26 +388,28 @@ class TestFinalize:
         anchor_set.probe_logls[0] = -3.0
 
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=2.0,
             search_enabled=True)
         assert result['anchor_status'][0] == 'uncovered'
         assert result['stats']['n_probe_hits'] == 0
         assert result['stats']['global_max_drift'] == pytest.approx(2.0)
-        assert result['band_final'][0] == pytest.approx(-2.0)
+        assert result['band_lo_final'] == pytest.approx(-2.0)
 
-    def test_shell_band_finalize(self):
+    def test_widened_band_finalize(self):
+        # A larger stage roi_threshold reaches deeper: a logL -10 point that
+        # the default band (lo -4) would reject is now in-band.
         anchor_set, state = self.make_state()
         anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -10.0, 0.0,
                                    SOURCE_PROBE)
         cfg = normalize_volume_config(
-            {'mode': 'shell', 'shell_threshold': 25.0}, roi_threshold=4.0)
+            {'roi_threshold': 25.0}, roi_threshold=4.0)
         result = finalize_volume_stage(
-            state, cfg, roi_threshold=4.0,
+            state, cfg,
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         assert result['anchor_status'][0] == 'covered'
-        assert result['band_final'] == (-25.0, -4.0)
+        assert result['band_lo_final'] == pytest.approx(-25.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -430,7 +432,7 @@ from paraprof.volume import (
 def make_finalized_result():
     """A finalized stage result with one anchor per status/tag combination."""
     anchor_set = make_anchor_set()
-    state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+    state = VolumeStageState(anchor_set, BAND_LO)
 
     # Anchor 0: covered by harvest. Anchor 1: covered by its probe.
     # Anchor 2: projected (search). Anchor 3: hole with closest approach.
@@ -449,7 +451,7 @@ def make_finalized_result():
     state.closest_violations[3] = 2.0
 
     return finalize_volume_stage(
-        state, roi_config(), roi_threshold=4.0,
+        state, roi_config(),
         global_max_start=0.0, global_max_final=0.0,
         search_enabled=True)
 
@@ -481,9 +483,9 @@ class TestAssembleVolumeRows:
 
     def test_empty_result(self):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         rows = assemble_volume_rows(result)
@@ -511,14 +513,11 @@ class TestWriteVolumeOutput:
 
         with open(summary_path) as f:
             summary = json.load(f)
-        assert summary['mode'] == 'roi'
         assert summary['n_rows'] == 4
         assert summary['rows_by_tag'] == {'0': 1, '1': 1, '2': 1, '3': 1}
         assert summary['stats']['n_covered'] == 2
         assert summary['uniform_subset_valid'] is True
-        # JSON portability: the roi band's +inf upper edge becomes null.
-        assert summary['band_final'][1] is None
-        assert summary['band_final'][0] == -4.0
+        assert summary['band_lo_final'] == -4.0
         assert summary['tag_legend']['3'].startswith('hole')
 
     def test_default_summary_path(self, tmp_path):
@@ -547,9 +546,9 @@ class TestWriteVolumeOutput:
 
     def test_empty_result_writes_summary_only(self, tmp_path):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         cfg = roi_config(output_file=str(tmp_path / "vol.csv"))
@@ -564,9 +563,9 @@ class TestWriteVolumeOutput:
 
     def test_nan_stats_become_null(self, tmp_path):
         anchor_set = make_anchor_set()  # no draws: prefilter acceptance NaN
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         cfg = roi_config(output_file=str(tmp_path / "vol.csv"))
@@ -578,48 +577,8 @@ class TestWriteVolumeOutput:
         assert summary['stats']['volume_estimate'] is None
 
 
-class TestVolumeSearchJobShellBand:
-    """Shell mode: the band has a finite upper edge with the opposite
-    hinge sign."""
-
-    def make_shell_job(self, sampler, anchor_set, start):
-        return VolumeSearchJob(1, sampler, anchor_set, 0, -25.0, -4.0,
-                               KAPPA, np.asarray(start, dtype=float))
-
-    def test_above_band_violation_and_chain_rule(self, sampler):
-        anchor_set = make_anchor_set()
-        start = np.array([2.0, 5.0])  # scaled dist 0.3 to anchor 0
-        job = self.make_shell_job(sampler, anchor_set, start)
-        tasks = job.start()
-
-        # logL -1 is ABOVE the shell band [-25, -4]: violation 3.
-        raw_grad = np.array([0.5, -1.5])
-        out = job.process_result(result_for(tasks[0], -1.0,
-                                            user_gradient=raw_grad))
-        assert len(out) == 1
-        assert out[0]['context']['sub_type'] == 'LBFGS_LINE_SEARCH'
-        violation = 3.0
-        expected_fitness = -(0.3 ** 2 + KAPPA * violation ** 2)
-        assert job.current_fitness == pytest.approx(expected_fitness)
-        # Above the band the hinge sign flips: ∇F = -∇dist² - 2κv∇logL.
-        ddist2 = 2.0 * (start - np.array([2.0, 2.0])) / 10.0 ** 2
-        fitness_grad = -ddist2 - 2.0 * KAPPA * violation * raw_grad
-        np.testing.assert_allclose(job.current_gradient, -fitness_grad)
-        # An above-band point is closest-approach material, not in-band.
-        assert job.outcome() == 'hole'
-        assert job.best_viol == pytest.approx(3.0)
-
-    def test_inside_shell_band_hits(self, sampler):
-        anchor_set = make_anchor_set()
-        job = self.make_shell_job(sampler, anchor_set, [2.5, 2.0])
-        tasks = job.start()
-        out = job.process_result(result_for(tasks[0], -10.0))
-        assert out == []
-        assert job.is_finished() and job.hit
-
-
 # --------------------------------------------------------------------------- #
-# Interior steps (experimental)
+# Interior steps
 # --------------------------------------------------------------------------- #
 from paraprof.exceptions import ConfigurationError
 
@@ -627,7 +586,7 @@ from paraprof.exceptions import ConfigurationError
 class TestInteriorSteps:
 
     def make_walk_job(self, sampler, anchor_set, steps=8):
-        return VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        return VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                                KAPPA, np.array([2.5, 2.0]),
                                interior_steps=steps)
 
@@ -740,7 +699,7 @@ class TestInteriorSteps:
     def test_projected_termination_detours_through_walk(self, sampler,
                                                         monkeypatch):
         anchor_set = make_anchor_set()
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.0, 5.5]), max_iter=1,
                               interior_steps=2)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 1e-12)
@@ -768,7 +727,7 @@ class TestInteriorSteps:
 
     def test_record_search_job_prefers_interior_point(self):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         # The closer band-edge entry point is already registered...
         anchor_set.offer_to_anchor(0, np.array([2.5, 2.0]), -3.9, 0.05,
                                    SOURCE_SEARCH)
@@ -814,7 +773,7 @@ class TestDepthLaw:
         # gamma=1 (uniform_dlnl): target = -4*0.25 = -1.0 -> entry already
         # reaches it, no walk.
         anchor_set = make_anchor_set()
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=4,
                               depth_exponent=1.0)
         out = job.process_result(result_for(job.start()[0], -1.0))
@@ -829,7 +788,7 @@ class TestDepthLaw:
         # gamma=2 (uniform_sigma): target = -4*0.0625 = -0.25 -> deeper
         # than the entry, walk runs.
         anchor_set = make_anchor_set()
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=4,
                               depth_exponent=2.0)
         out = job.process_result(result_for(job.start()[0], -1.0))
@@ -838,7 +797,7 @@ class TestDepthLaw:
 
     def test_finalize_reports_depth_histogram(self):
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, BAND_LO, BAND_HI)
+        state = VolumeStageState(anchor_set, BAND_LO)
         # Depths 0.5, 1.5, 3.5 below a final max of 0.
         anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -0.5, 0.0,
                                    SOURCE_PROBE)
@@ -847,7 +806,7 @@ class TestDepthLaw:
         anchor_set.offer_to_anchor(2, np.array([2.0, 8.0]), -3.5, 0.2,
                                    SOURCE_SEARCH)
         result = finalize_volume_stage(
-            state, roi_config(), roi_threshold=4.0,
+            state, roi_config(),
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
         hist = result['stats']['rep_depth_histogram']
@@ -859,18 +818,22 @@ class TestDepthLaw:
         assert hist['counts'][3] == 1
         assert hist['counts'][8] == 1
 
-    def test_no_histogram_for_shell_mode(self):
+    def test_widened_band_histogram_uses_stage_threshold(self):
+        # The histogram spans the stage's roi_threshold, not the
+        # projection's: a widened band reports edges out to 25.
         anchor_set = make_anchor_set()
-        state = VolumeStageState(anchor_set, -25.0, -4.0)
+        state = VolumeStageState(anchor_set, -25.0)
         anchor_set.offer_to_anchor(0, np.array([2.0, 2.0]), -10.0, 0.0,
                                    SOURCE_PROBE)
         cfg = normalize_volume_config(
-            {'mode': 'shell', 'shell_threshold': 25.0}, roi_threshold=4.0)
+            {'roi_threshold': 25.0}, roi_threshold=4.0)
         result = finalize_volume_stage(
-            state, cfg, roi_threshold=4.0,
+            state, cfg,
             global_max_start=0.0, global_max_final=0.0,
             search_enabled=True)
-        assert result['stats']['rep_depth_histogram'] is None
+        hist = result['stats']['rep_depth_histogram']
+        assert hist['bin_edges'][-1] == 25.0
+        assert sum(hist['counts']) == 1
 
 
 class TestWalkAiming:
@@ -889,7 +852,7 @@ class TestWalkAiming:
         # anchor's cap ball; the naive inward ray would go "east"
         # (entry - anchor = +x).
         self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=8)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -900,7 +863,7 @@ class TestWalkAiming:
         anchor_set = make_anchor_set()
         sampler.initial_maxima.append({'point': np.array([2.5, 2.8]),
                                        'target_val': 0.0})
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=8)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -912,7 +875,7 @@ class TestWalkAiming:
         adopted as representatives)."""
         anchor_set = make_anchor_set()
         self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=6)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -936,7 +899,7 @@ class TestWalkAiming:
         # Entry close to the cap rim, empty pool: the fallback +x ray
         # leaves the cap immediately, so the ladder fires: two halvings,
         # one re-aim (same direction, step reset), two more halvings.
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.99, 2.0]), interior_steps=6)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -959,7 +922,7 @@ class TestWalkAiming:
         must advance the march instead of stalling it."""
         anchor_set = make_anchor_set()
         self.inject_pool_point(sampler, [2.5, 2.8], 0.0)
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=8)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -998,7 +961,7 @@ class TestWalkAiming:
         # outside the hit cap (= coverage radius 0.1): projected aim is
         # anchor + 0.1 * (0, 1) = (2.0, 3.0).
         self.inject_pool_point(sampler, [2.0, 4.0], 0.0)
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]), interior_steps=8)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)
         out = job.process_result(result_for(job.start()[0], -2.0))
@@ -1016,7 +979,7 @@ class TestTangentPhase:
     def make_at_target_job(self, sampler, anchor_set, monkeypatch, steps=8):
         """A hit job whose entry sits exactly at the drawn depth target
         (-1.0), so the whole budget goes to tangent rounds."""
-        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO, BAND_HI,
+        job = VolumeSearchJob(1, sampler, anchor_set, 0, BAND_LO,
                               KAPPA, np.array([2.5, 2.0]),
                               interior_steps=steps, depth_exponent=1.0)
         monkeypatch.setattr(np.random, 'random', lambda *a, **k: 0.25)

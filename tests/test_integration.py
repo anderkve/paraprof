@@ -474,7 +474,7 @@ VOLUME_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'mode': 'roi', 'n_points': 30,
+                'n_points': 30,
                 'output_file': os.path.join(workdir, 'volume_samples.csv'),
             },
         ) as sampler:
@@ -488,14 +488,14 @@ VOLUME_RUNNER = textwrap.dedent("""
 
             # Re-evaluate every in-band representative: stored logL must be
             # exact and inside the final band.
-            band_lo, band_hi = vol['band_final']
+            band_lo = vol['band_lo_final']
             resolved = np.isin(vol['anchor_status'], ['covered', 'projected'])
             max_err = 0.0
             reps_in_band = True
             for k in np.flatnonzero(resolved):
                 logl = target(vol['rep_points'][k])
                 max_err = max(max_err, abs(logl - vol['rep_logls'][k]))
-                reps_in_band &= (band_lo <= logl <= band_hi)
+                reps_in_band &= (logl >= band_lo)
 
             # Phase-4 outputs: tagged sample file + JSON summary.
             from paraprof import read_samples
@@ -510,7 +510,7 @@ VOLUME_RUNNER = textwrap.dedent("""
                 'output_tags': sorted(set(out_rows[:, -1].tolist())),
                 'rows_by_tag': {str(k): v for k, v in vol['rows_by_tag'].items()},
                 'summary_n_rows': summary['n_rows'],
-                'summary_mode': summary['mode'],
+                'summary_band_lo': summary['band_lo_final'],
                 'summary_volume_estimate': summary['stats']['volume_estimate'],
                 'n_anchors': stats['n_anchors'],
                 'n_covered': stats['n_covered'],
@@ -580,7 +580,7 @@ def test_volume_sampling_stage(tmp_path):
     assert set(result['output_tags']) <= {0.0, 1.0, 2.0, 3.0}
     assert sum(result['rows_by_tag'].values()) == result['output_rows']
     assert result['summary_n_rows'] == result['output_rows']
-    assert result['summary_mode'] == 'roi'
+    assert result['summary_band_lo'] is not None
     assert result['summary_volume_estimate'] == pytest.approx(
         result['volume_estimate'])
 
@@ -626,7 +626,7 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'mode': 'roi', 'n_points': 400, 'search': 'none',
+                'n_points': 400, 'search': 'none',
                 'output_file': os.path.join(workdir, 'volume.csv'),
             },
         ) as sampler:
@@ -728,7 +728,7 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=20,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'mode': 'roi', 'n_points': 80, 'min_spacing': 0.15,
+                'n_points': 80, 'min_spacing': 0.15,
                 'output_file': os.path.join(workdir, 'volume.csv'),
             },
         ) as sampler:
@@ -749,7 +749,7 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
                          & (np.abs(anchors[:, 1]) > 1.5))
 
             resolved = np.isin(status, ['covered', 'projected'])
-            band_lo, _ = vol['band_final']
+            band_lo = vol['band_lo_final']
             # Harvested representatives round-trip through the CSV sample
             # file (%.10e, 10 significant digits), so re-evaluation matches
             # the stored logL only to ~1e-8; use a tolerance reflecting that.

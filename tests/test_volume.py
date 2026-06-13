@@ -46,7 +46,10 @@ class TestNormalizeVolumeConfig:
 
     def test_defaults_filled(self):
         cfg = normalize_volume_config({}, roi_threshold=4.0)
-        assert cfg == VOLUME_CONFIG_DEFAULTS
+        # roi_threshold defaults to None in the template but is filled from
+        # the projection's roi_threshold at normalization.
+        expected = dict(VOLUME_CONFIG_DEFAULTS, roi_threshold=4.0)
+        assert cfg == expected
 
     def test_returns_new_dict(self):
         user = {'n_points': 10}
@@ -62,17 +65,19 @@ class TestNormalizeVolumeConfig:
         with pytest.raises(ConfigurationError, match="unknown keys.*'mod'"):
             normalize_volume_config({'mod': 'roi'}, roi_threshold=4.0)
 
-    def test_bad_mode(self):
-        with pytest.raises(ConfigurationError, match="'roi' or 'shell'"):
-            normalize_volume_config({'mode': 'band'}, roi_threshold=4.0)
+    def test_roi_threshold_defaults_to_projection(self):
+        cfg = normalize_volume_config({}, roi_threshold=4.0)
+        assert cfg['roi_threshold'] == 4.0
 
-    def test_shell_threshold_must_exceed_roi_in_shell_mode(self):
-        with pytest.raises(ConfigurationError, match="must exceed"):
-            normalize_volume_config(
-                {'mode': 'shell', 'shell_threshold': 4.0}, roi_threshold=4.0)
-        # Same value is fine in roi mode (shell_threshold unused).
-        cfg = normalize_volume_config({'shell_threshold': 4.0}, roi_threshold=4.0)
-        assert cfg['shell_threshold'] == 4.0
+    def test_roi_threshold_override(self):
+        # The stage can reach past the projection ROI (into the shell).
+        cfg = normalize_volume_config({'roi_threshold': 25.0}, roi_threshold=4.0)
+        assert cfg['roi_threshold'] == 25.0
+
+    @pytest.mark.parametrize("bad", [0, -0.1, np.inf, True])
+    def test_bad_roi_threshold(self, bad):
+        with pytest.raises(ConfigurationError, match="roi_threshold"):
+            normalize_volume_config({'roi_threshold': bad}, roi_threshold=4.0)
 
     @pytest.mark.parametrize("key", ['n_points', 'eval_budget', 'search_max_iter'])
     @pytest.mark.parametrize("bad", [0, -1, 2.5, True, "10"])
@@ -118,14 +123,14 @@ class TestVolumeBand:
 
     def test_roi_band(self):
         cfg = normalize_volume_config({}, roi_threshold=4.0)
-        lo, hi, delta = volume_band(cfg, roi_threshold=4.0, global_max=10.0)
-        assert lo == 6.0 and hi == np.inf and delta == 4.0
+        lo, delta = volume_band(cfg, global_max=10.0)
+        assert lo == 6.0 and delta == 4.0
 
-    def test_shell_band(self):
-        cfg = normalize_volume_config(
-            {'mode': 'shell', 'shell_threshold': 25.0}, roi_threshold=4.0)
-        lo, hi, delta = volume_band(cfg, roi_threshold=4.0, global_max=10.0)
-        assert lo == -15.0 and hi == 6.0 and delta == 25.0
+    def test_widened_band(self):
+        # A larger stage threshold reaches deeper (into the shell).
+        cfg = normalize_volume_config({'roi_threshold': 25.0}, roi_threshold=4.0)
+        lo, delta = volume_band(cfg, global_max=10.0)
+        assert lo == -15.0 and delta == 25.0
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +172,7 @@ class TestProjectionEnvelope:
                                  global_max=0.0, n_dims=1)
         assert env.test([[0.0]], threshold_delta=4.0)[0]
         assert not env.test([[2.0]], threshold_delta=4.0)[0]
-        # A looser (shell) threshold lets the low cells through.
+        # A looser threshold (a widened stage ROI) lets the low cells through.
         assert env.test([[2.0]], threshold_delta=25.0)[0]
 
     def test_final_global_max_recomputes_membership(self):
@@ -363,7 +368,7 @@ class TestHarvest:
     @pytest.mark.parametrize("ext", FORMATS)
     def test_harvest_basics(self, tmp_path, ext):
         anchor_set = make_anchor_set()
-        band_lo, band_hi = -4.0, np.inf
+        band_lo = -4.0
         rows = np.array([
             # Covers anchor 0 (scaled dist 0.05); a farther in-band sample
             # near it must lose to the closer one.
@@ -385,7 +390,7 @@ class TestHarvest:
         write_samples(rows, path)
 
         stats = harvest_existing_samples(
-            anchor_set, [path], band_lo, band_hi)
+            anchor_set, [path], band_lo)
 
         assert stats['n_samples'] == 7
         assert stats['n_in_band'] == 5
@@ -406,19 +411,22 @@ class TestHarvest:
         # Anchor 3: nothing in band nearby.
         assert not np.isfinite(anchor_set.rep_dists[3])
 
-    def test_shell_band_excludes_high_logl(self, tmp_path):
-        anchor_set = make_anchor_set()
+    def test_widened_band_reaches_deeper(self, tmp_path):
+        # A deeper band_lo (a larger stage roi_threshold) lets shell
+        # samples through that a shallower band rejects.
         rows = np.array([
-            [2.0, 2.0, -1.0],    # above the shell: excluded
-            [2.05, 2.0, -10.0],  # inside the shell band
+            [2.0, 2.0, -1.0],    # in-band for either threshold
+            [2.05, 2.0, -10.0],  # only in-band once the band reaches -25
         ])
         path = str(tmp_path / "samples.csv")
         write_samples(rows, path)
 
-        stats = harvest_existing_samples(
-            anchor_set, [path], band_lo=-25.0, band_hi=-4.0)
-        assert stats['n_in_band'] == 1
-        assert anchor_set.rep_logls[0] == -10.0
+        shallow = harvest_existing_samples(make_anchor_set(), [path], band_lo=-4.0)
+        assert shallow['n_in_band'] == 1
+
+        deep_set = make_anchor_set()
+        deep = harvest_existing_samples(deep_set, [path], band_lo=-25.0)
+        assert deep['n_in_band'] == 2
 
     def test_later_file_can_improve(self, tmp_path):
         anchor_set = make_anchor_set()
@@ -427,7 +435,7 @@ class TestHarvest:
         write_samples(np.array([[2.5, 2.0, -1.0]]), path_a)
         write_samples(np.array([[2.1, 2.0, -2.0]]), path_b)
 
-        harvest_existing_samples(anchor_set, [path_a, path_b], -4.0, np.inf)
+        harvest_existing_samples(anchor_set, [path_a, path_b], -4.0)
         np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
 
     def test_cross_file_distance_tie_prefers_higher_logl(self, tmp_path):
@@ -438,7 +446,7 @@ class TestHarvest:
 
         for files in ([path_a, path_b], [path_b, path_a]):
             anchor_set = make_anchor_set()
-            harvest_existing_samples(anchor_set, files, -4.0, np.inf)
+            harvest_existing_samples(anchor_set, files, -4.0)
             assert anchor_set.rep_logls[0] == -1.0
 
     def test_small_chunks_match_single_pass(self, tmp_path):
@@ -452,8 +460,8 @@ class TestHarvest:
 
         one_pass = make_anchor_set()
         chunked = make_anchor_set()
-        harvest_existing_samples(one_pass, [path], -4.0, np.inf)
-        harvest_existing_samples(chunked, [path], -4.0, np.inf, chunk_size=7)
+        harvest_existing_samples(one_pass, [path], -4.0)
+        harvest_existing_samples(chunked, [path], -4.0, chunk_size=7)
         np.testing.assert_array_equal(one_pass.rep_dists,
                                       chunked.rep_dists)
         np.testing.assert_array_equal(one_pass.rep_points,
@@ -464,11 +472,11 @@ class TestHarvest:
         path = str(tmp_path / "samples.csv")
         write_samples(np.zeros((3, 5)), path)  # 4 dims + logL, anchors are 2D
         with pytest.raises(ConfigurationError, match="width"):
-            harvest_existing_samples(anchor_set, [path], -4.0, np.inf)
+            harvest_existing_samples(anchor_set, [path], -4.0)
 
     def test_no_files_is_noop(self):
         anchor_set = make_anchor_set()
-        stats = harvest_existing_samples(anchor_set, [], -4.0, np.inf)
+        stats = harvest_existing_samples(anchor_set, [], -4.0)
         assert stats['n_samples'] == 0
         assert not anchor_set.covered.any()
 
@@ -510,12 +518,24 @@ class TestSamplerConfigIntegration:
             target_func=simple_2d_function,
             bounds=simple_bounds_2d,
             projections=[basic_projection_1d],
-            volume_sampling={'mode': 'shell', 'n_points': 50},
+            roi_threshold=4.0,
+            volume_sampling={'roi_threshold': 25.0, 'n_points': 50},
         )
         cfg = sampler.volume_sampling_config
-        assert cfg['mode'] == 'shell'
+        assert cfg['roi_threshold'] == 25.0
         assert cfg['n_points'] == 50
-        assert cfg['shell_threshold'] == 25.0  # default filled in
+
+    def test_volume_roi_threshold_defaults_to_projection(
+            self, simple_2d_function, simple_bounds_2d, basic_projection_1d):
+        sampler = ProfileProjector(
+            target_func=simple_2d_function,
+            bounds=simple_bounds_2d,
+            projections=[basic_projection_1d],
+            roi_threshold=4.0,
+            volume_sampling={'n_points': 50},
+        )
+        # Unset stage roi_threshold inherits the projection's.
+        assert sampler.volume_sampling_config['roi_threshold'] == 4.0
 
     def test_volume_sampling_default_off(self, simple_2d_function,
                                          simple_bounds_2d,
@@ -530,11 +550,11 @@ class TestSamplerConfigIntegration:
     def test_invalid_volume_sampling_raises(self, simple_2d_function,
                                             simple_bounds_2d,
                                             basic_projection_1d):
-        with pytest.raises(ConfigurationError, match="shell_threshold"):
+        with pytest.raises(ConfigurationError, match="roi_threshold"):
             ProfileProjector(
                 target_func=simple_2d_function,
                 bounds=simple_bounds_2d,
                 projections=[basic_projection_1d],
                 roi_threshold=30.0,
-                volume_sampling={'mode': 'shell', 'shell_threshold': 25.0},
+                volume_sampling={'roi_threshold': -5.0},
             )
