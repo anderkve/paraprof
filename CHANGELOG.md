@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PHASE_LEGEND`): initial optimization, scan, refinement, suspect recheck, and
   the two volume-sampling phases (probe / search). Filtering on this column
   recovers any subset from the single file — e.g. the volume probes for the band
-  volume estimate. The warm-start reader reads params/logL by position and
-  ignores the column, so logs still round-trip; volume harvest accepts rows of
-  width `n_dims + 1` (legacy) or `n_dims + 2`.
+  volume estimate. Sample rows are now `n_dims + 2` columns throughout: the
+  warm-start reader and volume harvest read params/logL by position and ignore
+  the trailing phase column, so a run's log round-trips.
 
 ### Added
 - **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional

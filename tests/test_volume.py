@@ -365,11 +365,17 @@ def make_anchor_set():
 
 class TestHarvest:
 
+    @staticmethod
+    def _log(rows, phase=1.0):
+        """Append a phase column: harvest expects [params..., logL, phase]."""
+        rows = np.asarray(rows, dtype=float)
+        return np.column_stack([rows, np.full(len(rows), phase)])
+
     @pytest.mark.parametrize("ext", FORMATS)
     def test_harvest_basics(self, tmp_path, ext):
         anchor_set = make_anchor_set()
         band_lo = -4.0
-        rows = np.array([
+        rows = self._log([
             # Covers anchor 0 (scaled dist 0.05); a farther in-band sample
             # near it must lose to the closer one.
             [2.5, 2.0, -1.0],
@@ -414,7 +420,7 @@ class TestHarvest:
     def test_widened_band_reaches_deeper(self, tmp_path):
         # A deeper band_lo (a larger stage roi_threshold) lets shell
         # samples through that a shallower band rejects.
-        rows = np.array([
+        rows = self._log([
             [2.0, 2.0, -1.0],    # in-band for either threshold
             [2.05, 2.0, -10.0],  # only in-band once the band reaches -25
         ])
@@ -432,8 +438,8 @@ class TestHarvest:
         anchor_set = make_anchor_set()
         path_a = str(tmp_path / "a.csv")
         path_b = str(tmp_path / "b.csv")
-        write_samples(np.array([[2.5, 2.0, -1.0]]), path_a)
-        write_samples(np.array([[2.1, 2.0, -2.0]]), path_b)
+        write_samples(self._log([[2.5, 2.0, -1.0]]), path_a)
+        write_samples(self._log([[2.1, 2.0, -2.0]]), path_b)
 
         harvest_existing_samples(anchor_set, [path_a, path_b], -4.0)
         np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
@@ -441,8 +447,8 @@ class TestHarvest:
     def test_cross_file_distance_tie_prefers_higher_logl(self, tmp_path):
         path_a = str(tmp_path / "a.csv")
         path_b = str(tmp_path / "b.csv")
-        write_samples(np.array([[2.1, 2.0, -2.0]]), path_a)
-        write_samples(np.array([[2.1, 2.0, -1.0]]), path_b)
+        write_samples(self._log([[2.1, 2.0, -2.0]]), path_a)
+        write_samples(self._log([[2.1, 2.0, -1.0]]), path_b)
 
         for files in ([path_a, path_b], [path_b, path_a]):
             anchor_set = make_anchor_set()
@@ -454,6 +460,7 @@ class TestHarvest:
         rows = np.column_stack([
             rng.uniform(0.0, 10.0, size=(200, 2)),
             rng.uniform(-8.0, 0.0, size=200),
+            np.zeros(200),  # phase column
         ])
         path = str(tmp_path / "samples.csv")
         write_samples(rows, path)
@@ -468,15 +475,18 @@ class TestHarvest:
                                       chunked.rep_points)
 
     def test_width_mismatch_raises(self, tmp_path):
-        anchor_set = make_anchor_set()
-        path = str(tmp_path / "samples.csv")
-        write_samples(np.zeros((3, 5)), path)  # 4 dims + logL, anchors are 2D
-        with pytest.raises(ConfigurationError, match="width"):
-            harvest_existing_samples(anchor_set, [path], -4.0)
+        # Anchors are 2D, so the only accepted width is n_dims + 2 = 4
+        # ([params..., logL, phase]). A legacy [params, logL] file (width 3)
+        # and a wrong-dimension file (width 5) are both rejected.
+        for bad_width in (3, 5):
+            path = str(tmp_path / f"samples_{bad_width}.csv")
+            write_samples(np.zeros((3, bad_width)), path)
+            with pytest.raises(ConfigurationError, match="width"):
+                harvest_existing_samples(make_anchor_set(), [path], -4.0)
 
-    def test_phase_column_accepted(self, tmp_path):
-        # The run's own log is [params..., logL, phase] (width n_dims + 2);
-        # harvest reads logL at column n_dims and ignores the phase.
+    def test_reads_logl_and_ignores_phase(self, tmp_path):
+        # Canonical [params..., logL, phase]: harvest reads logL at column
+        # n_dims and ignores the trailing phase column.
         anchor_set = make_anchor_set()
         rows = np.array([
             [2.05, 2.0, -1.0, 1.0],   # in-band, near anchor 0; phase 1

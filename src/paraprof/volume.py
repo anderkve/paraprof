@@ -597,14 +597,13 @@ def harvest_existing_samples(anchor_set, sample_files, band_lo,
         for batch in iter_sample_batches(path, **iter_kwargs):
             if batch.size == 0:
                 continue
-            # Accept rows of width n_dims + 1 ([params, logL]) or n_dims + 2
-            # ([params, logL, phase] — this run's own sample log), reading logL
-            # at column n_dims and ignoring any trailing provenance column.
-            if batch.shape[1] not in (n_dims + 1, n_dims + 2):
+            # Sample rows are [params..., logL, phase] (width n_dims + 2);
+            # harvest reads logL at column n_dims and ignores the phase.
+            if batch.shape[1] != n_dims + 2:
                 raise ConfigurationError(
                     f"Sample file '{path}' has rows of width {batch.shape[1]}; "
-                    f"expected n_dims + 1 = {n_dims + 1} (optionally with a "
-                    f"trailing phase column).",
+                    f"expected n_dims + 2 = {n_dims + 2} "
+                    f"([params..., logL, phase]).",
                     parameter="volume_sampling.harvest_files", value=path,
                 )
             stats['n_samples'] += len(batch)

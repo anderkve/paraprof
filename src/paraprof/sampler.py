@@ -1375,15 +1375,15 @@ class ProfileProjector:
         if samples.size == 0:
             self.logger.info("  Warm-start file contained no samples. Skipping.")
             return
-        if samples.shape[1] < self.dims + 1:
+        if samples.shape[1] != self.dims + 2:
             self.logger.info(
-                f"  Warm-start file rows are too narrow (width {samples.shape[1]}, "
-                f"need at least n_dims + 1 = {self.dims + 1}). Skipping."
+                f"  Warm-start file rows have width {samples.shape[1]}, expected "
+                f"n_dims + 2 = {self.dims + 2} ([params..., logL, phase]). Skipping."
             )
             return
 
-        # Columns past the parameters and logL (e.g. the phase column written
-        # by this run's own sample log) are ignored, so a file can round-trip.
+        # params and logL are read by position; the trailing phase column is
+        # ignored, so a run's own sample log round-trips.
         best_candidates = {}
         for sample_row in samples:
             params = sample_row[:self.dims]
