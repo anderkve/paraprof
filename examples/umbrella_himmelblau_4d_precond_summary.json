@@ -1,0 +1,21 @@
+{
+  "function": "himmelblau_4d",
+  "label": "precond",
+  "precondition": true,
+  "burn_in": 4,
+  "roi_threshold": 4.0,
+  "roi_volume": 6.0,
+  "sigma": 0.8999999999999999,
+  "grid": 20,
+  "global_max": -1.0417738535765985e-16,
+  "n_projection_evals": 46612,
+  "eval_budget": 46612,
+  "n_walkers": 1503,
+  "steps_per_walker": 30,
+  "n_umbrella_evals": 46593,
+  "n_in_band": 25125,
+  "in_band_fraction": 0.5392440924602409,
+  "mean_acceptance": 0.38085120082415813,
+  "projection_seconds": 8.8,
+  "walker_seconds": 6.0
+}

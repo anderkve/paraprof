@@ -1,0 +1,21 @@
+{
+  "function": "rosenbrock_4d",
+  "label": "precond_long",
+  "precondition": true,
+  "burn_in": 4,
+  "roi_threshold": 8.0,
+  "roi_volume": 10.0,
+  "sigma": 1.5,
+  "grid": 20,
+  "global_max": -1.9595299515732214e-12,
+  "n_projection_evals": 15591,
+  "eval_budget": 15591,
+  "n_walkers": 128,
+  "steps_per_walker": 120,
+  "n_umbrella_evals": 15488,
+  "n_in_band": 5631,
+  "in_band_fraction": 0.36357179752066116,
+  "mean_acceptance": 0.2221720041322314,
+  "projection_seconds": 2.5,
+  "walker_seconds": 1.7
+}

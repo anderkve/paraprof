@@ -58,6 +58,12 @@ def parse_args():
                    help='default: projection evals')
     p.add_argument('--n-walkers', type=int, default=None,
                    help='default: eval_budget // (steps + 1)')
+    p.add_argument('--label', default='')
+    p.add_argument('--no-precondition', action='store_true',
+                   help='use isotropic proposals (disable the local '
+                        'gradient preconditioner)')
+    p.add_argument('--burn-in', type=int, default=4,
+                   help='isotropic steps before the preconditioner engages')
     return p.parse_args()
 
 
@@ -65,6 +71,8 @@ args = parse_args()
 func_name = args.func
 roi_threshold = args.roi
 roi_volume = roi_threshold + 2.0          # same band as the funnel test
+suffix = f"_{args.label}" if args.label else ""
+precondition = not args.no_precondition
 np.random.seed(20260613)
 
 log_likelihood, bounds, _ = get_test_function(func_name)
@@ -122,7 +130,8 @@ if rank == 0:
         # --- Walker state ---
         theta = starts.copy()
         lnl_cur = np.full(n_walkers, np.nan)        # NaN until seed eval done
-        step = np.full(n_walkers, 0.05)             # scaled-space proposal sd
+        step = np.full(n_walkers, 0.05)             # tangential proposal sd
+        grad = np.zeros((n_walkers, n_dims))        # scaled-space lnL gradient
         n_done = np.zeros(n_walkers, dtype=int)
         proposal = [None] * n_walkers
         records = []                                # (params, lnl, acc, level)
@@ -134,8 +143,22 @@ if rank == 0:
         evals = 0
 
         def propose(w):
-            s = (theta[w] - lo) / extent + step[w] * rng.standard_normal(n_dims)
-            return lo + np.clip(s, 0.0, 1.0) * extent
+            scaled = (theta[w] - lo) / extent
+            z = rng.standard_normal(n_dims)
+            gn = np.linalg.norm(grad[w])
+            if precondition and n_done[w] >= args.burn_in and gn > 1e-8:
+                # Anisotropic step: small along the lnL gradient (sized so a
+                # step changes lnL by ~sigma, keeping the walker in its
+                # umbrella), large in the tangent plane (free along the
+                # iso-lnL surface). Rank-1 preconditioner, updated each step.
+                n = grad[w] / gn
+                z_par = float(z @ n)
+                z_perp = z - z_par * n
+                s_par = float(np.clip(sigma / gn, 1e-3, 0.3))
+                delta = step[w] * z_perp + s_par * z_par * n
+            else:
+                delta = step[w] * z
+            return lo + np.clip(scaled + delta, 0.0, 1.0) * extent
 
         pending = []
         while True:
@@ -168,6 +191,14 @@ if rank == 0:
                 theta[w] = params
                 records.append((params, lnl, 1, levels[w]))
             else:
+                # Broyden secant update of the local lnL gradient from this
+                # proposal (zero extra evals; uses every proposed point).
+                if precondition and np.isfinite(lnl):
+                    dscaled = (params - theta[w]) / extent
+                    d2 = float(dscaled @ dscaled)
+                    if d2 > 1e-18:
+                        grad[w] = grad[w] + (
+                            (lnl - lnl_cur[w]) - grad[w] @ dscaled) / d2 * dscaled
                 d = (umbrella_logpi(lnl, levels[w], sigma)
                      - umbrella_logpi(lnl_cur[w], levels[w], sigma))
                 acc = np.log(rng.uniform()) < d
@@ -189,12 +220,14 @@ if rank == 0:
         # --- Write outputs ---
         data = np.array([list(p) + [lnl, acc, lev]
                          for p, lnl, acc, lev in records])
-        np.savetxt(f"umbrella_{func_name}.csv", data, delimiter=',')
+        np.savetxt(f"umbrella_{func_name}{suffix}.csv", data, delimiter=',')
 
         lnls = data[:, n_dims]
         in_band = np.isfinite(lnls) & (lnls >= band_lo)
         summary = {
-            'function': func_name, 'roi_threshold': roi_threshold,
+            'function': func_name, 'label': args.label,
+            'precondition': precondition, 'burn_in': args.burn_in,
+            'roi_threshold': roi_threshold,
             'roi_volume': roi_volume, 'sigma': sigma, 'grid': args.grid,
             'global_max': float(global_max),
             'n_projection_evals': int(n_projection_evals),
@@ -207,7 +240,7 @@ if rank == 0:
             'projection_seconds': round(t_proj - t0, 1),
             'walker_seconds': round(t_walk - t_proj, 1),
         }
-        with open(f"umbrella_{func_name}_summary.json", 'w') as f:
+        with open(f"umbrella_{func_name}{suffix}_summary.json", 'w') as f:
             json.dump(summary, f, indent=2)
         print("UMBRELLA_SUMMARY", json.dumps(summary), flush=True)
 
