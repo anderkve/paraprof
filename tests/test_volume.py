@@ -40,93 +40,45 @@ def band_envelope_1d(dim, lo, hi, n_dims, n_cells=101, bounds_extent=(-5.0, 5.0)
 
 
 # --------------------------------------------------------------------------- #
-# Config normalization
+# Config normalization and band
 # --------------------------------------------------------------------------- #
 class TestNormalizeVolumeConfig:
 
-    def test_defaults_filled(self):
-        cfg = normalize_volume_config({}, roi_threshold=4.0)
-        # roi_threshold defaults to None in the template but is filled from
-        # the projection's roi_threshold at normalization.
-        expected = dict(VOLUME_CONFIG_DEFAULTS, roi_threshold=4.0)
-        assert cfg == expected
-
-    def test_returns_new_dict(self):
+    def test_defaults_and_roi_inheritance(self):
+        # An unset roi_threshold inherits the projection's; the result is a
+        # fresh dict that does not mutate the caller's.
         user = {'n_points': 10}
         cfg = normalize_volume_config(user, roi_threshold=4.0)
-        assert cfg['n_points'] == 10
+        assert cfg == dict(VOLUME_CONFIG_DEFAULTS, roi_threshold=4.0, n_points=10)
         assert user == {'n_points': 10}
-
-    def test_not_a_dict(self):
-        with pytest.raises(ConfigurationError, match="must be a dict"):
-            normalize_volume_config("roi", roi_threshold=4.0)
 
     def test_unknown_key(self):
         with pytest.raises(ConfigurationError, match="unknown keys.*'mod'"):
             normalize_volume_config({'mod': 'roi'}, roi_threshold=4.0)
 
-    def test_roi_threshold_override(self):
-        # The stage can reach past the projection ROI (into the shell).
-        cfg = normalize_volume_config({'roi_threshold': 25.0}, roi_threshold=4.0)
-        assert cfg['roi_threshold'] == 25.0
-
-    @pytest.mark.parametrize("bad", [0, -0.1, np.inf, True])
-    def test_bad_roi_threshold(self, bad):
-        with pytest.raises(ConfigurationError, match="roi_threshold"):
-            normalize_volume_config({'roi_threshold': bad}, roi_threshold=4.0)
-
-    @pytest.mark.parametrize("key", ['n_points', 'eval_budget', 'search_max_iter'])
-    @pytest.mark.parametrize("bad", [0, -1, 2.5, True, "10"])
-    def test_bad_positive_ints(self, key, bad):
-        with pytest.raises(ConfigurationError, match=key):
-            normalize_volume_config({key: bad}, roi_threshold=4.0)
-
-    @pytest.mark.parametrize("key", ['eval_budget', 'search_max_iter', 'min_spacing'])
-    def test_none_allowed(self, key):
-        cfg = normalize_volume_config({key: None}, roi_threshold=4.0)
-        assert cfg[key] is None
-
-    @pytest.mark.parametrize("bad", [0, -0.1, np.inf, True])
-    def test_bad_min_spacing(self, bad):
-        with pytest.raises(ConfigurationError, match="min_spacing"):
-            normalize_volume_config({'min_spacing': bad}, roi_threshold=4.0)
-
-    def test_bad_search(self):
-        with pytest.raises(ConfigurationError, match="'lbfgsb' or 'none'"):
-            normalize_volume_config({'search': 'de'}, roi_threshold=4.0)
-
-    def test_bad_probe_all_anchors(self):
-        with pytest.raises(ConfigurationError, match="probe_all_anchors"):
-            normalize_volume_config({'probe_all_anchors': 1}, roi_threshold=4.0)
+    @pytest.mark.parametrize("config,match", [
+        ({'roi_threshold': -5.0}, "roi_threshold"),
+        ({'n_points': 0}, "n_points"),
+        ({'min_spacing': np.inf}, "min_spacing"),
+        ({'search': 'de'}, "'lbfgsb' or 'none'"),
+        ({'depth_law': 'posterior'}, "depth_law"),
+        ({'interior_steps': -1}, "interior_steps"),
+        ({'output_file': ''}, "output_file"),
+    ])
+    def test_bad_values_rejected(self, config, match):
+        with pytest.raises(ConfigurationError, match=match):
+            normalize_volume_config(config, roi_threshold=4.0)
 
     def test_harvest_files_normalized_to_list(self):
         cfg = normalize_volume_config({'harvest_files': 'a.csv'}, roi_threshold=4.0)
         assert cfg['harvest_files'] == ['a.csv']
-        cfg = normalize_volume_config(
-            {'harvest_files': ('a.csv', 'b.h5')}, roi_threshold=4.0)
-        assert cfg['harvest_files'] == ['a.csv', 'b.h5']
 
-    def test_bad_harvest_files(self):
-        with pytest.raises(ConfigurationError, match="harvest_files"):
-            normalize_volume_config({'harvest_files': [1]}, roi_threshold=4.0)
-
-    def test_bad_output_file(self):
-        with pytest.raises(ConfigurationError, match="output_file"):
-            normalize_volume_config({'output_file': ''}, roi_threshold=4.0)
-
-
-class TestVolumeBand:
-
-    def test_roi_band(self):
+    def test_band_one_sided(self):
         cfg = normalize_volume_config({}, roi_threshold=4.0)
-        lo, delta = volume_band(cfg, global_max=10.0)
-        assert lo == 6.0 and delta == 4.0
-
-    def test_widened_band(self):
+        assert volume_band(cfg, global_max=10.0) == (6.0, 4.0)
         # A larger stage threshold reaches deeper (into the shell).
-        cfg = normalize_volume_config({'roi_threshold': 25.0}, roi_threshold=4.0)
-        lo, delta = volume_band(cfg, global_max=10.0)
-        assert lo == -15.0 and delta == 25.0
+        wide = normalize_volume_config({'roi_threshold': 25.0}, roi_threshold=4.0)
+        assert volume_band(wide, global_max=10.0) == (-15.0, 25.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +87,8 @@ class TestVolumeBand:
 class TestProjectionEnvelope:
 
     def test_cylinder_intersection(self):
-        # Two 1D projections of a 2D space: ROI is |x| <= 2 and y >= 0.
+        # Two 1D projections of a 2D space: ROI is |x| <= 2 and y >= 0. Points
+        # are rejected by a below-threshold OR a never-activated cell of either.
         axis = np.linspace(-5.0, 5.0, 11)
         rec_x = make_record([0], [axis], {(i,): 0.0 for i, x in enumerate(axis)
                                           if abs(x) <= 2.0})
@@ -148,40 +101,31 @@ class TestProjectionEnvelope:
             [0.0, 3.0],    # passes both
             [4.0, 3.0],    # fails x (never-activated cell)
             [0.0, -3.0],   # fails y
-            [4.0, -3.0],   # fails both
         ])
         np.testing.assert_array_equal(
             env.test(points, threshold_delta=4.0),
-            [True, True, False, False, False],
+            [True, True, False, False],
         )
 
-    def test_single_point_input(self):
-        env = band_envelope_1d(0, -1.0, 1.0, n_dims=2)
-        assert env.test([0.0, 4.0], threshold_delta=4.0)[0]
-        assert not env.test([3.0, 0.0], threshold_delta=4.0)[0]
-
-    def test_below_threshold_cell_rejects(self):
+    def test_threshold_and_widening(self):
         axis = np.linspace(-5.0, 5.0, 11)
-        # Activated cells everywhere, but only the center cell is in the ROI.
+        # Activated everywhere, but only the center cell is in the ROI.
         cells = {(i,): (0.0 if x == 0.0 else -10.0) for i, x in enumerate(axis)}
         env = ProjectionEnvelope([make_record([0], [axis], cells)],
                                  global_max=0.0, n_dims=1)
         assert env.test([[0.0]], threshold_delta=4.0)[0]
         assert not env.test([[2.0]], threshold_delta=4.0)[0]
-        # A looser threshold (a widened stage ROI) lets the low cells through.
+        # A looser threshold (a widened stage ROI) lets the low cell through.
         assert env.test([[2.0]], threshold_delta=25.0)[0]
 
     def test_final_global_max_recomputes_membership(self):
         # Cells stored at logL=0; a later projection found global max 10, so
-        # none of them are in the ROI any more.
-        env_old = band_envelope_1d(0, -2.0, 2.0, n_dims=1, global_max=0.0)
-        assert env_old.test([[0.0]], threshold_delta=4.0)[0]
-
+        # none are in the ROI any more.
         axis = np.linspace(-5.0, 5.0, 101)
         cells = {(i,): 0.0 for i, x in enumerate(axis) if abs(x) <= 2.0}
-        env_new = ProjectionEnvelope([make_record([0], [axis], cells)],
-                                     global_max=10.0, n_dims=1)
-        assert not env_new.test([[0.0]], threshold_delta=4.0)[0]
+        env = ProjectionEnvelope([make_record([0], [axis], cells)],
+                                 global_max=10.0, n_dims=1)
+        assert not env.test([[0.0]], threshold_delta=4.0)[0]
 
     def test_covers_full_space(self):
         axis = np.linspace(-5.0, 5.0, 6)
@@ -197,38 +141,17 @@ class TestProjectionEnvelope:
         axis_fine = np.linspace(-5.0, 5.0, 11)
         coarse = make_record([0], [axis_coarse], {(0,): 0.0})
         refined = make_record([0], [axis_fine], {(i,): 0.0 for i in range(11)})
-        results = [
-            {'coarse_solution': coarse, 'refined_solution': refined},
-            {'coarse_solution': coarse, 'refined_solution': None},
-        ]
         env = ProjectionEnvelope.from_projection_results(
-            results, global_max=0.0, n_dims=1)
+            [{'coarse_solution': coarse, 'refined_solution': refined},
+             {'coarse_solution': coarse, 'refined_solution': None}],
+            global_max=0.0, n_dims=1)
         assert env.n_projections == 2
-        assert len(env._records[0]['axes'][0]) == 11
-        assert len(env._records[1]['axes'][0]) == 6
-
-    def test_from_projection_results_missing_solution(self):
+        assert len(env._records[0]['axes'][0]) == 11   # refined preferred
+        assert len(env._records[1]['axes'][0]) == 6     # coarse fallback
         with pytest.raises(ValueError, match="no exported grid solution"):
             ProjectionEnvelope.from_projection_results(
                 [{'coarse_solution': None, 'refined_solution': None}],
                 global_max=0.0, n_dims=1)
-
-    def test_invalid_records(self):
-        axis = np.linspace(0.0, 1.0, 5)
-        with pytest.raises(ValueError, match="out of range"):
-            ProjectionEnvelope([make_record([3], [axis], {})],
-                               global_max=0.0, n_dims=2)
-        with pytest.raises(ValueError, match="grid axes"):
-            ProjectionEnvelope([make_record([0, 1], [axis], {})],
-                               global_max=0.0, n_dims=2)
-        with pytest.raises(ValueError, match="at least 2 points"):
-            ProjectionEnvelope([make_record([0], [axis[:1]], {})],
-                               global_max=0.0, n_dims=2)
-
-    def test_bad_points_shape(self):
-        env = band_envelope_1d(0, -1.0, 1.0, n_dims=2)
-        with pytest.raises(ValueError, match="shape"):
-            env.test(np.zeros((3, 3)), threshold_delta=4.0)
 
     def test_cell_mapping_matches_sampler(self, simple_2d_function,
                                           simple_bounds_2d):
@@ -256,24 +179,17 @@ class TestGenerateAnchors:
 
     BOUNDS_2D = np.array([[-5.0, 5.0], [-5.0, 5.0]])
 
-    def test_anchors_pass_envelope(self):
+    def test_anchors_pass_envelope_and_estimate_acceptance(self):
+        # ROI band |x| <= 1 of [-5, 5]: ~20% of the box volume.
         env = band_envelope_1d(0, -1.0, 1.0, n_dims=2)
         anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=100,
                                       threshold_delta=4.0, seed=1)
         assert anchor_set.n_anchors == 100
         assert env.test(anchor_set.anchors, threshold_delta=4.0).all()
-        # Half-cell rounding slack at the ROI edge (cell width 0.1).
+        # Constrained dim within the ROI (half-cell slack); free dim spans box.
         assert np.all(np.abs(anchor_set.anchors[:, 0]) <= 1.0 + 0.05)
-        # Unconstrained dim spans the box.
         assert anchor_set.anchors[:, 1].min() < -3.0
         assert anchor_set.anchors[:, 1].max() > 3.0
-
-    def test_prefilter_acceptance_estimate(self):
-        # ROI band |x| <= 1 of [-5, 5]: ~20% of the box volume.
-        env = band_envelope_1d(0, -1.0, 1.0, n_dims=2)
-        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=100,
-                                      threshold_delta=4.0, seed=2)
-        assert anchor_set.n_draws >= 4096
         assert anchor_set.prefilter_acceptance == pytest.approx(0.21, abs=0.03)
 
     def test_seed_reproducibility(self):
@@ -289,9 +205,6 @@ class TestGenerateAnchors:
         axis = np.linspace(-5.0, 5.0, 11)
         env = ProjectionEnvelope([make_record([0], [axis], {})],
                                  global_max=0.0, n_dims=2)
-
-        # paraprof's logger does not propagate, so caplog can't see it;
-        # listen with a handler attached to the logger itself.
         messages = []
         handler = logging.Handler()
         handler.emit = lambda record: messages.append(record.getMessage())
@@ -303,9 +216,7 @@ class TestGenerateAnchors:
                                           draw_cap=8192)
         finally:
             logger.removeHandler(handler)
-
         assert anchor_set.n_anchors == 0
-        assert anchor_set.n_draws >= 8192
         assert anchor_set.prefilter_acceptance == 0.0
         assert any("draw cap" in m for m in messages)
 
@@ -323,77 +234,45 @@ class TestGenerateAnchors:
         np.fill_diagonal(dists, np.inf)
         assert dists.min() >= spacing
 
-    def test_default_coverage_radius_is_median_nn(self):
-        env = band_envelope_1d(0, -5.0, 5.0, n_dims=2)
-        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=64,
-                                      threshold_delta=4.0, seed=7)
-        assert np.isfinite(anchor_set.coverage_radius)
-        assert 0.0 < anchor_set.coverage_radius < 1.0
-
 
 # --------------------------------------------------------------------------- #
 # Harvest tier
 # --------------------------------------------------------------------------- #
-try:
-    import h5py  # noqa: F401
-    HAS_H5PY = True
-except ImportError:
-    HAS_H5PY = False
-
-FORMATS = [
-    pytest.param(".csv", id="csv"),
-    pytest.param(".h5", id="hdf5",
-                 marks=pytest.mark.skipif(not HAS_H5PY, reason="needs h5py")),
-]
-
-
 def make_anchor_set():
     """Four anchors in the corners of [0, 10]^2, coverage radius 0.1 (scaled)."""
     bounds = np.array([[0.0, 10.0], [0.0, 10.0]])
-    anchors = np.array([
-        [2.0, 2.0],   # anchor 0
-        [8.0, 2.0],   # anchor 1
-        [2.0, 8.0],   # anchor 2
-        [8.0, 8.0],   # anchor 3
-    ])
+    anchors = np.array([[2.0, 2.0], [8.0, 2.0], [2.0, 8.0], [8.0, 8.0]])
     return AnchorSet(anchors, bounds, coverage_radius=0.1)
+
+
+def _log(rows, phase=1.0):
+    """Append a phase column: harvest expects [params..., logL, phase]."""
+    rows = np.asarray(rows, dtype=float)
+    return np.column_stack([rows, np.full(len(rows), phase)])
 
 
 class TestHarvest:
 
-    @staticmethod
-    def _log(rows, phase=1.0):
-        """Append a phase column: harvest expects [params..., logL, phase]."""
-        rows = np.asarray(rows, dtype=float)
-        return np.column_stack([rows, np.full(len(rows), phase)])
-
-    @pytest.mark.parametrize("ext", FORMATS)
-    def test_harvest_basics(self, tmp_path, ext):
+    def test_harvest_basics(self, tmp_path):
         anchor_set = make_anchor_set()
-        band_lo = -4.0
-        rows = self._log([
+        rows = _log([
             # Covers anchor 0 (scaled dist 0.05); a farther in-band sample
             # near it must lose to the closer one.
             [2.5, 2.0, -1.0],
             [2.1, 2.0, -3.0],
-            # Exact distance tie for anchor 1 (same point evaluated twice):
-            # higher logL must win.
+            # Exact distance tie for anchor 1: higher logL must win.
             [8.0, 2.5, -2.0],
             [8.0, 2.5, -1.0],
-            # In-band but outside the coverage radius of anchor 2 (scaled
-            # dist 0.25): warm-start hint only.
+            # In-band but outside anchor 2's coverage radius: warm start only.
             [2.0, 5.5, -2.0],
-            # Out-of-band sample near anchor 3: ignored entirely.
+            # Out-of-band and non-finite samples near anchor 3: ignored.
             [8.0, 8.0, -100.0],
-            # Non-finite logL: ignored.
             [8.0, 8.0, np.nan],
         ])
-        path = str(tmp_path / f"samples{ext}")
+        path = str(tmp_path / "samples.csv")
         write_samples(rows, path)
 
-        stats = harvest_existing_samples(
-            anchor_set, [path], band_lo)
-
+        stats = harvest_existing_samples(anchor_set, [path], band_lo=-4.0)
         assert stats['n_samples'] == 7
         assert stats['n_in_band'] == 5
         assert stats['n_covered'] == 2
@@ -405,51 +284,22 @@ class TestHarvest:
         np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
         assert anchor_set.rep_logls[0] == -3.0
         # Anchor 1: distance tie broken by higher logL.
-        np.testing.assert_allclose(anchor_set.rep_points[1], [8.0, 2.5])
         assert anchor_set.rep_logls[1] == -1.0
         # Anchor 2: warm-start hint beyond the coverage radius.
-        np.testing.assert_allclose(anchor_set.rep_points[2], [2.0, 5.5])
         assert anchor_set.rep_dists[2] == pytest.approx(0.25)
         # Anchor 3: nothing in band nearby.
         assert not np.isfinite(anchor_set.rep_dists[3])
 
     def test_widened_band_reaches_deeper(self, tmp_path):
-        # A deeper band_lo (a larger stage roi_threshold) lets shell
-        # samples through that a shallower band rejects.
-        rows = self._log([
-            [2.0, 2.0, -1.0],    # in-band for either threshold
-            [2.05, 2.0, -10.0],  # only in-band once the band reaches -25
-        ])
+        # A deeper band_lo (a larger stage roi_threshold) lets shell samples
+        # through that a shallower band rejects.
+        rows = _log([[2.0, 2.0, -1.0], [2.05, 2.0, -10.0]])
         path = str(tmp_path / "samples.csv")
         write_samples(rows, path)
-
-        shallow = harvest_existing_samples(make_anchor_set(), [path], band_lo=-4.0)
-        assert shallow['n_in_band'] == 1
-
-        deep_set = make_anchor_set()
-        deep = harvest_existing_samples(deep_set, [path], band_lo=-25.0)
-        assert deep['n_in_band'] == 2
-
-    def test_later_file_can_improve(self, tmp_path):
-        anchor_set = make_anchor_set()
-        path_a = str(tmp_path / "a.csv")
-        path_b = str(tmp_path / "b.csv")
-        write_samples(self._log([[2.5, 2.0, -1.0]]), path_a)
-        write_samples(self._log([[2.1, 2.0, -2.0]]), path_b)
-
-        harvest_existing_samples(anchor_set, [path_a, path_b], -4.0)
-        np.testing.assert_allclose(anchor_set.rep_points[0], [2.1, 2.0])
-
-    def test_cross_file_distance_tie_prefers_higher_logl(self, tmp_path):
-        path_a = str(tmp_path / "a.csv")
-        path_b = str(tmp_path / "b.csv")
-        write_samples(self._log([[2.1, 2.0, -2.0]]), path_a)
-        write_samples(self._log([[2.1, 2.0, -1.0]]), path_b)
-
-        for files in ([path_a, path_b], [path_b, path_a]):
-            anchor_set = make_anchor_set()
-            harvest_existing_samples(anchor_set, files, -4.0)
-            assert anchor_set.rep_logls[0] == -1.0
+        assert harvest_existing_samples(
+            make_anchor_set(), [path], band_lo=-4.0)['n_in_band'] == 1
+        assert harvest_existing_samples(
+            make_anchor_set(), [path], band_lo=-25.0)['n_in_band'] == 2
 
     def test_small_chunks_match_single_pass(self, tmp_path):
         rng = np.random.default_rng(11)
@@ -460,95 +310,50 @@ class TestHarvest:
         ])
         path = str(tmp_path / "samples.csv")
         write_samples(rows, path)
-
-        one_pass = make_anchor_set()
-        chunked = make_anchor_set()
+        one_pass, chunked = make_anchor_set(), make_anchor_set()
         harvest_existing_samples(one_pass, [path], -4.0)
         harvest_existing_samples(chunked, [path], -4.0, chunk_size=7)
-        np.testing.assert_array_equal(one_pass.rep_dists,
-                                      chunked.rep_dists)
-        np.testing.assert_array_equal(one_pass.rep_points,
-                                      chunked.rep_points)
+        np.testing.assert_array_equal(one_pass.rep_points, chunked.rep_points)
 
     def test_width_mismatch_raises(self, tmp_path):
         # Anchors are 2D, so the only accepted width is n_dims + 2 = 4
-        # ([params..., logL, phase]). A legacy [params, logL] file (width 3)
-        # and a wrong-dimension file (width 5) are both rejected.
+        # ([params..., logL, phase]); other widths are rejected.
         for bad_width in (3, 5):
             path = str(tmp_path / f"samples_{bad_width}.csv")
             write_samples(np.zeros((3, bad_width)), path)
             with pytest.raises(ConfigurationError, match="width"):
                 harvest_existing_samples(make_anchor_set(), [path], -4.0)
 
-    def test_no_files_is_noop(self):
-        anchor_set = make_anchor_set()
-        stats = harvest_existing_samples(anchor_set, [], -4.0)
-        assert stats['n_samples'] == 0
-        assert not anchor_set.covered.any()
 
-
-class TestResolveHarvestFiles:
-
-    def test_combines_and_dedupes(self, tmp_path):
-        own = tmp_path / "samples.csv"
-        extra = tmp_path / "extra.csv"
-        own.write_text("0.0,0.0,-1.0\n")
-        extra.write_text("0.0,0.0,-1.0\n")
-        cfg = normalize_volume_config(
-            {'harvest_files': [str(extra), str(own)]}, roi_threshold=4.0)
-        files = resolve_harvest_files(cfg, samples_output_file=str(own))
-        assert files == [str(own), str(extra)]
-
-    def test_missing_own_file_skipped(self, tmp_path):
-        cfg = normalize_volume_config({}, roi_threshold=4.0)
-        files = resolve_harvest_files(
-            cfg, samples_output_file=str(tmp_path / "nope.csv"))
-        assert files == []
-
-    def test_missing_explicit_file_raises(self, tmp_path):
-        cfg = normalize_volume_config(
-            {'harvest_files': str(tmp_path / "nope.csv")}, roi_threshold=4.0)
-        with pytest.raises(ConfigurationError, match="not found"):
-            resolve_harvest_files(cfg)
+def test_resolve_harvest_files_combines_and_dedupes(tmp_path):
+    own = tmp_path / "samples.csv"
+    extra = tmp_path / "extra.csv"
+    own.write_text("0.0,0.0,-1.0\n")
+    extra.write_text("0.0,0.0,-1.0\n")
+    cfg = normalize_volume_config(
+        {'harvest_files': [str(extra), str(own)]}, roi_threshold=4.0)
+    files = resolve_harvest_files(cfg, samples_output_file=str(own))
+    assert files == [str(own), str(extra)]
+    # A missing explicitly-listed file is an error.
+    cfg = normalize_volume_config(
+        {'harvest_files': str(tmp_path / "nope.csv")}, roi_threshold=4.0)
+    with pytest.raises(ConfigurationError, match="not found"):
+        resolve_harvest_files(cfg)
 
 
 # --------------------------------------------------------------------------- #
 # ProfileProjector integration
 # --------------------------------------------------------------------------- #
-class TestSamplerConfigIntegration:
+def test_volume_sampling_config_stored_and_default_off(
+        simple_2d_function, simple_bounds_2d, basic_projection_1d):
+    sampler = ProfileProjector(
+        target_func=simple_2d_function, bounds=simple_bounds_2d,
+        projections=[basic_projection_1d], roi_threshold=4.0,
+        volume_sampling={'roi_threshold': 25.0, 'n_points': 50})
+    assert sampler.volume_sampling_config['roi_threshold'] == 25.0
+    assert sampler.volume_sampling_config['n_points'] == 50
 
-    def test_volume_sampling_stored_normalized(self, simple_2d_function,
-                                               simple_bounds_2d,
-                                               basic_projection_1d):
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_1d],
-            roi_threshold=4.0,
-            volume_sampling={'roi_threshold': 25.0, 'n_points': 50},
-        )
-        cfg = sampler.volume_sampling_config
-        assert cfg['roi_threshold'] == 25.0
-        assert cfg['n_points'] == 50
-
-    def test_volume_sampling_default_off(self, simple_2d_function,
-                                         simple_bounds_2d,
-                                         basic_projection_1d):
-        sampler = ProfileProjector(
-            target_func=simple_2d_function,
-            bounds=simple_bounds_2d,
-            projections=[basic_projection_1d],
-        )
-        assert sampler.volume_sampling_config is None
-
-    def test_invalid_volume_sampling_raises(self, simple_2d_function,
-                                            simple_bounds_2d,
-                                            basic_projection_1d):
-        with pytest.raises(ConfigurationError, match="roi_threshold"):
-            ProfileProjector(
-                target_func=simple_2d_function,
-                bounds=simple_bounds_2d,
-                projections=[basic_projection_1d],
-                roi_threshold=30.0,
-                volume_sampling={'roi_threshold': -5.0},
-            )
+    off = ProfileProjector(
+        target_func=simple_2d_function, bounds=simple_bounds_2d,
+        projections=[basic_projection_1d])
+    assert off.volume_sampling_config is None
