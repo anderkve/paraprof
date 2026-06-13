@@ -158,9 +158,9 @@ over both file formats; spacing thinning; bounds-scaling of distances.
    untouched. Objective (minimized):
 
    `dist²(θ, anchor) + κ·hinge(θ)²`, with `hinge = max(0, band_lo − logL)`;
-   distances in bounds-scaled units; κ auto-set so a hinge violation of
-   `roi_threshold` costs ~1 unit of scaled distance² (advanced-config
-   `volume.penalty_strength` multiplier, default 1.0).
+   distances in bounds-scaled units; κ = `SEARCH_PENALTY_STRENGTH /
+   roi_threshold²` (a code constant), so a hinge violation of `roi_threshold`
+   costs ~1 unit of scaled distance².
    Gradient: the distance term is analytic; the hinge term needs ∇logL, which
    reuses the existing finite-difference machinery and the `grad_func` piggyback
    unchanged (chain rule applied master-side). Warm start: the anchor's nearest

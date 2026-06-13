@@ -21,7 +21,7 @@ from paraprof.volume import (
 )
 
 BAND_LO = -4.0
-KAPPA = 1.0 / 16.0  # penalty_strength 1, roi_threshold 4
+KAPPA = 1.0 / 16.0  # SEARCH_PENALTY_STRENGTH 1, roi_threshold 4
 
 
 @pytest.fixture

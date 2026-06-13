@@ -15,6 +15,12 @@ from ..volume import SOURCE_PROBE
 from .base import Job
 from .lbfgsb_job import LBFGSBJob
 
+# Tier-3 anchored search: κ = SEARCH_PENALTY_STRENGTH / roi_threshold², so a
+# band violation of roi_threshold costs this many units of scaled distance².
+# Normalized by roi_threshold² (hence scale-free), 1.0 is a robust default —
+# κ shapes the search path, not its in-band outcome.
+SEARCH_PENALTY_STRENGTH = 1.0
+
 # Band violations are clamped before squaring so a failed evaluation
 # (logL = -inf) yields a huge-but-finite penalty instead of overflowing.
 VIOLATION_CLAMP = 1e100

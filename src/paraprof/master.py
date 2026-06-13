@@ -375,7 +375,9 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
         finalize_volume_stage, generate_anchors, harvest_existing_samples,
         resolve_harvest_files, volume_band, write_volume_output,
     )
-    from .jobs.volume_jobs import VolumeProbeJob, VolumeSearchJob
+    from .jobs.volume_jobs import (
+        SEARCH_PENALTY_STRENGTH, VolumeProbeJob, VolumeSearchJob,
+    )
 
     logger = setup_logger(rank=myrank)
     config = sampler.volume_sampling_config
@@ -452,7 +454,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
 
     # --- Tier 3: anchored searches for anchors whose probe missed ---
     if config['search'] != 'none':
-        kappa = sampler.volume_penalty_strength / stage_threshold ** 2
+        kappa = SEARCH_PENALTY_STRENGTH / stage_threshold ** 2
         depth_exponent = depth_law_exponent(config['depth_law'], sampler.dims)
         # Adaptive depth-target quota: walks draw from the law's residual
         # need so depths censored by local reachability get retried at

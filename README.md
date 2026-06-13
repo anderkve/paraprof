@@ -210,7 +210,6 @@ Useful knobs:
 - `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample further out, into the shell around the good-fit region (the band always runs all the way up to the global max).
 - `interior_steps` (default 8; `0` disables) — steps each search takes into the band after entering it, so representatives span fit quality instead of piling at the band edge. Larger values give finer within-level-set spread at proportionally more evaluations.
 - `depth_law` — depth distribution of the interior-walk samples: `'uniform_dlnl'` (default; equal representation at every ΔlnL, robust under tighter re-cuts), `'uniform_sigma'` (uniform in the 1-dof significance `Z = √(2ΔlnL)`, denser near the top), or `'volume'` (uniform in parameter volume, edge-concentrated in high dimensions). The realized distribution is reported as `rep_depth_histogram` in the summary.
-- `advanced_config['volume']['penalty_strength']` — the search's band-violation penalty scale.
 
 Use `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the tagged samples over a 2D profile map.
 
@@ -243,7 +242,6 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
-| `volume.penalty_strength`                     | `1.0`              | Volume-stage search penalty scale: a band violation of `roi_threshold` costs this many units of scaled distance². |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
 
