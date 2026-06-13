@@ -2,27 +2,35 @@
 Large-scale volume-sampling test driver.
 
 Runs all six 2D projections of a 4D test function, then a volume-sampling
-stage whose total evaluation budget (`eval_budget`) equals the number of
-target evaluations spent on the projections, with the stage `roi_threshold`
-set to the projection `roi_threshold` + 2 (reaching into the shell). So the
-volume stage is allowed exactly the same compute as the scan.
+stage with the stage `roi_threshold` set to the projection `roi_threshold`
++ 2 (reaching into the shell).
 
-`n_anchors` (the stratification resolution) is a separate knob from
-`eval_budget` (the work cap). It is set to a third of the budget so the
-uniform probe layer uses ~1/3 of the allowance and the anchored search +
-interior walk spend the rest; the budget is the binding constraint, so the
-total volume-stage evaluations come out at ~the projection count.
+By default the volume stage is given the same compute as the scan: the
+total evaluation budget (`eval_budget`) equals the projection evaluation
+count, and `n_anchors` (the stratification resolution, a separate knob) is
+a third of that so the uniform probe layer uses ~1/3 of the allowance and
+the anchored search + interior walk spend the rest.
 
-The phase-tagged sample log (`samples_<func>.csv`) accumulates every
-evaluation from both stages, which is the "total sample set" the
-companion plotting script visualises.
+The defaults can be overridden to explore other regimes (e.g. an
+unlimited budget with a generous interior walk, to push the realized
+depth distribution toward uniform-in-lnL):
 
-    mpiexec -n <ncores> python run_volume_scale_test.py <func> <roi> [grid]
+    mpiexec -n <ncores> python run_volume_scale_test.py <func> <roi> \\
+        [--grid G] [--label NAME] [--n-anchors N] \\
+        [--eval-budget B]  (B<=0 means unlimited) \\
+        [--interior-steps S]
 
-e.g.  mpiexec -n 4 python run_volume_scale_test.py himmelblau_4d 4.0 26
+e.g.  mpiexec -n 4 python run_volume_scale_test.py himmelblau_4d 4.0
+      mpiexec -n 4 python run_volume_scale_test.py himmelblau_4d 4.0 \\
+          --label tuned --n-anchors 5000 --eval-budget 0 --interior-steps 24
+
+Outputs carry the optional `--label` suffix so several configurations can
+coexist: samples_<func>[_label].csv (the phase-tagged total log),
+volume_<func>[_label].csv (the curated representatives), and
+scale_summary_<func>[_label].json.
 """
+import argparse
 import json
-import sys
 import time
 
 import numpy as np
@@ -39,9 +47,27 @@ set_log_level('INFO')
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 
-func_name = sys.argv[1]
-roi_threshold = float(sys.argv[2])
-grid = int(sys.argv[3]) if len(sys.argv) > 3 else 26
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument('func')
+    p.add_argument('roi', type=float)
+    p.add_argument('--grid', type=int, default=20)
+    p.add_argument('--label', default='')
+    p.add_argument('--n-anchors', type=int, default=None,
+                   help='default: projection_evals // 3')
+    p.add_argument('--eval-budget', type=int, default=None,
+                   help='default: projection_evals; <=0 means unlimited')
+    p.add_argument('--interior-steps', type=int, default=None,
+                   help='default: the volume config default (8)')
+    return p.parse_args()
+
+
+args = parse_args()
+func_name = args.func
+roi_threshold = args.roi
+grid = args.grid
+suffix = f"_{args.label}" if args.label else ""
 
 np.random.seed(20260613)
 
@@ -53,8 +79,8 @@ PROJECTIONS = [
     for i in range(4) for j in range(i + 1, 4)
 ]
 
-samples_file = f"samples_{func_name}.csv"
-volume_file = f"volume_{func_name}.csv"
+samples_file = f"samples_{func_name}{suffix}.csv"
+volume_file = f"volume_{func_name}{suffix}.csv"
 
 if rank == 0:
     comm.bcast((log_likelihood, None), root=0)
@@ -77,21 +103,26 @@ if rank == 0:
         n_projection_evals = sampler.target_calls
         t_proj = time.time()
 
-        # Volume sampling: total evaluation budget == projection evaluations
-        # (same compute as the scan); band depth = projection roi_threshold
-        # + 2 (reach into the shell). n_anchors is a third of the budget so
-        # the funnel runs (probe layer + search/walk) within the cap.
-        eval_budget = n_projection_evals
-        n_anchors = max(n_projection_evals // 3, 1)
+        # Resolve the volume-stage knobs (defaults give the scan-matched
+        # budget; CLI flags override to explore other regimes).
+        if args.eval_budget is None:
+            eval_budget = n_projection_evals
+        else:
+            eval_budget = None if args.eval_budget <= 0 else args.eval_budget
+        n_anchors = (args.n_anchors if args.n_anchors is not None
+                     else max(n_projection_evals // 3, 1))
+
+        cfg = {
+            'roi_threshold': roi_threshold + 2.0,
+            'n_anchors': n_anchors,
+            'eval_budget': eval_budget,
+            'output_file': volume_file,
+        }
+        if args.interior_steps is not None:
+            cfg['interior_steps'] = args.interior_steps
         sampler.volume_sampling_config = normalize_volume_config(
-            {
-                'roi_threshold': roi_threshold + 2.0,
-                'n_anchors': n_anchors,
-                'eval_budget': eval_budget,
-                'output_file': volume_file,
-            },
-            roi_threshold=roi_threshold,
-        )
+            cfg, roi_threshold=roi_threshold)
+
         vol = run_volume_sampling(comm, sampler, results, myrank=rank)
         sampler._flush_samples_buffer()
         t_vol = time.time()
@@ -99,12 +130,15 @@ if rank == 0:
         total_evals = sampler.target_calls
         summary = {
             'function': func_name,
+            'label': args.label,
             'projection_roi_threshold': roi_threshold,
             'volume_roi_threshold': roi_threshold + 2.0,
             'grid': grid,
             'n_projection_evals': int(n_projection_evals),
-            'volume_eval_budget': int(eval_budget),
+            'volume_eval_budget': (None if eval_budget is None
+                                   else int(eval_budget)),
             'volume_n_anchors': int(n_anchors),
+            'interior_steps': sampler.volume_sampling_config['interior_steps'],
             'n_volume_evals': int(total_evals - n_projection_evals),
             'total_evals': int(total_evals),
             'global_max': float(sampler.global_max_target_val),
@@ -117,6 +151,8 @@ if rank == 0:
                 'n_anchors': int(stats['n_anchors']),
                 'evals_used': int(stats['evals_used']),
                 'n_covered': int(stats['n_covered']),
+                'n_covered_probe': int(stats['n_covered_probe']),
+                'n_covered_search': int(stats['n_covered_search']),
                 'n_projected': int(stats['n_projected']),
                 'n_holes': int(stats['n_holes']),
                 'n_unbudgeted': int(stats['n_unbudgeted']),
@@ -127,7 +163,7 @@ if rank == 0:
         else:
             summary['volume_skipped_reason'] = vol.get('reason')
 
-        with open(f"scale_summary_{func_name}.json", 'w') as f:
+        with open(f"scale_summary_{func_name}{suffix}.json", 'w') as f:
             json.dump(summary, f, indent=2)
         print("SCALE_SUMMARY", json.dumps(summary), flush=True)
 
