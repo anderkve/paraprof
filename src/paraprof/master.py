@@ -335,7 +335,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     """
     from .volume import (
         ProjectionEnvelope, assign_levels, draw_envelope_seeds, draw_stretch,
-        lnl_histogram, umbrella_logpi, volume_band, warm_start_positions,
+        lnl_histogram, umbrella_logpi, warm_start_positions,
         write_volume_output,
     )
 
@@ -374,14 +374,13 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     roi = config['roi_threshold']
     sigma = config['sigma_frac'] * roi
     window = config['partner_level_window']
-    band_lo, prefilter_delta = volume_band(config, global_max_start)
     rng = np.random.default_rng()
     n_dims = sampler.dims
 
     # Seed walkers inside the envelope (shrink the ensemble if the prefilter
     # region yields fewer seeds than requested).
     seeds = draw_envelope_seeds(envelope, sampler.bounds, config['n_walkers'],
-                                prefilter_delta, seed=int(rng.integers(2**31)))
+                                roi, seed=int(rng.integers(2**31)))
     if len(seeds) < 2:
         return _skip("fewer than 2 seeds found inside the projection envelope")
     n_walkers = len(seeds)
@@ -423,8 +422,6 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
             break
         for p_a in (0, 1):
             active, frozen = half[p_a], half[1 - p_a]
-            if len(active) == 0 or len(frozen) == 0:
-                continue
             items, meta = [], {}
             for k in active:
                 k = int(k)
@@ -478,7 +475,6 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     result = {
         'skipped': False, 'reason': None,
         'samples': samples,
-        'band_lo_initial': band_lo,
         'band_lo_final': band_lo_final,
         'global_max': global_max_final,
         'stats': stats,

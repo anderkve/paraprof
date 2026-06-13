@@ -13,20 +13,11 @@ The stage's ``roi_threshold`` defaults to the projection's but can be set
 larger to reach into the shell around the ROI (the band is one-sided, running
 up to the global max).
 
-This module holds the MPI-free building blocks:
-
-- :func:`normalize_volume_config` — validate the ``volume_sampling`` config.
-- :func:`volume_band` — the stage's logL band edge and prefilter threshold.
-- :class:`ProjectionEnvelope` — the projection-grid prefilter used to seed
-  walkers inside the plausible region (and to skip the stage in direct-eval
-  mode).
-- :func:`assign_levels`, :func:`umbrella_logpi`, :func:`draw_stretch`,
-  :func:`draw_envelope_seeds`, :func:`warm_start_positions` — the ensemble
-  primitives the master loop drives.
-- :func:`write_volume_output` — write the in-band sample file and JSON summary.
-
-All envelope/seed coordinates are in the input-parameter space; proposals are
-affine so no bounds-scaling is needed.
+This module holds the MPI-free building blocks: config validation, the
+:class:`ProjectionEnvelope` prefilter (which seeds walkers and flags
+direct-eval mode), the ensemble primitives the master loop drives, and the
+output writer. Coordinates are in the input-parameter space; the affine
+stretch move needs no bounds-scaling.
 """
 import os
 
@@ -346,7 +337,7 @@ def warm_start_positions(levels, sigma, scan_params, scan_logls,
     s_p, s_l = scan_params[finite], scan_logls[finite]
     fb = 0
     for k in range(n):
-        cand = np.flatnonzero(np.abs(s_l - levels[k]) <= sigma) if len(s_l) else []
+        cand = np.flatnonzero(np.abs(s_l - levels[k]) <= sigma)
         if len(cand):
             out[k] = s_p[rng.choice(cand)]
         elif fb < len(fallback_seeds):
