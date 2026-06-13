@@ -74,7 +74,7 @@ volume_sampling = {
     'n_walkers': 1000,             # ensemble size (each carries a home level)
     'n_steps': 30,                 # stretch sweeps per walker
     'eval_budget': None,           # optional cap; None = n_walkers*(n_steps+1)
-    'sigma_frac': 0.05,            # umbrella width sigma / roi_threshold
+    'sigma_frac': 0.1,             # umbrella width sigma / roi_threshold
     'partner_level_window': None,  # lnL window for partners; None = full pool
     'warm_start': True,            # seed near each level from scan samples
     'output_file': 'volume_samples.csv',   # in-band samples [params..., logL]

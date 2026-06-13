@@ -220,7 +220,7 @@ Useful knobs:
 - `n_walkers` — ensemble size (≈ output sample count scales with it). Sets the coverage resolution.
 - `n_steps` — stretch sweeps per walker; longer chains mix better, especially in stiff/curved geometries.
 - `eval_budget` — optional hard cap on total evaluations (default `n_walkers·(n_steps+1)`). Set it to the projection evaluation count to bound the volume stage to the same cost as the scan.
-- `sigma_frac` (default `0.05`) — umbrella width σ as a fraction of `roi_threshold`. Smaller pins each walker more tightly to its level (sharper lnL-filling, lower acceptance).
+- `sigma_frac` (default `0.1`) — umbrella width σ as a fraction of `roi_threshold`. Smaller pins each walker more tightly to its level (sharper lnL-filling, lower acceptance); larger trades a little lnL sharpness for higher acceptance.
 - `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample into the shell outside the good-fit region (the band always runs up to the global max).
 - `partner_level_window` (default `None` = full pool) — restrict stretch partners to walkers within this lnL window of a walker's home level; lower it to trade a little extra acceptance for locality.
 - `warm_start` (default `True`) — seed walkers from logged scan samples near each level instead of plain envelope draws.
