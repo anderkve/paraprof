@@ -47,7 +47,7 @@ good-fit volume — and just outside it, to understand why neighboring regions f
 ```python
 volume_sampling = {
     'roi_threshold': None,         # ΔlnL band depth; None = projection's roi_threshold
-    'n_points': 1000,              # target number of anchors
+    'n_anchors': 1000,             # number of stratified anchor points
     'min_spacing': None,           # Poisson-disk radius (bounds-scaled); None = auto
     'eval_budget': None,           # hard cap on stage evaluations (None = unlimited)
     'search': 'lbfgsb',            # tier-3 method: 'lbfgsb' or 'none'
@@ -76,7 +76,7 @@ cells are stored as `−∞`. If any projection covers the full parameter space
 ### Anchor generation (`generate_anchors`)
 
 Scrambled Sobol draws over the bounds box (in power-of-2 batches) filtered by
-the envelope until `n_points` anchors pass. The draw count and acceptance
+the envelope until `n_anchors` anchors pass. The draw count and acceptance
 fraction are recorded for the volume estimate. With `min_spacing`, accepted
 anchors are thinned Poisson-disk style. Coverage radius = `min_spacing` when
 set, else the median nearest-neighbor distance among the anchors.

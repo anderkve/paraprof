@@ -419,7 +419,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     stage_threshold = config['roi_threshold']
     band_lo, prefilter_delta = volume_band(config, global_max_start)
     anchor_set = generate_anchors(
-        envelope, sampler.bounds, config['n_points'], prefilter_delta,
+        envelope, sampler.bounds, config['n_anchors'], prefilter_delta,
         min_spacing=config['min_spacing'])
     if anchor_set.n_anchors == 0:
         return _skip("no anchors found inside the projection envelope")

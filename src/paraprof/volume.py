@@ -41,7 +41,7 @@ from .logger import get_logger
 VOLUME_CONFIG_DEFAULTS = {
     'roi_threshold': None,      # ΔlnL band depth; None = projection's roi_threshold.
                                 # Larger reaches into the shell outside the ROI.
-    'n_points': 1000,           # target number of anchors
+    'n_anchors': 1000,          # target number of stratified anchor points
     'min_spacing': None,        # optional Poisson-disk radius (bounds-scaled units)
     'eval_budget': None,        # hard cap on stage evaluations (None = unlimited)
     'search': 'lbfgsb',         # tier-3 method: 'lbfgsb' or 'none' (probe-only)
@@ -135,7 +135,7 @@ def normalize_volume_config(config, roi_threshold):
         )
     cfg['roi_threshold'] = float(thresh)
 
-    _check_positive_int(cfg, 'n_points')
+    _check_positive_int(cfg, 'n_anchors')
     _check_positive_int(cfg, 'eval_budget', allow_none=True)
     _check_positive_int(cfg, 'search_max_iter', allow_none=True)
 
@@ -442,15 +442,15 @@ class AnchorSet:
                                     float(logl), float(dist), source)
 
 
-def generate_anchors(envelope, bounds, n_points, threshold_delta,
+def generate_anchors(envelope, bounds, n_anchors, threshold_delta,
                      min_spacing=None, seed=None, draw_cap=None):
     """Draw scrambled-Sobol anchors inside the projection envelope.
 
     Draws Sobol points over the bounds box (in power-of-2 batches) and
     keeps those passing ``envelope.test(..., threshold_delta)`` — in draw
     order, so probes at the kept anchors stay uniform over the prefilter
-    region — until ``n_points`` anchors are kept or ``draw_cap`` draws have
-    been tested (default ``DEFAULT_DRAW_CAP_FACTOR * n_points``; a warning
+    region — until ``n_anchors`` anchors are kept or ``draw_cap`` draws have
+    been tested (default ``DEFAULT_DRAW_CAP_FACTOR * n_anchors``; a warning
     is logged if the cap is hit). With ``min_spacing`` set, anchors closer
     than that (bounds-scaled) to an already-kept anchor are skipped;
     prefilter-acceptance counting is unaffected.
@@ -462,26 +462,26 @@ def generate_anchors(envelope, bounds, n_points, threshold_delta,
     bounds = np.asarray(bounds, dtype=float)
     n_dims = len(bounds)
     if draw_cap is None:
-        draw_cap = DEFAULT_DRAW_CAP_FACTOR * n_points
+        draw_cap = DEFAULT_DRAW_CAP_FACTOR * n_anchors
 
     lo, hi = bounds[:, 0], bounds[:, 1]
     extent = hi - lo
     sobol = qmc.Sobol(d=n_dims, scramble=True, seed=seed)
 
-    kept = np.empty((n_points, n_dims))
-    kept_scaled = np.empty((n_points, n_dims))
+    kept = np.empty((n_anchors, n_dims))
+    kept_scaled = np.empty((n_anchors, n_dims))
     n_kept = 0
     n_draws = 0
     n_accepted = 0
 
-    while n_kept < n_points and n_draws < draw_cap:
+    while n_kept < n_anchors and n_draws < draw_cap:
         batch = qmc.scale(sobol.random(ANCHOR_DRAW_BATCH), lo, hi)
         n_draws += len(batch)
         passed = envelope.test(batch, threshold_delta)
         n_accepted += int(np.count_nonzero(passed))
 
         for point in batch[passed]:
-            if n_kept >= n_points:
+            if n_kept >= n_anchors:
                 break
             point_scaled = (point - lo) / extent
             if min_spacing is not None and n_kept > 0:
@@ -493,13 +493,13 @@ def generate_anchors(envelope, bounds, n_points, threshold_delta,
             kept_scaled[n_kept] = point_scaled
             n_kept += 1
 
-    if n_kept < n_points:
+    if n_kept < n_anchors:
         acceptance = n_accepted / n_draws if n_draws else 0.0
         logger.warning(
             f"Volume sampling: anchor draw cap hit after {n_draws} draws with "
-            f"{n_kept}/{n_points} anchors kept (prefilter acceptance "
+            f"{n_kept}/{n_anchors} anchors kept (prefilter acceptance "
             f"{acceptance:.2e}). The prefilter region is very small or "
-            f"min_spacing is too large for n_points."
+            f"min_spacing is too large for n_anchors."
         )
 
     anchors = kept[:n_kept]

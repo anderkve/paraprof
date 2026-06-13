@@ -22,7 +22,7 @@ Reported per variant:
 
 Run with MPI:
 
-    mpiexec -n <ncores> python -m mpi4py volume_sampling_benchmark.py [n_points]
+    mpiexec -n <ncores> python -m mpi4py volume_sampling_benchmark.py [n_anchors]
 
 Required: at least 2 MPI ranks (1 master + 1+ workers). The ``-m mpi4py``
 launcher makes an uncaught exception on any rank abort the whole job
@@ -48,7 +48,7 @@ set_log_level('WARNING')
 comm = MPI.COMM_WORLD
 myrank = comm.Get_rank()
 
-N_POINTS = int(sys.argv[1]) if len(sys.argv) > 1 else 300
+N_ANCHORS = int(sys.argv[1]) if len(sys.argv) > 1 else 300
 ROI_THRESHOLD = 4.0
 N_REFERENCE = 2000
 
@@ -149,7 +149,7 @@ def master(workdir):
             ('probe-only', {'search': 'none'}),
             ('full funnel', {}),
         ]:
-            cfg = {'n_points': N_POINTS,
+            cfg = {'n_anchors': N_ANCHORS,
                    'output_file': os.path.join(workdir, f'{label}.csv')}
             cfg.update(overrides)
             sampler.volume_sampling_config = normalize_volume_config(
@@ -161,7 +161,7 @@ def master(workdir):
                                   reference))
 
         print(f"\n=== Volume-sampling benchmark: rosenbrock_4d, "
-              f"n_points={N_POINTS} ===")
+              f"n_anchors={N_ANCHORS} ===")
         print(f"True box acceptance (brute force): {box_acceptance:.3e} "
               f"-> naive rejection needs ~{1.0 / box_acceptance:.0f} "
               f"evals per in-band point")

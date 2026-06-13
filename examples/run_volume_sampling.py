@@ -64,7 +64,7 @@ if myrank == 0:
             # None = use the projection's roi_threshold; larger reaches
             # into the shell outside the good-fit region.
             'roi_threshold': VOLUME_ROI_THRESHOLD,
-            'n_points': 500,             # anchors = target sample count
+            'n_anchors': 500,            # number of stratified anchor points
             'output_file': "volume_samples.csv",
         },
     ) as sampler:

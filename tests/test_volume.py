@@ -47,10 +47,10 @@ class TestNormalizeVolumeConfig:
     def test_defaults_and_roi_inheritance(self):
         # An unset roi_threshold inherits the projection's; the result is a
         # fresh dict that does not mutate the caller's.
-        user = {'n_points': 10}
+        user = {'n_anchors': 10}
         cfg = normalize_volume_config(user, roi_threshold=4.0)
-        assert cfg == dict(VOLUME_CONFIG_DEFAULTS, roi_threshold=4.0, n_points=10)
-        assert user == {'n_points': 10}
+        assert cfg == dict(VOLUME_CONFIG_DEFAULTS, roi_threshold=4.0, n_anchors=10)
+        assert user == {'n_anchors': 10}
 
     def test_unknown_key(self):
         with pytest.raises(ConfigurationError, match="unknown keys.*'mod'"):
@@ -58,7 +58,7 @@ class TestNormalizeVolumeConfig:
 
     @pytest.mark.parametrize("config,match", [
         ({'roi_threshold': -5.0}, "roi_threshold"),
-        ({'n_points': 0}, "n_points"),
+        ({'n_anchors': 0}, "n_anchors"),
         ({'min_spacing': np.inf}, "min_spacing"),
         ({'search': 'de'}, "'lbfgsb' or 'none'"),
         ({'depth_law': 'posterior'}, "depth_law"),
@@ -182,7 +182,7 @@ class TestGenerateAnchors:
     def test_anchors_pass_envelope_and_estimate_acceptance(self):
         # ROI band |x| <= 1 of [-5, 5]: ~20% of the box volume.
         env = band_envelope_1d(0, -1.0, 1.0, n_dims=2)
-        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=100,
+        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_anchors=100,
                                       threshold_delta=4.0, seed=1)
         assert anchor_set.n_anchors == 100
         assert env.test(anchor_set.anchors, threshold_delta=4.0).all()
@@ -211,7 +211,7 @@ class TestGenerateAnchors:
         logger = logging.getLogger("paraprof")
         logger.addHandler(handler)
         try:
-            anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=10,
+            anchor_set = generate_anchors(env, self.BOUNDS_2D, n_anchors=10,
                                           threshold_delta=4.0, seed=5,
                                           draw_cap=8192)
         finally:
@@ -223,7 +223,7 @@ class TestGenerateAnchors:
     def test_min_spacing_respected(self):
         env = band_envelope_1d(0, -5.0, 5.0, n_dims=2)  # whole box passes
         spacing = 0.15
-        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_points=30,
+        anchor_set = generate_anchors(env, self.BOUNDS_2D, n_anchors=30,
                                       threshold_delta=4.0,
                                       min_spacing=spacing, seed=6)
         assert anchor_set.n_anchors == 30
@@ -349,9 +349,9 @@ def test_volume_sampling_config_stored_and_default_off(
     sampler = ProfileProjector(
         target_func=simple_2d_function, bounds=simple_bounds_2d,
         projections=[basic_projection_1d], roi_threshold=4.0,
-        volume_sampling={'roi_threshold': 25.0, 'n_points': 50})
+        volume_sampling={'roi_threshold': 25.0, 'n_anchors': 50})
     assert sampler.volume_sampling_config['roi_threshold'] == 25.0
-    assert sampler.volume_sampling_config['n_points'] == 50
+    assert sampler.volume_sampling_config['n_anchors'] == 50
 
     off = ProfileProjector(
         target_func=simple_2d_function, bounds=simple_bounds_2d,

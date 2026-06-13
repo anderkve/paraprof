@@ -2,9 +2,16 @@
 Large-scale volume-sampling test driver.
 
 Runs all six 2D projections of a 4D test function, then a volume-sampling
-stage whose anchor count (`n_points`) equals the number of target
-evaluations spent on the projections, with the stage `roi_threshold` set
-to the projection `roi_threshold` + 2 (reaching into the shell).
+stage whose total evaluation budget (`eval_budget`) equals the number of
+target evaluations spent on the projections, with the stage `roi_threshold`
+set to the projection `roi_threshold` + 2 (reaching into the shell). So the
+volume stage is allowed exactly the same compute as the scan.
+
+`n_anchors` (the stratification resolution) is a separate knob from
+`eval_budget` (the work cap). It is set to a third of the budget so the
+uniform probe layer uses ~1/3 of the allowance and the anchored search +
+interior walk spend the rest; the budget is the binding constraint, so the
+total volume-stage evaluations come out at ~the projection count.
 
 The phase-tagged sample log (`samples_<func>.csv`) accumulates every
 evaluation from both stages, which is the "total sample set" the
@@ -70,12 +77,17 @@ if rank == 0:
         n_projection_evals = sampler.target_calls
         t_proj = time.time()
 
-        # Volume sampling: anchors == projection evaluations; band depth
-        # = projection roi_threshold + 2 (reach into the shell).
+        # Volume sampling: total evaluation budget == projection evaluations
+        # (same compute as the scan); band depth = projection roi_threshold
+        # + 2 (reach into the shell). n_anchors is a third of the budget so
+        # the funnel runs (probe layer + search/walk) within the cap.
+        eval_budget = n_projection_evals
+        n_anchors = max(n_projection_evals // 3, 1)
         sampler.volume_sampling_config = normalize_volume_config(
             {
                 'roi_threshold': roi_threshold + 2.0,
-                'n_points': n_projection_evals,
+                'n_anchors': n_anchors,
+                'eval_budget': eval_budget,
                 'output_file': volume_file,
             },
             roi_threshold=roi_threshold,
@@ -91,7 +103,8 @@ if rank == 0:
             'volume_roi_threshold': roi_threshold + 2.0,
             'grid': grid,
             'n_projection_evals': int(n_projection_evals),
-            'volume_n_points': int(n_projection_evals),
+            'volume_eval_budget': int(eval_budget),
+            'volume_n_anchors': int(n_anchors),
             'n_volume_evals': int(total_evals - n_projection_evals),
             'total_evals': int(total_evals),
             'global_max': float(sampler.global_max_target_val),
@@ -102,9 +115,11 @@ if rank == 0:
             stats = vol['stats']
             summary['volume_stats'] = {
                 'n_anchors': int(stats['n_anchors']),
+                'evals_used': int(stats['evals_used']),
                 'n_covered': int(stats['n_covered']),
                 'n_projected': int(stats['n_projected']),
                 'n_holes': int(stats['n_holes']),
+                'n_unbudgeted': int(stats['n_unbudgeted']),
                 'prefilter_acceptance': stats['prefilter_acceptance'],
                 'probe_acceptance': stats['probe_acceptance'],
                 'volume_estimate': stats['volume_estimate'],

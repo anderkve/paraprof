@@ -474,7 +474,7 @@ VOLUME_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'n_points': 30,
+                'n_anchors': 30,
                 'output_file': os.path.join(workdir, 'volume_samples.csv'),
             },
         ) as sampler:
@@ -626,7 +626,7 @@ GAUSS_VOLUME_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=15,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'n_points': 400, 'search': 'none',
+                'n_anchors': 400, 'search': 'none',
                 'output_file': os.path.join(workdir, 'volume.csv'),
             },
         ) as sampler:
@@ -728,7 +728,7 @@ TWO_ISLAND_RUNNER = textwrap.dedent("""
             lbfgsb_max_iter=20,
             samples_output_file=os.path.join(workdir, 'samples.csv'),
             volume_sampling={
-                'n_points': 80, 'min_spacing': 0.15,
+                'n_anchors': 80, 'min_spacing': 0.15,
                 'output_file': os.path.join(workdir, 'volume.csv'),
             },
         ) as sampler:

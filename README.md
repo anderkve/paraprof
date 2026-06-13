@@ -195,7 +195,7 @@ sampler = ProfileProjector(
     ...,
     samples_output_file="samples.csv",   # feeds the harvest tier
     volume_sampling={
-        'n_points': 1000,       # target number of well-spread samples
+        'n_anchors': 1000,      # number of stratified anchor points
         'output_file': "volume_samples.csv",
         # 'roi_threshold': 25.0,  # widen the stage's ROI to also sample
         #                         # the shell outside the good-fit region
@@ -217,8 +217,8 @@ Outputs (paths configurable via `output_file`/`summary_file`):
 
 Useful knobs:
 
-- `n_points` — target number of anchors (≈ output sample count).
-- `eval_budget` — hard cap on stage evaluations; anchors past it are reported `unbudgeted`.
+- `n_anchors` — number of stratified anchor points (≈ output sample count). Sets the *coverage resolution*; it is independent of `eval_budget`, which caps the *work*.
+- `eval_budget` — hard cap on the stage's total evaluations; once it is reached the remaining anchors are reported `unbudgeted`. To bound the volume stage to the same cost as the projection scan, set this to the projection evaluation count rather than tying `n_anchors` to it.
 - `min_spacing` — Poisson-disk anchor spacing in bounds-scaled units (also the coverage radius).
 - `search='none'` — probe-only mode (no anchored search).
 - `probe_all_anchors=False` — skip probes on harvest-covered anchors; cheaper, but forfeits the uniform subset and volume estimate.

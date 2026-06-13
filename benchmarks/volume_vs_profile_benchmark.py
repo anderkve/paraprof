@@ -23,7 +23,7 @@ Run with MPI:
 
     mpiexec -n <ncores> python -m mpi4py volume_vs_profile_benchmark.py \\
         [himmelblau_4d|rosenbrock_4d|sphere_4d|sphere_6d|sphere_8d] \\
-        [n_points] [interior_steps] [depth_law]
+        [n_anchors] [interior_steps] [depth_law]
 
 The sphere targets (logL = -|x|^2 on [-5, 5]^n, ROI = a ball) are the
 clean dimension-scaling cases: as n grows, ever fewer of the scan's
@@ -57,7 +57,7 @@ comm = MPI.COMM_WORLD
 myrank = comm.Get_rank()
 
 FUNC_NAME = sys.argv[1] if len(sys.argv) > 1 else 'himmelblau_4d'
-N_POINTS = int(sys.argv[2]) if len(sys.argv) > 2 else 500
+N_ANCHORS = int(sys.argv[2]) if len(sys.argv) > 2 else 500
 INTERIOR_STEPS = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 DEPTH_LAW = sys.argv[4] if len(sys.argv) > 4 else 'uniform_dlnl'
 ROI_THRESHOLD = 4.0
@@ -242,7 +242,7 @@ def master(workdir):
         print(f"\nScan done: {scan_calls} evaluations.", flush=True)
 
         sampler.volume_sampling_config = normalize_volume_config(
-            {'n_points': N_POINTS,
+            {'n_anchors': N_ANCHORS,
              'interior_steps': INTERIOR_STEPS, 'depth_law': DEPTH_LAW,
              'output_file': os.path.join(workdir, 'volume.csv')},
             ROI_THRESHOLD)
