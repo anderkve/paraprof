@@ -1,8 +1,11 @@
 """Pluggable read/write layer for ParaProf sample files.
 
 A sample is one evaluated point: ``n_dims`` parameter values plus one target
-(log-likelihood) value, stored as a row of length ``n_dims + 1``. The format
-is chosen by file extension, so callers never handle it directly:
+(log-likelihood) value, stored as a row of length ``n_dims + 1``. The run's
+main sample log appends one more column, an integer ``phase`` tag (see
+:mod:`paraprof.phases`); this layer is width-agnostic and just stores whatever
+columns it is given. The format is chosen by file extension, so callers never
+handle it directly:
 
 - ``.csv``                       -> plain text, ``%.10e`` columns
 - ``.h5`` / ``.hdf5`` / ``.he5``  -> HDF5 binary (needs ``h5py``)

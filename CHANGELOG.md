@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
+  `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
+  stage that produced the point (`paraprof.PHASE_*`, described in
+  `PHASE_LEGEND`): initial optimization, scan, refinement, suspect recheck, and
+  the two volume-sampling phases (probe / search). Filtering on this column
+  recovers any subset from the single file — e.g. the volume probes for the band
+  volume estimate. The warm-start reader reads params/logL by position and
+  ignores the column, so logs still round-trip; volume harvest accepts rows of
+  width `n_dims + 1` (legacy) or `n_dims + 2`.
+
 ### Added
 - **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
   post-projection stage that collects a stratified, well-spread sample set

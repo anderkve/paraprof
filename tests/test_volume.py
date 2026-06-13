@@ -474,6 +474,22 @@ class TestHarvest:
         with pytest.raises(ConfigurationError, match="width"):
             harvest_existing_samples(anchor_set, [path], -4.0)
 
+    def test_phase_column_accepted(self, tmp_path):
+        # The run's own log is [params..., logL, phase] (width n_dims + 2);
+        # harvest reads logL at column n_dims and ignores the phase.
+        anchor_set = make_anchor_set()
+        rows = np.array([
+            [2.05, 2.0, -1.0, 1.0],   # in-band, near anchor 0; phase 1
+            [8.0, 2.5, -2.0, 4.0],    # in-band, near anchor 1; phase 4
+        ])
+        path = str(tmp_path / "samples.csv")
+        write_samples(rows, path)
+
+        stats = harvest_existing_samples(anchor_set, [path], -4.0)
+        assert stats['n_in_band'] == 2
+        assert anchor_set.rep_logls[0] == -1.0
+        assert anchor_set.rep_logls[1] == -2.0
+
     def test_no_files_is_noop(self):
         anchor_set = make_anchor_set()
         stats = harvest_existing_samples(anchor_set, [], -4.0)

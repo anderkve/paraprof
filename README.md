@@ -121,7 +121,7 @@ Common constructor arguments:
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
-- `samples_output_file` — path to log every evaluation. The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency; see [Sample file formats](#sample-file-formats)).
+- `samples_output_file` — path to log every evaluation as `[params…, logL, phase]` (one file for the whole run; the `phase` column tags which algorithm stage produced each point — see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
 - `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
 
@@ -147,27 +147,41 @@ Only the L-BFGS-B paths use the gradient; DE is gradient-free. `sampler.target_c
 
 ### Sample file formats
 
-Each evaluated point — `n_dims` parameter values plus its target value — is one row of the sample file. The format follows the `samples_output_file` extension:
+Every evaluated point is one row of the **single** sample log: `[params…, logL, phase]` — `n_dims` parameter values, the target value, and an integer **phase** tag identifying the algorithm stage that produced the point. Filtering on the phase column recovers any subset (e.g. the volume-sampling probes used for the band volume estimate), so the whole run lives in one file. The format follows the `samples_output_file` extension:
 
 | Extension        | Format      | Notes                                                                 |
 |------------------|-------------|-----------------------------------------------------------------------|
 | `.csv` (default) | plain text  | Headerless, `%.10e` columns. No extra dependencies.                   |
 | `.h5` / `.hdf5`  | HDF5 binary | ~Half the size and faster I/O. Requires `h5py` (`pip install paraprof[hdf5]`). |
 
-Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file. They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
+Phase values (`paraprof.PHASE_*`, with descriptions in `paraprof.PHASE_LEGEND`):
+
+| Phase | Constant | Meaning |
+|-------|----------|---------|
+| `0` | `PHASE_INITIAL` | initial optimization (global maxima / basin detection) |
+| `1` | `PHASE_SCAN` | projection-grid scan (activation, DE, grid polish) |
+| `2` | `PHASE_REFINE` | grid refinement and patching |
+| `3` | `PHASE_SUSPECT` | suspect-cell recheck |
+| `4` | `PHASE_VOLUME_PROBE` | volume sampling: anchor probe (the uniform subset) |
+| `5` | `PHASE_VOLUME_SEARCH` | volume sampling: anchored search |
+
+Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file (the warm-start reader reads params and logL by position and ignores the phase column). They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
 
 To pool several independent runs (or convert between formats), use `combine_samples`. It streams chunk by chunk and may mix formats:
 
 ```python
 import glob
-from paraprof import combine_samples, read_samples, write_samples
+import numpy as np
+from paraprof import combine_samples, read_samples, write_samples, PHASE_VOLUME_PROBE
 
 combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
 
-samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 1) array
-params, target = samples[:, :-1], samples[:, -1]
+samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 2) array
+n_dims = samples.shape[1] - 2
+params, target, phase = samples[:, :n_dims], samples[:, n_dims], samples[:, -1]
 
-write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
+write_samples(samples[target > target.max() - 4.0], "roi.csv")        # filter by logL
+volume_probes = samples[phase == PHASE_VOLUME_PROBE]                   # filter by phase
 ```
 
 `read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
@@ -191,11 +205,13 @@ sampler = ProfileProjector(
 
 After the projections finish, the stage collects one well-spread, in-band sample per *anchor* — scrambled-Sobol points drawn inside the **projection envelope** (the converged profile grids are rigorous upper bounds on logL, so regions whose projection falls in a below-threshold cell of *any* computed projection are excluded for free). Each anchor goes through a three-tier funnel, each tier strictly cheaper per point than the next: **harvest** (cover the anchor from already-logged samples, zero evaluations), **probe** (one evaluation at the anchor), and **anchored search** (a short L-BFGS-B run pulling an evaluation into the band near the anchor; the penalized objective steers the search only — reported samples always carry their true logL). Run `examples/run_volume_sampling.py` for a complete example, `benchmarks/volume_sampling_benchmark.py` for the cost/coverage comparison against probe-only rejection, and `benchmarks/volume_vs_profile_benchmark.py` for a side-by-side comparison (figures + coverage metrics) of the volume set against the samples the profiling stage itself collects — the latter pile up at the conditional optima and the top of the likelihood, while the volume set tracks the uniform in-ROI reference.
 
+Every evaluation the stage makes also streams into the run's main sample log under the volume phases (`PHASE_VOLUME_PROBE`, `PHASE_VOLUME_SEARCH`), so the raw probes/search points are recoverable by filtering that file. The stage additionally writes a **curated** representative set — one well-spread point per anchor, which a phase filter can't reconstruct (it's a post-hoc per-anchor selection) — and a small summary:
+
 Outputs (paths configurable via `output_file`/`summary_file`):
 
 | Output | Content |
 |--------|---------|
-| `volume_samples.csv` (or `.h5`) | One row `[params..., logL, tag]` per resolved anchor. Tags: `0` harvested, `1` probe — together the in-band rows are the stratified sample set; tag-`1` rows alone are a **uniform** (randomized-QMC) draw from the band; `2` search; `3` hole closest-approach (**not** in-band — diagnostics for anchors whose band was unreachable). |
+| `volume_samples.csv` (or `.h5`) | One row `[params..., logL, tag]` per resolved anchor (the curated stratified set). Tags: `0` harvested, `1` probe — together the in-band rows are the stratified sample set; tag-`1` rows alone are a **uniform** (randomized-QMC) draw from the band; `2` search; `3` hole closest-approach (**not** in-band — diagnostics for anchors whose band was unreachable). |
 | `volume_samples_summary.json` | Statistics: per-status anchor counts, acceptances, evaluations spent, and an unbiased **band volume estimate** with binomial uncertainty (box volume × prefilter acceptance × probe acceptance). |
 | `sampler.volume_stage_result` | Everything in memory: anchors, per-anchor status (`covered`/`projected`/`hole`/`unbudgeted`/`uncovered`), representatives with provenance, closest-approach records. |
 

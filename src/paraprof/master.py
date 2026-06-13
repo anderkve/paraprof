@@ -7,6 +7,7 @@ import sys
 
 from .exceptions import ConfigurationError
 from .logger import setup_logger
+from .phases import phase_for_job_type
 
 try:
     from mpi4py import MPI
@@ -323,7 +324,9 @@ def _volume_event_loop(comm, sampler, state, initial_jobs, job_source,
 
             _log_worker_error(result, sampler, logger)
             _log_user_gradient_error(result, sampler, logger)
-            sampler._register_target_call(result['params'], result['target_val'])
+            sampler._register_target_call(
+                result['params'], result['target_val'],
+                phase=phase_for_job_type(result['context'].get('type')))
 
             target_val = result['target_val']
             if target_val > sampler.global_max_target_val:
@@ -961,7 +964,9 @@ def master_main(comm, sampler,
 
             _log_worker_error(result, sampler, logger)
             _log_user_gradient_error(result, sampler, logger)
-            sampler._register_target_call(result['params'], result['target_val'])
+            sampler._register_target_call(
+                result['params'], result['target_val'],
+                phase=phase_for_job_type(result['context'].get('type')))
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:

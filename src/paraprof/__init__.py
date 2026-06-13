@@ -31,6 +31,17 @@ from .sample_io import (
     combine_samples,
     create_sample_writer,
 )
+from .phases import (
+    PHASE_INITIAL,
+    PHASE_SCAN,
+    PHASE_REFINE,
+    PHASE_SUSPECT,
+    PHASE_VOLUME_PROBE,
+    PHASE_VOLUME_SEARCH,
+    PHASE_UNKNOWN,
+    PHASE_LEGEND,
+    phase_for_job_type,
+)
 
 __all__ = [
     'ProfileProjector',
@@ -59,6 +70,15 @@ __all__ = [
     'write_samples',
     'combine_samples',
     'create_sample_writer',
+    'PHASE_INITIAL',
+    'PHASE_SCAN',
+    'PHASE_REFINE',
+    'PHASE_SUSPECT',
+    'PHASE_VOLUME_PROBE',
+    'PHASE_VOLUME_SEARCH',
+    'PHASE_UNKNOWN',
+    'PHASE_LEGEND',
+    'phase_for_job_type',
 ]
 
 __version__ = '1.0.0'
