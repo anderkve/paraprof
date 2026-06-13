@@ -213,6 +213,10 @@ samples_*.csv
 *.pdf
 profile_plot_*
 
+# Volume-sampling stage outputs (regenerable per-run artifacts)
+volume_*.csv
+volume_*_summary.json
+
 # Draft/development files
 notes*.txt
 paper_draft*
