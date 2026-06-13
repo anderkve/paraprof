@@ -430,3 +430,199 @@ def test_suspect_recheck_fixes_rosenbrock_strip():
         f"Suspect recheck produced a negative per-cell change "
         f"({result['min_change']}); the pass must never lower a cell's logL"
     )
+
+
+# 4-D sphere with a 2D projection followed by the ensemble volume-sampling
+# stage. The runner re-evaluates the in-band samples (from the in-memory
+# result, so no CSV rounding) to assert stored logL values are exact and
+# inside the band, and reports the lnL spread to check lnL-filling.
+VOLUME_RUNNER = textwrap.dedent("""
+    import json
+    import os
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        read_samples, set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    def target(p):
+        return -float(np.sum(np.asarray(p) ** 2))
+
+    bounds = np.array([[-5.0, 5.0]] * 4)
+    projections = [
+        {'dims': [0, 1], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
+    ]
+    workdir = sys.argv[1]
+
+    np.random.seed(20260610)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=bounds,
+            projections=projections,
+            roi_threshold=4.0,
+            n_initial_optimizations=4,
+            max_patching_waves=2,
+            lbfgsb_max_iter=15,
+            samples_output_file=os.path.join(workdir, 'samples.csv'),
+            volume_sampling={
+                'n_walkers': 60,
+                'n_steps': 15,
+                'output_file': os.path.join(workdir, 'volume_samples.csv'),
+            },
+        ) as sampler:
+            comm.bcast((sampler.target_func, sampler.grad_func), root=0)
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            vol = sampler.volume_stage_result
+            stats = vol['stats']
+            samples = vol['samples']
+            band_lo = vol['band_lo_final']
+            logls = samples[:, 4]
+
+            # Re-evaluate the in-band samples: stored logL must be exact and
+            # inside the final band (search/report decoupling).
+            max_err = 0.0
+            for row in samples:
+                max_err = max(max_err, abs(target(row[:4]) - row[4]))
+
+            out_rows = read_samples(vol['output_file'])
+            with open(vol['summary_file']) as f:
+                summary = json.load(f)
+
+            payload = {
+                'skipped': vol['skipped'],
+                'n_samples': int(len(samples)),
+                'n_cols': int(samples.shape[1]),
+                'max_err': float(max_err),
+                'all_in_band': bool(np.all(logls >= band_lo)),
+                'band_lo': float(band_lo),
+                'logl_min': float(logls.min()),
+                'logl_max': float(logls.max()),
+                'n_top': int(np.count_nonzero(logls > -1.0)),
+                'n_deep': int(np.count_nonzero(logls < -3.0)),
+                'n_evals': stats['n_evals'],
+                'mean_acceptance': stats['mean_acceptance'],
+                'output_rows': int(out_rows.shape[0]),
+                'summary_n_samples': summary['n_samples'],
+                'summary_band_lo': summary['band_lo_final'],
+            }
+            print('RESULT', json.dumps(payload), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
+def test_volume_sampling_stage(tmp_path):
+    """End-to-end ensemble volume sampling on a 4-D sphere: in-band samples
+    carry exact logL values, fill the band in lnL, and round-trip to disk."""
+    result = _run_runner(VOLUME_RUNNER, str(tmp_path))
+
+    assert not result['skipped']
+    assert result['n_cols'] == 5                       # 4 params + logL
+    assert result['n_samples'] > 50                    # plenty in-band
+    assert result['n_evals'] >= 60
+
+    # Search/report decoupling: stored logL is exact and inside the band.
+    assert result['max_err'] < 1e-9
+    assert result['all_in_band']
+    assert result['logl_min'] >= result['band_lo'] - 1e-9
+    assert result['logl_max'] <= 1e-9
+
+    # lnL-filling: samples span the band, with points near the top and deep.
+    assert result['logl_max'] - result['logl_min'] > 2.5
+    assert result['n_top'] >= 1
+    assert result['n_deep'] >= 1
+
+    # Outputs round-trip.
+    assert result['output_rows'] == result['n_samples']
+    assert result['summary_n_samples'] == result['n_samples']
+    assert result['summary_band_lo'] == pytest.approx(result['band_lo'])
+
+
+# Two-island target with a void between: the pooled affine ensemble must
+# populate both islands (multimodal coverage via diverse seeds).
+TWO_ISLAND_RUNNER = textwrap.dedent("""
+    import json
+    import os
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    C1 = np.array([2.5, 2.5, 0.0, 0.0])
+
+    def target(p):
+        p = np.asarray(p)
+        return -float(min(np.sum((p - C1) ** 2), np.sum((p + C1) ** 2)))
+
+    bounds = np.array([[-5.0, 5.0]] * 4)
+    projections = [
+        {'dims': [0], 'grid_points': [40], 'optimization_method': 'lbfgsb'},
+        {'dims': [1], 'grid_points': [40], 'optimization_method': 'lbfgsb'},
+    ]
+    workdir = sys.argv[1]
+
+    np.random.seed(20260612)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=bounds,
+            projections=projections,
+            roi_threshold=4.0,
+            n_initial_optimizations=30,
+            max_patching_waves=2,
+            lbfgsb_max_iter=20,
+            samples_output_file=os.path.join(workdir, 'samples.csv'),
+            volume_sampling={
+                'n_walkers': 120, 'n_steps': 20,
+                'output_file': os.path.join(workdir, 'volume.csv'),
+            },
+        ) as sampler:
+            comm.bcast((sampler.target_func, sampler.grad_func), root=0)
+            run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            vol = sampler.volume_stage_result
+            s = vol['samples']
+            payload = {
+                'n_samples': int(len(s)),
+                'n_pos_island': int(np.count_nonzero((s[:, 0] > 0) & (s[:, 1] > 0))),
+                'n_neg_island': int(np.count_nonzero((s[:, 0] < 0) & (s[:, 1] < 0))),
+            }
+            print('RESULT', json.dumps(payload), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
+def test_two_islands_multimodal_coverage():
+    """Disconnected ROI: the pooled ensemble populates both islands."""
+    with tempfile.TemporaryDirectory() as workdir:
+        result = _run_runner(TWO_ISLAND_RUNNER, workdir)
+
+    assert result['n_samples'] > 50
+    assert result['n_pos_island'] >= 1
+    assert result['n_neg_island'] >= 1

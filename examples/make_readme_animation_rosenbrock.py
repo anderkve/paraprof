@@ -127,8 +127,8 @@ class SnapshotCapturer:
     def _wrap_register(self):
         orig = self.sampler._register_target_call
 
-        def wrapped(params, target_val):
-            orig(params, target_val)
+        def wrapped(params, target_val, *args, **kwargs):
+            orig(params, target_val, *args, **kwargs)
             self.scatter_buf.append(
                 (np.asarray(params, dtype=float).copy(), float(target_val))
             )

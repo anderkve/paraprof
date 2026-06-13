@@ -624,3 +624,89 @@ def _marginalize_param_to_2d(param_grid, dim_i, dim_j):
                 marginalized_2d[i_idx, j_idx] = np.median(values)
 
     return marginalized_2d
+
+
+def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
+                        grid_solution=None, parameter_names=None):
+    """Scatter the volume-sampling stage's in-band samples over two parameters.
+
+    ``volume_result`` is the dict from ``run_volume_sampling`` /
+    ``sampler.volume_stage_result`` (must not be a skipped result); ``dims``
+    is the pair of parameter indices to use as axes. Samples are coloured by
+    their logL. Pass an ``export_grid_solution()`` dict whose
+    ``projection_dims`` equal ``dims`` as ``grid_solution`` to draw the profile
+    likelihood (relative to its maximum) underneath.
+
+    ``plot_settings`` keys (all optional): ``dpi`` (300), ``filetype``
+    ('png'), ``vmin``/``vmax`` (background range relative to best-fit
+    log L; -4.0/0.0), ``output_dir`` ('.').
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.info("\nMatplotlib not found. Skipping visualization.")
+        return
+
+    if volume_result.get('skipped'):
+        logger.info("Volume stage was skipped; nothing to plot.")
+        return
+
+    if plot_settings is None:
+        plot_settings = {}
+    dpi = plot_settings.get('dpi', 300)
+    filetype = plot_settings.get('filetype', 'png')
+    output_path = _resolve_output_path(filename, plot_settings)
+
+    samples = volume_result['samples']
+    n_dims = samples.shape[1] - 1 if len(samples) else 0
+    d0, d1 = dims
+    band_lo = volume_result.get('band_lo_final')
+    gmax = volume_result.get('global_max')
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+
+    # Optional profile-likelihood background from a matching 2D projection.
+    if grid_solution is not None:
+        proj_dims = list(grid_solution['projection_dims'])
+        if proj_dims != sorted([d0, d1]):
+            logger.warning(
+                f"grid_solution projects dims {proj_dims}, not {sorted(dims)}; "
+                f"skipping the background."
+            )
+        else:
+            axes_ = grid_solution['grid_axes']
+            shape = grid_solution['grid_shape']
+            grid = np.full(shape, np.nan)
+            for idx, sol in grid_solution['solutions'].items():
+                grid[idx] = sol['likelihood']
+            ref = np.nanmax(grid) if np.isfinite(np.nanmax(grid)) else 0.0
+            vmin = plot_settings.get('vmin', -4.0)
+            vmax = plot_settings.get('vmax', 0.0)
+            # Transpose so axis 0 of the grid runs along x.
+            mesh = ax.pcolormesh(
+                axes_[0], axes_[1], (grid - ref).T,
+                vmin=vmin, vmax=vmax, cmap='Greys_r', shading='nearest',
+            )
+            fig.colorbar(mesh, ax=ax,
+                         label=r'$\ln L - \ln L_\mathrm{max}$ (profile)')
+
+    if len(samples):
+        sc = ax.scatter(samples[:, d0], samples[:, d1], s=8,
+                        c=samples[:, n_dims], cmap='viridis',
+                        vmin=band_lo, vmax=gmax, linewidths=0, zorder=3)
+        fig.colorbar(sc, ax=ax, label=r'$\ln L$ (volume samples)')
+
+    names = parameter_names or {}
+    ax.set_xlabel(names.get(d0, f"$x_{{{d0}}}$") if isinstance(names, dict)
+                  else names[d0])
+    ax.set_ylabel(names.get(d1, f"$x_{{{d1}}}$") if isinstance(names, dict)
+                  else names[d1])
+    ax.set_title(f"Volume samples ({len(samples)} in-band)")
+
+    fig.tight_layout()
+    out = f"{output_path}_volume_{d0}_{d1}.{filetype}"
+    fig.savefig(out, dpi=dpi)
+    plt.close(fig)
+    logger.info(f"Volume-sample plot saved to {out}")

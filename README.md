@@ -121,7 +121,7 @@ Common constructor arguments:
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
-- `samples_output_file` — path to log every evaluation. The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency; see [Sample file formats](#sample-file-formats)).
+- `samples_output_file` — path to log every evaluation as `[params…, logL, phase]` (one file for the whole run; the `phase` column tags which algorithm stage produced each point — see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
 - `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
 
@@ -147,30 +147,87 @@ Only the L-BFGS-B paths use the gradient; DE is gradient-free. `sampler.target_c
 
 ### Sample file formats
 
-Each evaluated point — `n_dims` parameter values plus its target value — is one row of the sample file. The format follows the `samples_output_file` extension:
+Every evaluated point is one row of the **single** sample log: `[params…, logL, phase]` — `n_dims` parameter values, the target value, and an integer **phase** tag identifying the algorithm stage that produced the point. Filtering on the phase column recovers any subset (e.g. the volume-sampling evaluations), so the whole run lives in one file. The format follows the `samples_output_file` extension:
 
 | Extension        | Format      | Notes                                                                 |
 |------------------|-------------|-----------------------------------------------------------------------|
 | `.csv` (default) | plain text  | Headerless, `%.10e` columns. No extra dependencies.                   |
 | `.h5` / `.hdf5`  | HDF5 binary | ~Half the size and faster I/O. Requires `h5py` (`pip install paraprof[hdf5]`). |
 
-Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file. They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
+Phase values (`paraprof.PHASE_*`, with descriptions in `paraprof.PHASE_LEGEND`):
+
+| Phase | Constant | Meaning |
+|-------|----------|---------|
+| `0` | `PHASE_INITIAL` | initial optimization (global maxima / basin detection) |
+| `1` | `PHASE_SCAN` | projection-grid scan (activation, DE, grid polish) |
+| `2` | `PHASE_REFINE` | grid refinement and patching |
+| `3` | `PHASE_SUSPECT` | suspect-cell recheck |
+| `4` | `PHASE_VOLUME` | volume sampling (umbrella-ensemble walkers) |
+
+Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file (the warm-start reader reads params and logL by position and ignores the phase column). They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
 
 To pool several independent runs (or convert between formats), use `combine_samples`. It streams chunk by chunk and may mix formats:
 
 ```python
 import glob
-from paraprof import combine_samples, read_samples, write_samples
+import numpy as np
+from paraprof import combine_samples, read_samples, write_samples, PHASE_VOLUME
 
 combine_samples(glob.glob("run_*/samples.*"), "all_samples.h5")
 
-samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 1) array
-params, target = samples[:, :-1], samples[:, -1]
+samples = read_samples("all_samples.h5")   # (n_samples, n_dims + 2) array
+n_dims = samples.shape[1] - 2
+params, target, phase = samples[:, :n_dims], samples[:, n_dims], samples[:, -1]
 
-write_samples(samples[target > target.max() - 4.0], "roi.csv")  # one-shot save
+write_samples(samples[target > target.max() - 4.0], "roi.csv")        # filter by logL
+volume_samples = samples[phase == PHASE_VOLUME]                        # filter by phase
 ```
 
 `read_samples`/`write_samples` are the one-shot load/save pair (`write_samples` refuses to clobber an existing file unless `overwrite=True`). For very large files, iterate with `paraprof.sample_io.iter_sample_batches(path)` instead of loading the whole array.
+
+### Volume sampling: well-spread samples in the good-fit volume
+
+A profile-likelihood scan concentrates its samples on the low-dimensional profile *surfaces* — a set of measure zero in the full good-fit volume. When you also want representative points throughout the region of interest (or just outside it, to study *why* nearby regions fail), enable the post-projection **volume-sampling stage**:
+
+```python
+sampler = ProfileProjector(
+    ...,
+    samples_output_file="samples.csv",   # walkers warm-start from these
+    volume_sampling={
+        'n_walkers': 1000,      # ensemble size
+        'n_steps': 30,          # stretch sweeps per walker
+        'output_file': "volume_samples.csv",
+        # 'roi_threshold': 25.0,  # widen the stage's ROI to also sample
+        #                         # the shell outside the good-fit region
+    },
+)
+```
+
+After the projections finish, the stage populates the ROI `{logL > global_max − roi_threshold}` with a sample set that balances **space-filling** (spread through the volume, including thin valleys and disconnected islands) and **lnL-filling** (spread across fit quality, not piled at the band edge where most of the volume lives). It runs an **affine-invariant ensemble of umbrella walkers**: each of `n_walkers` walkers carries a fixed *home level* spanning the band uniformly in ΔlnL and targets a log-Gaussian in logL around it, so the ensemble tiles the lnL range. Walkers are moved with the Goodman–Weare stretch move (partners pooled across the whole ensemble), which handles stretched/curved geometries with no step-size, gradient, or covariance tuning. They are seeded inside the **projection envelope** (the converged profile grids are rigorous upper bounds on logL, so regions whose projection falls in a below-threshold cell of *any* computed projection are excluded for free) and warm-started from logged scan samples near each level, reusing the scan's work. Run `examples/run_volume_sampling.py` for a complete example.
+
+Every evaluation the stage makes streams into the run's main sample log under `PHASE_VOLUME`, so the raw points are recoverable by filtering that file. The stage also writes the curated in-band sample set and a summary:
+
+Outputs (paths configurable via `output_file`/`summary_file`):
+
+| Output | Content |
+|--------|---------|
+| `volume_samples.csv` (or `.h5`) | One row `[params..., logL]` per in-band evaluation — the populated ROI sample set. |
+| `volume_samples_summary.json` | Statistics: walker/step/evaluation counts, in-band fraction, mean acceptance, global-max drift, and the logL histogram of the in-band samples (to check the achieved lnL spread). |
+| `sampler.volume_stage_result` | The same in memory, plus the `samples` array. |
+
+Useful knobs:
+
+- `n_walkers` — ensemble size (≈ output sample count scales with it). Sets the coverage resolution.
+- `n_steps` — stretch sweeps per walker; longer chains mix better, especially in stiff/curved geometries.
+- `eval_budget` — optional hard cap on total evaluations (default `n_walkers·(n_steps+1)`). Set it to the projection evaluation count to bound the volume stage to the same cost as the scan.
+- `sigma_frac` (default `0.1`) — umbrella width σ as a fraction of `roi_threshold`. Smaller pins each walker more tightly to its level (sharper lnL-filling, lower acceptance); larger trades a little lnL sharpness for higher acceptance.
+- `roi_threshold` — the stage's own ROI cutoff (ΔlnL band depth). Defaults to the projection's `roi_threshold`; set it larger to sample into the shell outside the good-fit region (the band always runs up to the global max).
+- `partner_level_window` (default `None` = full pool) — restrict stretch partners to walkers within this lnL window of a walker's home level; lower it to trade a little extra acceptance for locality.
+- `warm_start` (default `True`) — seed walkers from logged scan samples near each level instead of plain envelope draws.
+
+Use `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the in-band samples (coloured by logL) over a 2D profile map.
+
+Caveats: the samples are MCMC draws, so they are **autocorrelated** — read them as well-spread coverage of the ROI, not as an i.i.d. uniform draw. The lnL spread tracks the requested home-level tiling but the very top of the band can be under-filled (the peak is a small target for a short walk); raise `n_steps` or `n_walkers` if you need it denser there. Islands the original scan missed can still be missed (walkers are seeded inside the projection envelope); in high dimensions read "well-spread representatives", not "dense filling" (covering a d-dimensional volume at spacing r needs ~(1/r)^d points). Stiff/curved geometries are handled by the affine-invariant move, but very narrow valleys mix faster with more `n_steps`.
 
 ### Advanced configuration
 

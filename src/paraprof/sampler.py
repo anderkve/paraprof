@@ -9,6 +9,8 @@ from .exceptions import (
     InvalidBoundsError, InvalidProjectionError, ConfigurationError,
 )
 from .sample_io import create_sample_writer, read_samples
+from .phases import PHASE_UNKNOWN
+from .volume import normalize_volume_config
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
@@ -128,6 +130,8 @@ class ProfileProjector:
                  # I/O
                  samples_output_file=None,
                  warm_start_file=None,
+                 # Post-projection volume-sampling stage (optional)
+                 volume_sampling=None,
                  # Parameter naming (optional, enables string dims in projections)
                  parameter_names=None,
                  # Advanced configuration (optional)
@@ -218,9 +222,12 @@ class ProfileProjector:
         ---
         samples_output_file : str, optional
             Path to save all evaluated points (default: None). Write-only
-            during the scan. Format follows the extension: ``.csv`` (text) or
-            ``.h5``/``.hdf5`` (HDF5 binary, needs ``h5py``); anything else is
-            treated as CSV.
+            during the scan. Each row is ``[params..., logL, phase]``, where
+            ``phase`` is an integer tagging the algorithm stage that produced
+            the point (see :mod:`paraprof.phases`); filtering on it recovers
+            any subset (e.g. the volume-sampling probes). Format follows the
+            extension: ``.csv`` (text) or ``.h5``/``.hdf5`` (HDF5 binary,
+            needs ``h5py``); anything else is treated as CSV.
         warm_start_file : str, optional
             Path to a sample file produced by a previous run (any supported
             format; the extension selects the reader). When set and warm-start
@@ -230,6 +237,15 @@ class ProfileProjector:
             warm start). To round-trip the current run's samples into the
             next one, point ``warm_start_file`` at the same path as
             ``samples_output_file``.
+        volume_sampling : dict, optional
+            Configuration for the post-projection volume-sampling stage,
+            which collects a stratified, well-spread sample set inside the
+            stage's ROI ``{logL > global_max - roi_threshold}``. The stage's
+            ``roi_threshold`` defaults to the projection's but can be set
+            larger to also explore the shell outside the projection ROI.
+            Validated at construction; see ``volume.VOLUME_CONFIG_DEFAULTS``
+            for the keys and ``docs/volume_sampling_plan.md`` for the
+            design. Default: None (stage disabled).
 
         Parameter Naming
         ----------------
@@ -527,6 +543,17 @@ class ProfileProjector:
         # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
         self.roi_threshold = roi_threshold
+
+        # Volume-sampling stage configuration: validated up front like the
+        # rest of the config; the stage itself runs after the projections
+        # (see volume.py and docs/volume_sampling_plan.md).
+        if volume_sampling is not None:
+            self.volume_sampling_config = normalize_volume_config(
+                volume_sampling, self.roi_threshold)
+        else:
+            self.volume_sampling_config = None
+        # Result dict of the last run_volume_sampling call (None until then).
+        self.volume_stage_result = None
         self.max_patching_waves = max_patching_waves
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations
@@ -1097,8 +1124,8 @@ class ProfileProjector:
             return
 
         try:
-            data = np.array([list(params) + [target_val]
-                             for params, target_val in self.samples_buffer])
+            data = np.array([list(params) + [target_val, float(phase)]
+                             for params, target_val, phase in self.samples_buffer])
             self._sample_writer.write_batch(data)
             self.samples_buffer = []
 
@@ -1106,11 +1133,13 @@ class ProfileProjector:
             self.logger.warning(f"Warning: Could not write to sample file: {e}")
 
 
-    def _register_target_call(self, params, target_val):
-        """Record a completed target call (master only). Global max is updated by jobs."""
+    def _register_target_call(self, params, target_val, phase=PHASE_UNKNOWN):
+        """Record a completed target call (master only). Global max is updated
+        by jobs. ``phase`` (see :mod:`paraprof.phases`) tags the sample-log row
+        with the algorithm stage that produced the point."""
         self.target_calls += 1
         if self.samples_output_file:
-            self.samples_buffer.append((params, target_val))
+            self.samples_buffer.append((params, target_val, phase))
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
 
@@ -1346,11 +1375,19 @@ class ProfileProjector:
         if samples.size == 0:
             self.logger.info("  Warm-start file contained no samples. Skipping.")
             return
+        if samples.shape[1] != self.dims + 2:
+            self.logger.info(
+                f"  Warm-start file rows have width {samples.shape[1]}, expected "
+                f"n_dims + 2 = {self.dims + 2} ([params..., logL, phase]). Skipping."
+            )
+            return
 
+        # params and logL are read by position; the trailing phase column is
+        # ignored, so a run's own sample log round-trips.
         best_candidates = {}
         for sample_row in samples:
-            params = sample_row[:-1]
-            target_val = sample_row[-1]
+            params = sample_row[:self.dims]
+            target_val = sample_row[self.dims]
             if not np.all((params >= self.bounds[:, 0]) & (params <= self.bounds[:, 1])):
                 continue
             grid_idx = self._get_grid_indices_from_point(params)

@@ -7,10 +7,11 @@ from .master import (
     run_projection,
     run_all_projections,
     run_scan,
+    run_volume_sampling,
     terminate_workers,
 )
 from .worker import worker_main
-from .visualization import plot_profiles, plot_profiled_parameters
+from .visualization import plot_profiles, plot_profiled_parameters, plot_volume_samples
 from .test_functions import get_test_function
 from .logger import setup_logger, get_logger, set_log_level
 from .exceptions import (
@@ -30,6 +31,16 @@ from .sample_io import (
     combine_samples,
     create_sample_writer,
 )
+from .phases import (
+    PHASE_INITIAL,
+    PHASE_SCAN,
+    PHASE_REFINE,
+    PHASE_SUSPECT,
+    PHASE_VOLUME,
+    PHASE_UNKNOWN,
+    PHASE_LEGEND,
+    phase_for_job_type,
+)
 
 __all__ = [
     'ProfileProjector',
@@ -37,10 +48,12 @@ __all__ = [
     'run_projection',
     'run_all_projections',
     'run_scan',
+    'run_volume_sampling',
     'terminate_workers',
     'worker_main',
     'plot_profiles',
     'plot_profiled_parameters',
+    'plot_volume_samples',
     'get_test_function',
     'setup_logger',
     'get_logger',
@@ -56,6 +69,14 @@ __all__ = [
     'write_samples',
     'combine_samples',
     'create_sample_writer',
+    'PHASE_INITIAL',
+    'PHASE_SCAN',
+    'PHASE_REFINE',
+    'PHASE_SUSPECT',
+    'PHASE_VOLUME',
+    'PHASE_UNKNOWN',
+    'PHASE_LEGEND',
+    'phase_for_job_type',
 ]
 
 __version__ = '1.0.0'

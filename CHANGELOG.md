@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
+  `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
+  stage that produced the point (`paraprof.PHASE_*`, described in
+  `PHASE_LEGEND`): initial optimization, scan, refinement, suspect recheck, and
+  volume sampling. Filtering on this column recovers any subset from the single
+  file. Sample rows are now `n_dims + 2` columns throughout: the warm-start
+  reader reads params/logL by position and ignores the trailing phase column,
+  so a run's log round-trips.
+
 ### Added
+- **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
+  post-projection stage that populates the ROI
+  `{logL > global_max - roi_threshold}` with a sample set that balances
+  space-filling and lnL-filling. The stage's `roi_threshold` defaults to the
+  projection's but can be set larger to also explore the shell outside the
+  good-fit region. Enabled by the new `ProfileProjector` argument
+  `volume_sampling` (a config dict, validated at construction) and run
+  automatically by `run_all_projections`; also exposed standalone as
+  `run_volume_sampling`.
+  - Uses an **affine-invariant ensemble of umbrella walkers**: `n_walkers`
+    walkers each carry a continuous *home level* spanning the band uniformly
+    in ΔlnL and target a log-Gaussian in logL around it (width
+    `sigma_frac·roi_threshold`), so the ensemble tiles the lnL range. Walkers
+    are moved with the Goodman–Weare stretch move (`n_steps` red/black sweeps,
+    partners pooled across the whole ensemble — `partner_level_window`
+    optionally localizes them), which handles curved/stretched geometries with
+    no step, gradient, or covariance tuning. They are seeded inside the
+    `ProjectionEnvelope` and warm-started (`warm_start`) from logged scan
+    samples near each level. `eval_budget` optionally caps the total work.
+  - Outputs: the in-band sample file (`output_file`, csv/h5; rows
+    `[params..., logL]`) and a JSON summary (`summary_file`) with the
+    walker/step/evaluation counts, in-band fraction, mean acceptance,
+    global-max drift, and the logL histogram of the in-band samples. Results
+    also land on `sampler.volume_stage_result`; every stage evaluation flows to
+    `samples_output_file` under `PHASE_VOLUME`. The stage skips itself when a
+    projection grids the full parameter space.
+  - Extras: `plot_volume_samples`, `examples/run_volume_sampling.py`.
+
 - **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
   **on by default**). Every active grid cell normally spends at least
   `de.convergence_window` DE generations confirming convergence. When a fresh
