@@ -187,7 +187,7 @@ volume_samples = samples[phase == PHASE_VOLUME]                        # filter 
 
 ### Volume sampling
 
-A profile-likelihood scan concentrates its samples on the low-dimensional profile *surfaces* — a vanishingly thin slice of the full good-fit volume. When you also want points spread throughout the region of interest, or just outside it to see *why* nearby regions fail, enable the volume-sampling stage that runs after the projections:
+A profile-likelihood scan samples only the low-dimensional profile *surfaces* — a vanishingly thin slice of the full good-fit volume. To also get points throughout the region of interest (or just outside it, to see *why* nearby regions fail), enable the volume-sampling stage that runs after the projections:
 
 ```python
 sampler = ProfileProjector(
@@ -203,31 +203,27 @@ sampler = ProfileProjector(
 )
 ```
 
-The stage fills the region of interest `{logL > global_max − roi_threshold}` with samples spread both through the volume (including thin valleys and disconnected islands) and across fit quality (rather than piling up near the threshold, where most of the volume sits). It runs an affine-invariant ensemble of MCMC walkers (the Goodman–Weare stretch move, so there is no step size, gradient, or covariance to tune). Each walker is pinned to a target logL level, and the levels are spread evenly across the ROI so the ensemble covers the whole range from the global max down to the threshold. Walkers are seeded inside the converged profile grids — which bound logL from above, so below-threshold regions are skipped for free — and warm-started from the logged scan samples, reusing the scan's work. See `examples/run_volume_sampling.py` for a complete example.
+The stage fills the region of interest `{logL > global_max − roi_threshold}` with samples spread through the volume and across fit quality (not piled up near the threshold). It runs an affine-invariant ensemble of MCMC walkers (Goodman–Weare stretch move), each pinned to a target logL level so the ensemble spans the full range. Walkers are seeded inside the converged profile grids — which bound logL from above — and warm-started from the logged scan samples. See `examples/run_volume_sampling.py`.
 
-Every evaluation streams into the main sample log under `PHASE_VOLUME`, so the raw points are recoverable by filtering that file. The stage also writes the samples that landed inside the ROI and a summary:
+Every evaluation streams into the main sample log under `PHASE_VOLUME`. The stage also writes:
 
-Outputs (paths configurable via `output_file`/`summary_file`):
-
-| Output | Content |
-|--------|---------|
-| `volume_samples.csv` (or `.h5`) | One row `[params..., logL]` per sample inside the ROI. |
-| `volume_samples_summary.json` | Walker, step and evaluation counts, the fraction inside the ROI, mean acceptance, global-max drift, and the logL histogram of the samples. |
-| `sampler.volume_stage_result` | The same in memory, plus the `samples` array. |
+- `output_file` (`.csv`/`.h5`) — the in-ROI samples, one row `[params..., logL]` each.
+- `summary_file` (JSON) — walker/step/evaluation counts, in-ROI fraction, mean acceptance, and the logL histogram.
+- `sampler.volume_stage_result` — the same in memory, plus the `samples` array.
 
 Useful knobs:
 
 - `n_walkers` — ensemble size; the output sample count scales with it. Default 1000.
 - `n_steps` — steps per walker; longer chains mix better. Default 30.
-- `eval_budget` — optional cap on total evaluations. Default `n_walkers·(n_steps+1)`; set it to the scan's evaluation count to match the volume stage to that cost.
-- `sigma_frac` — how tightly each walker is held to its logL level, as a fraction of `roi_threshold`. Smaller sharpens the logL spread but lowers acceptance. Default 0.1.
-- `roi_threshold` — the stage's own ROI cutoff in logL. Defaults to the projection's value; set it larger to sample just outside the good-fit region.
-- `partner_level_window` — restrict each walker's stretch-move partners to those near its own logL level. Default `None` (use the full ensemble).
+- `eval_budget` — cap on total evaluations. Default `n_walkers·(n_steps+1)`.
+- `sigma_frac` — how tightly each walker is held to its logL level, as a fraction of `roi_threshold`; smaller sharpens the logL spread but lowers acceptance. Default 0.1.
+- `roi_threshold` — the stage's own ROI cutoff in logL; larger reaches just outside the good-fit region. Defaults to the projection's value.
+- `partner_level_window` — restrict a walker's stretch-move partners to those near its logL level. Default `None`.
 - `warm_start` — seed walkers from logged scan samples rather than fresh draws. Default `True`.
 
-Plot the result with `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the samples (coloured by logL) over a 2D profile map.
+Plot with `plot_volume_samples(sampler.volume_stage_result, dims=(0, 1), filename=..., grid_solution=...)` to scatter the samples (coloured by logL) over a 2D profile map.
 
-The samples are MCMC draws, so they are autocorrelated: read them as well-spread coverage of the region, not as an i.i.d. uniform draw. The top of the logL range can be under-filled, since the peak is a small target for a short walk — raise `n_steps` or `n_walkers` if you need it denser there. Islands the scan missed can still be missed, and in high dimensions the samples are best read as representatives rather than a dense filling.
+The samples are MCMC draws, so they are autocorrelated — read them as well-spread coverage, not an i.i.d. draw. The top of the logL range can be under-filled (raise `n_steps`/`n_walkers`), islands the scan missed can stay missed, and in high dimensions they are representatives rather than a dense filling.
 
 ### Advanced configuration
 
