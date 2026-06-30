@@ -30,6 +30,7 @@ try:
     paraprof_ProfileProjector = paraprof.ProfileProjector
     paraprof_run_scan = paraprof.run_scan
     paraprof_worker_main = paraprof.worker_main
+    paraprof_plot_volume_samples = paraprof.plot_volume_samples
 except Exception:
     __error__ = ("The paraprof package is not installed. To install it, run: "
                  "pip install git+https://github.com/anderkve/paraprof.git")
@@ -37,6 +38,7 @@ except Exception:
     paraprof_ProfileProjector = None
     paraprof_run_scan = None
     paraprof_worker_main = None
+    paraprof_plot_volume_samples = None
 
 import scanner_plugin as splug
 
@@ -63,10 +65,12 @@ YAML options:
                             patch_coarse_grid:      bool (default true)
                             patch_refined_grid:     bool (default false)
                         Optional ProfileProjector tuning keys:
-    roi_threshold:           ROI cutoff in chi^2 units (default 3.0).
+    roi_threshold:           ROI cutoff in chi^2 units (default 4.0).
     pop_per_grid_point:      DE population size per grid cell (default 3).
-    n_initial_optimizations: Global L-BFGS-B starts before grid optimization
-                             (default min(100, 20*n_dims)).
+    n_initial_optimizations: Cap on the global L-BFGS-B starts that seed the
+                             initial maxima before grid optimization. With basin
+                             detection on (the default) it is a cap, not a fixed
+                             spend (default min(400, 50*n_dims)).
     max_patching_waves:      Cap on patching iterations (default 10).
     lbfgsb_max_iter:         Max L-BFGS-B iterations per polish (default 50).
     lbfgsb_polish:           Apply L-BFGS-B polish after DE (default true).
@@ -82,6 +86,38 @@ YAML options:
                              global L-BFGS-B seeding step. Set equal to
                              ``samples_output_file`` to round-trip samples into
                              the next run.
+    n_optima:                Prior on the global number of optima, used to stop the
+                             initial multistart early. Pass an int (exact count) or
+                             a dict {'min': int, 'max': int}. Use only when you are
+                             confident the target has one or a few optima.
+    volume_sampling:         Optional dict enabling the post-scan volume-sampling
+                             stage. After all projections complete, this fills the
+                             good-fit region {logL > global_max - roi_threshold}
+                             with a spread set of samples drawn by an
+                             affine-invariant ensemble of umbrella walkers. It runs
+                             once, on the full parameter space, and writes its own
+                             output files. Keys (all optional):
+                               roi_threshold:        band depth in chi^2 units
+                                                     (default: the projection's
+                                                     roi_threshold; a larger value
+                                                     also reaches into the shell
+                                                     outside the good-fit region)
+                               n_walkers:            ensemble size (default 1000)
+                               n_steps:              stretch sweeps per walker
+                                                     (default 30)
+                               eval_budget:          cap on target evaluations
+                                                     (default n_walkers*(n_steps+1))
+                               sigma_frac:           umbrella width / roi_threshold
+                                                     (default 0.1)
+                               partner_level_window: lnL window for stretch
+                                                     partners (default: full pool)
+                               warm_start:           seed walkers from the scan
+                                                     samples (default true; needs
+                                                     samples_output_file set)
+                               output_file:          CSV of in-band samples
+                                                     (default volume_samples.csv)
+                               summary_file:         JSON stats file (default:
+                                                     derived from output_file)
     advanced_config:         Forwarded as-is to ProfileProjector. Sub-dicts:
                              'de', 'lbfgsb', 'clustering', 'cross_projection'
                              (multi-projection knowledge transfer),
@@ -89,7 +125,9 @@ YAML options:
                              See the paraprof README for the full key list.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
-                             the working directory after each projection.
+                             the working directory after each projection. When
+                             volume_sampling is enabled, it also scatters the
+                             volume samples over each 2D projection map.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
                              contour_levels, slice_mode, plot_profiled_params.
@@ -150,8 +188,9 @@ only the loglike value, so L-BFGS-B uses finite differences.
         for key in (
             "roi_threshold", "pop_per_grid_point", "max_patching_waves",
             "lbfgsb_max_iter", "lbfgsb_polish", "n_initial_optimizations",
-            "initial_points", "use_clustering", "refinement_direct_eval",
-            "samples_output_file", "warm_start_file", "advanced_config",
+            "n_optima", "initial_points", "use_clustering",
+            "refinement_direct_eval", "samples_output_file", "warm_start_file",
+            "volume_sampling", "advanced_config",
         ):
             if key in ra:
                 self.projector_kwargs[key] = ra[key]
@@ -223,8 +262,60 @@ only the loglike value, so L-BFGS-B uses finite differences.
             )
 
             self._print_summary(results)
+            self._handle_volume_stage(sampler, results)
 
         return 0
+
+
+    def _handle_volume_stage(self, sampler, results):
+        """Report the volume-sampling stage on rank 0, and (if save_plots is
+        set) scatter its in-band samples over each 2D projection map.
+
+        No-op when volume sampling was not configured. The stage stashes its
+        result on ``sampler.volume_stage_result``; a skipped stage carries a
+        ``reason`` instead of statistics.
+        """
+        vol = getattr(sampler, "volume_stage_result", None)
+        if not vol:
+            return
+
+        prefix = self.print_prefix
+        if vol.get("skipped"):
+            print(f"{prefix} Volume sampling skipped: {vol.get('reason')}",
+                  flush=True)
+            return
+
+        stats = vol.get("stats", {})
+        print(f"{prefix} === Volume sampling summary ===", flush=True)
+        print(f"{prefix}     walkers:          {stats.get('n_walkers')}", flush=True)
+        print(f"{prefix}     evaluations:      {stats.get('n_evals')}", flush=True)
+        print(f"{prefix}     in-band samples:  {stats.get('n_in_band')} "
+              f"(fraction {stats.get('in_band_fraction', float('nan')):.3g})",
+              flush=True)
+        print(f"{prefix}     mean acceptance:  "
+              f"{stats.get('mean_acceptance', float('nan')):.3g}", flush=True)
+        print()
+
+        if not (self.save_plots and paraprof_plot_volume_samples is not None):
+            return
+        # The volume stage samples the full parameter space, so any 2D
+        # projection map serves as a backdrop. Each plot file is suffixed with
+        # its dim pair, so the projections don't overwrite one another.
+        for res in results:
+            grid = res.get("refined_solution") or res.get("coarse_solution")
+            if not grid:
+                continue
+            dims = grid.get("projection_dims", [])
+            if len(dims) != 2:
+                continue
+            paraprof_plot_volume_samples(
+                vol,
+                dims=tuple(dims),
+                filename="volume_plot",
+                plot_settings=self.plot_settings,
+                grid_solution=grid,
+                parameter_names=list(self.parameter_names),
+            )
 
 
     def _print_summary(self, results):
