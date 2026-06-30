@@ -22,7 +22,7 @@ Python environment GAMBIT is using.
 import numpy as np
 
 from scannerbit import with_mpi as scannerbit_with_mpi
-from utils import copydoc, version, with_mpi
+from utils import copydoc, version, get_directory, with_mpi
 
 try:
     import paraprof
@@ -63,7 +63,7 @@ YAML options:
                             patch_coarse_grid:      bool (default true)
                             patch_refined_grid:     bool (default false)
                         Optional ProfileProjector tuning keys:
-    roi_threshold:           ROI cutoff in chi^2 units (default 4.0).
+    roi_threshold:           ROI cutoff in chi^2 units (default 3.0).
     pop_per_grid_point:      DE population size per grid cell (default 3).
     n_initial_optimizations: Global L-BFGS-B starts before grid optimization
                              (default min(100, 20*n_dims)).
@@ -89,13 +89,10 @@ YAML options:
                              See the paraprof README for the full key list.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
-                             the directory specified by
-                             ``plot_settings['output_dir']`` (default: the
-                             working directory) after each projection.
+                             the working directory after each projection.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
-                             contour_levels, slice_mode, plot_profiled_params,
-                             output_dir (created automatically if missing).
+                             contour_levels, slice_mode, plot_profiled_params.
 
 paraprof's ``grad_func`` is not exposed: ScannerBit's Python API surfaces
 only the loglike value, so L-BFGS-B uses finite differences.
@@ -163,6 +160,18 @@ only the loglike value, so L-BFGS-B uses finite differences.
         self.save_plots = bool(ra.get("save_plots", False))
         self.plot_settings = ra.get("plot_settings", None)
 
+        # Direct paraprof's plots into the dedicated ScannerBit output folder
+        # <default_output_path>/paraprof/. Plots are only written by rank 0.
+        if self.save_plots and self.mpi_rank == 0:
+            if self.plot_settings is None:
+                self.plot_settings = {}
+            else:
+                self.plot_settings = dict(self.plot_settings)  # defensive copy
+            # Only set output_dir if the user didn't pin one explicitly.
+            self.plot_settings.setdefault(
+                "output_dir", get_directory(self.__plugin_name__, **kwargs)
+            )
+
 
     @copydoc(paraprof_ProfileProjector)
     def run(self):
@@ -219,7 +228,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
 
     def _print_summary(self, results):
-        """Emit a per-projection summary on rank 0, in the binminpy/scipy style."""
+        """Emit a per-projection summary on rank 0, in the scipy style."""
         prefix = self.print_prefix
         print()
         print(f"{prefix} === Scan summary ===", flush=True)
@@ -288,3 +297,4 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
 
 __plugins__ = {ParaProf.__plugin_name__: ParaProf}
+
