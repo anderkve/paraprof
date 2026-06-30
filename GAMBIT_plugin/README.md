@@ -2,14 +2,14 @@
 
 This folder contains the ScannerBit Python plugin that exposes
 [paraprof](https://github.com/anderkve/paraprof) as a scanner inside
-[GAMBIT](https://github.com/GambitBSM/gambit).
+[GAMBIT](https://github.com/GambitBSM/gambit) or [GAMBIT-light](https://github.com/GambitBSM/gambit_light).
 
 ## Files
 
 - `gambit_paraprof.py` — the plugin module. Drop it into
-  `ScannerBit/src/scanners/python/plugins/` in your GAMBIT source tree.
+  `ScannerBit/src/scanners/python/plugins/` in your GAMBIT or GAMBIT-light source tree.
 - `paraprof_example.yaml` — a minimal scanner YAML snippet showing the
-  exposed options.
+  exposed options. (This example is for GAMBIT, not GAMBIT-light.)
 
 ## Requirements
 
@@ -59,21 +59,9 @@ See `paraprof_example.yaml` for a complete worked example.
   from one run into the next.
 - `save_plots: true` enables paraprof's built-in 1D/2D profile plots
   alongside the GAMBIT outputs, written to the working directory.
-
-## Features supported via `advanced_config`
-
-Everything under `advanced_config:` is forwarded verbatim to
-`ProfileProjector`, so every expert knob in the
-[paraprof README](https://github.com/anderkve/paraprof) is reachable. Two
-sub-dicts worth flagging:
-
-- **`cross_projection`** — multi-projection knowledge transfer (default on):
-  later projections seed `initial_maxima` from the global pool and swap one
-  population slot per cell for the nearest past evaluation.
-- **`suspect_recheck`** — extra pass after patching (default on, no-op on
-  smooth targets) that re-optimizes cells whose profiled-parameter vector
-  is discontinuous from its neighbours, catching wrong-optimum strips the
-  fitness-only patching filter misses.
+- Everything under `advanced_config:` is forwarded verbatim to
+  `ProfileProjector`, so every expert knob in the
+  [paraprof README](https://github.com/anderkve/paraprof) is reachable.
 
 paraprof's `grad_func` is not exposed: ScannerBit's Python scanner API
 surfaces only the loglike value, so L-BFGS-B uses finite differences.

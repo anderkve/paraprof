@@ -1,86 +1,143 @@
-# Example ScannerBit configuration block for the paraprof plugin.
-# Drop the relevant pieces into your full GAMBIT YAML file. Run with:
-#
-#     mpirun -n 5 gambit -f your_yaml_file.yaml
-#
-# (1 master rank + 4 worker ranks).
+##########################################################################
+## GAMBIT configuration for a 5D test scan of the Rosenbrock function
+## using the paraprof scanner.
+##
+## Uses the `trivial_5d` toy model and the `rosenbrock` log-likelihood
+## from ObjectivesBit -- no physics modules, no backends.
+##
+## Run with (rebuild GAMBIT with -DWITH_MPI=True first):
+##
+##     OMP_NUM_THREADS=1 mpiexec -np 3 ./gambit -rf yaml_files/spartan_5d.yaml
+##
+## The 2D paraprof projection over (x1, x2) profiles over (x3, x4, x5)
+## at every grid point, which is what makes this a real test of paraprof's
+## profiling machinery.
+##
+## After the projections, the optional volume-sampling stage collects a set
+## of sample points spread across the good-fit region of the full 5D space.
+##########################################################################
+
 
 Parameters:
-  MyModel:
-    par_1:
-      range: [-5.0, 5.0]
-    par_2:
-      range: [-5.0, 5.0]
-    par_3:
-      range: [-5.0, 5.0]
-    par_4:
-      range: [-5.0, 5.0]
+  trivial_5d:
+    x1:
+      range: [-3.0, 3.0]
+    x2:
+      range: [-3.0, 3.0]
+    x3:
+      range: [-3.0, 3.0]
+    x4:
+      range: [-3.0, 3.0]
+    x5:
+      range: [-3.0, 3.0]
+
+
+Priors:
+
+  # None needed: simple flat priors are specified in the 'Parameters' section above.
+
 
 Printer:
+
   printer: hdf5
   options:
-    output_file: "paraprof_run.hdf5"
+    output_file: "results.hdf5"
     group: "/data"
+    delete_file_on_restart: true
+    buffer_length: 1000
+
 
 Scanner:
+
   use_scanner: paraprof
 
   scanners:
 
     paraprof:
-      plugin: paraprof
       like: LogLike
+      plugin: paraprof
       run:
-        # Required: list of projections. Each projection may use parameter
-        # names (matching the Parameters block) or integer indices in 'dims'.
+        # 2D (x1, x2) projection profiles over (x3, x4, x5).
+        # 1D (x1) projection profiles over (x2, x3, x4, x5).
         projections:
-          - dims: ["MyModel::par_1", "MyModel::par_2"]
-            grid_points: [50, 50]
+          - dims: ["trivial_5d::x1", "trivial_5d::x2"]
+            grid_points: [200, 200]
             optimization_method: de
-            grid_refinement_factor: 2
-            patch_refined_grid: true
-          - dims: ["MyModel::par_3", "MyModel::par_4"]
-            grid_points: [50, 50]
+            grid_refinement_factor: 1
+            patch_refined_grid: false
+          - dims: ["trivial_5d::x2", "trivial_5d::x3"]
+            grid_points: [200, 200]
             optimization_method: de
-          - dims: ["MyModel::par_1"]
-            grid_points: [100]
-        # ParaProf tuning (all optional; defaults follow paraprof's own).
-        roi_threshold: 4.0
+            grid_refinement_factor: 1
+            patch_refined_grid: false
+          # - dims: ["trivial_5d::x1"]
+          #   grid_points: [80]
+        # Rosenbrock's curved valley is deep; keep the ROI generous.
+        roi_threshold: 10.0
         pop_per_grid_point: 3
-        n_initial_optimizations: 80
-        max_patching_waves: 20
-        lbfgsb_max_iter: 20
+        n_initial_optimizations: 40
+        max_patching_waves: 15
+        lbfgsb_max_iter: 50
         lbfgsb_polish: true
         use_clustering: true
         refinement_direct_eval: false
-        # Optional advanced configuration forwarded verbatim to paraprof.
-        advanced_config:
-          de:
-            convergence_window: 3
-          lbfgsb:
-            ftol: 1.0e-9
-          # Cross-projection knowledge transfer (both default true).
-          cross_projection:
-            proximity_warm_start: true
-            pool_seeded_initial_maxima: true
-          # Suspect-cell recheck after patching (defaults shown).
-          suspect_recheck:
-            enabled: true
-            max_waves: 10
-            param_k: 3.0
-            max_fraction: 0.25
-            seeds_k_ring: 3
-            seeds_from_pool: 3
-            polish_threshold: 1.0e-3
-        # Optional paraprof-side diagnostics.
+        # Needed below: warm_start reads these samples as walker start points.
+        samples_output_file: paraprof_samples.csv
+        # After the projections, collect samples across the good-fit region of
+        # the full 5D space, filling in the directions (here x4, x5) that no
+        # projection covers. All settings optional.
+        volume_sampling:
+          roi_threshold: 10.0      # depth of the band to sample, in same units as above
+          n_walkers: 1000
+          n_steps: 30
+          sigma_frac: 0.1          # umbrella width, as a fraction of roi_threshold
+          warm_start: true         # start walkers from the scan samples
+          output_file: volume_samples.csv
+        # With volume_sampling on, the plugin also overlays the volume samples
+        # on each 2D projection map.
         save_plots: true
         plot_settings:
-          dpi: 200
+          dpi: 300
           filetype: png
-          contour_levels: [-3.0, -1.0]   # 2D Wilks 2-DOF: 68%, 95% CL
-          slice_mode: max                # 3D+ projections: 'max' or 'all'
-          plot_profiled_params: true
-        # samples_output_file: paraprof_samples.csv  # optional, rank-0 only
-        # warm_start_file: paraprof_samples.csv      # optional; set equal to
-        #                                            # samples_output_file to
-        #                                            # round-trip samples
+          contour_levels: [-3.09, -1.15]
+
+
+ObsLikes:
+
+  - purpose:      LogLike
+    capability:   rosenbrock
+    module:       ObjectivesBit
+    type:         double
+
+
+Rules:
+
+
+Logger:
+
+  redirection:
+    [Default]      : "default.log"
+    [Scanner]      : "Scanner.log"
+  debug: false
+
+
+KeyValues:
+
+  debug: false
+
+  default_output_path: "${PWD}/runs/spartan_5d"
+
+  print_scanID: true
+  scanID: 1
+
+  rng:
+    generator: ranlux48
+    seed: -1
+
+  print_timing_data: false
+
+  print_unitcube: true
+
+  likelihood:
+    model_invalid_for_lnlike_below: -1e6
+    use_lnlike_modifier: identity
