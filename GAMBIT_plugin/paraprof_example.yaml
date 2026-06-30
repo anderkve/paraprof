@@ -81,38 +81,20 @@ Scanner:
         lbfgsb_polish: true
         use_clustering: true
         refinement_direct_eval: false
-        # Saving every evaluation to a file lets the volume-sampling stage
-        # below reuse those points as starting points (see warm_start below).
+        # Needed below: warm_start reads these samples as walker start points.
         samples_output_file: paraprof_samples.csv
-        # After the projections finish, the volume-sampling stage collects a
-        # set of sample points spread across the good-fit region of the full
-        # 5D parameter space. The projections only map 2D slices, so this is
-        # what fills in the directions (here x4 and x5) that no projection
-        # covers. All settings below are optional; the values shown are
-        # reasonable starting points.
+        # After the projections, collect samples across the good-fit region of
+        # the full 5D space, filling in the directions (here x4, x5) that no
+        # projection covers. All settings optional.
         volume_sampling:
-          # How far below the best-fit log-likelihood to keep collecting
-          # points, in the same units as roi_threshold above. Larger values
-          # reach further out from the best-fit region.
-          roi_threshold: 10.0
-          # Number of sample points moved around the parameter space. More
-          # points give better coverage but cost more likelihood evaluations.
+          roi_threshold: 10.0      # depth of the band to sample, in same units as above
           n_walkers: 1000
-          # How many times each point is moved to a new position. More moves
-          # explore the region more thoroughly.
           n_steps: 30
-          # Advanced: how closely each point stays near its target
-          # log-likelihood value, as a fraction of roi_threshold. The default
-          # is fine for most runs.
-          sigma_frac: 0.1
-          # Reuse the scan's own evaluations (from samples_output_file above)
-          # as starting points, so the sampling builds on work already done.
-          warm_start: true
-          # File the collected sample points are written to.
+          sigma_frac: 0.1          # umbrella width, as a fraction of roi_threshold
+          warm_start: true         # start walkers from the scan samples
           output_file: volume_samples.csv
-        # Paraprof-side diagnostic plots. With volume_sampling enabled, the
-        # plugin also plots the collected volume samples on top of each 2D
-        # projection map.
+        # With volume_sampling on, the plugin also overlays the volume samples
+        # on each 2D projection map.
         save_plots: true
         plot_settings:
           dpi: 300
