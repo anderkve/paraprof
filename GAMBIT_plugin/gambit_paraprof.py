@@ -91,33 +91,39 @@ YAML options:
                              a dict {'min': int, 'max': int}. Use only when you are
                              confident the target has one or a few optima.
     volume_sampling:         Optional dict enabling the post-scan volume-sampling
-                             stage. After all projections complete, this fills the
-                             good-fit region {logL > global_max - roi_threshold}
-                             with a spread set of samples drawn by an
-                             affine-invariant ensemble of umbrella walkers. It runs
-                             once, on the full parameter space, and writes its own
-                             output files. Keys (all optional):
-                               roi_threshold:        band depth in chi^2 units
+                             stage. After all projections complete, this collects
+                             a set of sample points spread across the good-fit
+                             region of the full parameter space
+                             {logL > global_max - roi_threshold}. It runs once and
+                             writes its own output files. Keys (all optional):
+                               roi_threshold:        how far below the best-fit
+                                                     logL to keep collecting
+                                                     points, in chi^2 units
                                                      (default: the projection's
-                                                     roi_threshold; a larger value
-                                                     also reaches into the shell
-                                                     outside the good-fit region)
-                               n_walkers:            ensemble size (default 1000)
-                               n_steps:              stretch sweeps per walker
-                                                     (default 30)
-                               eval_budget:          cap on target evaluations
+                                                     roi_threshold; larger reaches
+                                                     further out)
+                               n_walkers:            number of sample points moved
+                                                     around the space (default 1000)
+                               n_steps:              how many times each point is
+                                                     moved (default 30)
+                               eval_budget:          cap on the number of loglike
+                                                     evaluations
                                                      (default n_walkers*(n_steps+1))
-                               sigma_frac:           umbrella width / roi_threshold
-                                                     (default 0.1)
-                               partner_level_window: lnL window for stretch
-                                                     partners (default: full pool)
-                               warm_start:           seed walkers from the scan
-                                                     samples (default true; needs
-                                                     samples_output_file set)
-                               output_file:          CSV of in-band samples
+                               sigma_frac:           advanced: how closely each
+                                                     point stays near its target
+                                                     logL value, as a fraction of
+                                                     roi_threshold (default 0.1)
+                               partner_level_window: advanced: restricts which
+                                                     points can pair up as they
+                                                     move (default: no restriction)
+                               warm_start:           reuse the scan's evaluations
+                                                     as starting points (default
+                                                     true; needs samples_output_file)
+                               output_file:          file for the collected samples
                                                      (default volume_samples.csv)
-                               summary_file:         JSON stats file (default:
-                                                     derived from output_file)
+                               summary_file:         file for summary statistics
+                                                     (default: derived from
+                                                     output_file)
     advanced_config:         Forwarded as-is to ProfileProjector. Sub-dicts:
                              'de', 'lbfgsb', 'clustering', 'cross_projection'
                              (multi-projection knowledge transfer),
@@ -126,8 +132,9 @@ YAML options:
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
                              the working directory after each projection. When
-                             volume_sampling is enabled, it also scatters the
-                             volume samples over each 2D projection map.
+                             volume_sampling is enabled, it also plots the
+                             collected volume samples on top of each 2D
+                             projection map.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
                              contour_levels, slice_mode, plot_profiled_params.
@@ -298,9 +305,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
         if not (self.save_plots and paraprof_plot_volume_samples is not None):
             return
-        # The volume stage samples the full parameter space, so any 2D
-        # projection map serves as a backdrop. Each plot file is suffixed with
-        # its dim pair, so the projections don't overwrite one another.
+        # The volume samples cover the full parameter space, so they can be
+        # drawn on top of any 2D projection map. Each plot file name includes
+        # its pair of parameter indices, so the projections don't overwrite
+        # one another.
         for res in results:
             grid = res.get("refined_solution") or res.get("coarse_solution")
             if not grid:

@@ -13,8 +13,8 @@
 ## at every grid point, which is what makes this a real test of paraprof's
 ## profiling machinery.
 ##
-## After the projections, the optional volume-sampling stage fills the
-## good-fit region of the full 5D space with a spread set of samples.
+## After the projections, the optional volume-sampling stage collects a set
+## of sample points spread across the good-fit region of the full 5D space.
 ##########################################################################
 
 
@@ -81,23 +81,38 @@ Scanner:
         lbfgsb_polish: true
         use_clustering: true
         refinement_direct_eval: false
-        # Logging every evaluation lets the volume-sampling stage below
-        # warm-start its walkers from the scan samples (warm_start: true).
+        # Saving every evaluation to a file lets the volume-sampling stage
+        # below reuse those points as starting points (see warm_start below).
         samples_output_file: paraprof_samples.csv
-        # Post-scan volume sampling. After the projections finish, this fills
-        # the good-fit region of the full 5D space with a spread set of
-        # samples, drawn by an ensemble of umbrella walkers. The projections
-        # only cover 2D slices, so this is what populates the (x4, x5)
-        # directions that no projection grids. All keys are optional.
+        # After the projections finish, the volume-sampling stage collects a
+        # set of sample points spread across the good-fit region of the full
+        # 5D parameter space. The projections only map 2D slices, so this is
+        # what fills in the directions (here x4 and x5) that no projection
+        # covers. All settings below are optional; the values shown are
+        # reasonable starting points.
         volume_sampling:
-          roi_threshold: 10.0      # band depth; matches the scan ROI here
-          n_walkers: 1000          # ensemble size
-          n_steps: 30              # stretch sweeps per walker
-          sigma_frac: 0.1          # umbrella width / roi_threshold
-          warm_start: true         # seed from paraprof_samples.csv
+          # How far below the best-fit log-likelihood to keep collecting
+          # points, in the same units as roi_threshold above. Larger values
+          # reach further out from the best-fit region.
+          roi_threshold: 10.0
+          # Number of sample points moved around the parameter space. More
+          # points give better coverage but cost more likelihood evaluations.
+          n_walkers: 1000
+          # How many times each point is moved to a new position. More moves
+          # explore the region more thoroughly.
+          n_steps: 30
+          # Advanced: how closely each point stays near its target
+          # log-likelihood value, as a fraction of roi_threshold. The default
+          # is fine for most runs.
+          sigma_frac: 0.1
+          # Reuse the scan's own evaluations (from samples_output_file above)
+          # as starting points, so the sampling builds on work already done.
+          warm_start: true
+          # File the collected sample points are written to.
           output_file: volume_samples.csv
         # Paraprof-side diagnostic plots. With volume_sampling enabled, the
-        # plugin also scatters the volume samples over each 2D projection map.
+        # plugin also plots the collected volume samples on top of each 2D
+        # projection map.
         save_plots: true
         plot_settings:
           dpi: 300
