@@ -119,7 +119,7 @@ class ProfileProjector:
                  roi_threshold=4.0,
                  pop_per_grid_point=3,
                  max_patching_waves=10,
-                 lbfgsb_max_iter=50,
+                 lbfgsb_max_iter=100,
                  lbfgsb_polish=True,
                  n_initial_optimizations=None,
                  n_optima=None,

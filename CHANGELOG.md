@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The flat-step exit of the L-BFGS-B line search now tests the Armijo-predicted decrease of the full step, not of the current (halved) step. On a stiff inner problem the first accepted step can be tiny, and testing at the halved step ended the run as "converged" while a few per cent of the profile cells were still 0.1-0.25 below their optimum (seen on a toy neutrino oscillation likelihood with nuisance parameters of very different scales).
 - `warm_start_file` was ignored on the first projection of `run_all_projections`
   (and therefore of `run_scan` and the GAMBIT plugin): the global optimisation
   stage was skipped only from the second projection on. A warm-start file now
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below `ftol` now ends the run as converged.
 
 ### Changed
+- Default `lbfgsb_max_iter` raised from 50 to 100. A polish on a badly scaled inner problem needs 50-60 iterations where scipy's L-BFGS-B needs 32-54; easy problems stop on the tolerance long before either cap.
 - L-BFGS-B jobs whose start value is already known (population member,
   patching or recheck seed) go straight to the gradient instead of
   re-evaluating the start point: one evaluation saved per run.

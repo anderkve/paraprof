@@ -14,10 +14,13 @@ class LBFGSBJob(Job):
     lbfgsb-mode loop does not (inherited curvature was found to cost more
     than it saves in higher-dimensional inner problems).
 
-    A rejected line-search step whose Armijo-predicted decrease is below
-    ``ftol`` ends the run as converged: the direction cannot buy a
-    measurable improvement, which is the case for a start that is already
-    stationary. Without this exit such a run halved alpha down to 1e-10.
+    A rejected line-search step whose Armijo-predicted decrease at the full
+    step is below ``ftol`` ends the run as converged: the direction cannot
+    buy a measurable improvement, which is the case for a start that is
+    already stationary. Without this exit such a run halved alpha down to
+    1e-10. The test is on the full step on purpose: on a stiff problem the
+    first accepted step can be tiny and the halving has to be allowed to
+    reach it.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
@@ -418,14 +421,19 @@ class LBFGSBJob(Job):
             self.status = 'NEEDS_GRADIENT'
             return self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
 
-        # Step rejected while the decrease the Armijo test asks for is itself
-        # below ftol: the direction cannot buy a measurable improvement at
-        # any step length (this is the "start is already stationary" case,
-        # where halving alpha down to 1e-10 would only burn evaluations).
-        # A rejected step with f_new == f_old but a large predicted decrease
-        # (an overshoot to a mirror point) is not caught here and keeps
-        # halving as before.
-        predicted = abs(c1 * alpha * np.dot(g_old, x_new_bounded - x_old))
+        # Step rejected while the decrease the Armijo test asks for at the
+        # full step (alpha = 1) is itself below ftol: the direction cannot
+        # buy a measurable improvement at any step length (this is the
+        # "start is already stationary" case, where halving alpha down to
+        # 1e-10 would only burn evaluations). The test uses the full step,
+        # not the current alpha: on a stiff problem a steep direction can
+        # need alpha ~ 1e-6 before the Armijo test passes, and that tiny
+        # accepted step is what teaches the quasi-Newton scaling the
+        # curvature, so halving must be allowed to get there. A rejected
+        # step with f_new == f_old but a large predicted decrease (an
+        # overshoot to a mirror point) is not caught here either.
+        x_full_bounded = self.sampler._ensure_bounds(x_old + d, opt_indices)
+        predicted = abs(c1 * np.dot(g_old, x_full_bounded - x_old))
         if predicted < self.lbfgsb_ftol:
             self.status = 'FINISHED'
             self._is_finished = True
