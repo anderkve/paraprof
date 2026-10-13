@@ -14,140 +14,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeds `initial_maxima` on every projection, as documented.
 - The initial-optimisation stopping rule now uses the Boender-Rinnooy Kan
   expression for the expected number of undiscovered optima, `W (W + 1) /
-  (N - W - 2)`, instead of the approximation `W^2 / (N - W - 1)`. The default
-  `basin_detection.undiscovered_threshold` moves from 0.5 to 1.0 ("fewer than
-  one undiscovered optimum expected"), which reproduces the previous stopping
-  points for W <= 3 distinct optima and stops somewhat earlier for larger W.
+  (N - W - 2)`, instead of the approximation `W^2 / (N - W - 1)`. At the
+  unchanged default threshold of 0.5 this needs a few more starts when two or
+  three distinct optima are found (e.g. 17 instead of 12 starts for W = 2) and
+  is identical otherwise.
+- An L-BFGS-B run that started at a point that was already a stationary point
+  spent up to 34 evaluations halving its line-search step down to 1e-10 and
+  then reported failure (so the cell kept no quasi-Newton history for its
+  neighbours). A rejected line-search step whose Armijo-predicted decrease is
+  below `ftol` now ends the run as converged.
 
 ### Changed
-- **L-BFGS-B early exits.** A run whose gradient (bounds-normalised, relative to
-  `max(1, |f|)`) is below the new `advanced_config['lbfgsb']['gtol']` (default
-  `1e-5`, `None` disables) finishes as converged without a line search, and a
-  rejected line-search step that changes the target by less than `ftol` ends the
-  run as converged instead of halving the step down to `1e-10`. A polish that
-  started exactly at its optimum used to spend 7 (n = 2) to 34 (n = 8) line-search
-  evaluations and then report failure; it now costs one gradient. The end-of-run
-  summary reports how often each exit fired (`sampler.lbfgsb_gtol_exits`,
-  `sampler.lbfgsb_flat_exits`).
-- **Neighbour seeding in the lbfgsb mode.** `LBFGSB_LOOP` jobs
-  (`optimization_method='lbfgsb'`) now start with the same neighbour test as the
-  post-DE polish and inherit the neighbour's quasi-Newton history; previously
-  only the polish did. In both job types the history is now inherited only when
-  the neighbour's point wins the test, and only those (s, y) pairs whose step
-  exceeds 0.3% of the parameter extent with a curvature cosine above 0.03
-  (`INHERIT_PAIR_MIN_STEP`, `INHERIT_PAIR_MIN_COS`). Unfiltered inheritance
-  cost +38% evaluations on a 12-D nuisance test case, where small near-converged
-  steps carry finite-difference noise rather than curvature; the filtered rule
-  is 5% cheaper than no inheritance there and keeps most of the 10-15% saving
-  inheritance gives on 4-D targets.
-- Jobs whose start value is already known (population member, patching or
-  recheck seed) go straight to the gradient instead of re-evaluating the start.
-
-- **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
-  `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
-  stage that produced the point (`paraprof.PHASE_*`, described in
-  `PHASE_LEGEND`): initial optimization, scan, refinement, suspect recheck, and
-  volume sampling. Filtering on this column recovers any subset from the single
-  file. Sample rows are now `n_dims + 2` columns throughout: the warm-start
-  reader reads params/logL by position and ignores the trailing phase column,
-  so a run's log round-trips.
-
-### Added
-- **Volume-sampling stage** (`docs/volume_sampling_plan.md`) — an optional
-  post-projection stage that populates the ROI
-  `{logL > global_max - roi_threshold}` with a sample set that balances
-  space-filling and lnL-filling. The stage's `roi_threshold` defaults to the
-  projection's but can be set larger to also explore the shell outside the
-  good-fit region. Enabled by the new `ProfileProjector` argument
-  `volume_sampling` (a config dict, validated at construction) and run
-  automatically by `run_all_projections`; also exposed standalone as
-  `run_volume_sampling`.
-  - Uses an **affine-invariant ensemble of umbrella walkers**: `n_walkers`
-    walkers each carry a continuous *home level* spanning the band uniformly
-    in ΔlnL and target a log-Gaussian in logL around it (width
-    `sigma_frac·roi_threshold`), so the ensemble tiles the lnL range. Walkers
-    are moved with the Goodman–Weare stretch move (`n_steps` red/black sweeps,
-    partners pooled across the whole ensemble — `partner_level_window`
-    optionally localizes them), which handles curved/stretched geometries with
-    no step, gradient, or covariance tuning. They are seeded inside the
-    `ProjectionEnvelope` and warm-started (`warm_start`) from logged scan
-    samples near each level. `eval_budget` optionally caps the total work.
-  - Outputs: the in-band sample file (`output_file`, csv/h5; rows
-    `[params..., logL]`) and a JSON summary (`summary_file`) with the
-    walker/step/evaluation counts, in-band fraction, mean acceptance,
-    global-max drift, and the logL histogram of the in-band samples. Results
-    also land on `sampler.volume_stage_result`; every stage evaluation flows to
-    `samples_output_file` under `PHASE_VOLUME`. The stage skips itself when a
-    projection grids the full parameter space.
-  - Extras: `plot_volume_samples`, `examples/run_volume_sampling.py`.
-
-- **Early exit from the DE search on smooth cells** (`advanced_config['de']['allow_early_DE_exit']`,
-  **on by default**). Every active grid cell normally spends at least
-  `de.convergence_window` DE generations confirming convergence. When a fresh
-  cell's in-population neighbours agree on the profiled argmax (and the neighbour
-  warm-start was the best activation seed), the local argmax field is smooth, so
-  the cell runs a **single** DE generation then goes straight to the L-BFGS-B
-  polish. That generation still runs, so the exit is *measured*: a cell that
-  improves keeps going. A replicate study
-  (`examples/run_allow_early_de_exit_replicate_study.py`, 6–8 seeds per mode,
-  scoring ROI quality with a noise-robust one-sided deficit metric) shows a
-  robust win with no measurable quality cost on unimodal-inner targets —
-  Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both Mann–Whitney
-  *p* < 0.01), ROI deficit indistinguishable from baseline. Set
-  `allow_early_DE_exit=False` for a genuinely multimodal-inner target
-  (Rastrigin-4D: deficit up, coverage 68%→59%, *p* ≤ 0.02), where one DE
-  generation under-explores the modes. Reuses existing data only (no new
-  evaluations); adds the `sampler.de_cells_skipped` diagnostic counter.
-
-- **`n_optima` prior** — optional `ProfileProjector` argument giving the number
-  of optima the target has *globally*; use only when confident it has one or a
-  few. It steers the initial-optimization basin-detection stage: a known
-  **maximum** stops the rolling multistart once that many distinct optima are
-  found — the global maximum is then necessarily among them, so the
-  `basin_detection.min_starts` floor is skipped (`n_optima=1` stops after the
-  first converged start) — while a known **minimum** keeps the stage running
-  until at least that many are found. Pass an `int` (exact) or
-  `{'min': int, 'max': int}`. On genuinely multimodal targets, where the
-  Bayesian rule needs ~`W²` repeat hits to enumerate `W` modes and so runs to
-  the `n_initial_optimizations` cap, this saves substantially (Himmelblau-4D,
-  16 modes: ~62% fewer target calls, all modes found, identical global
-  maximum); on unimodal targets at adequate convergence the rule already stops
-  early, so the prior is a no-op there.
-- **Pluggable sample file formats with an HDF5 binary option.** Sample I/O now
-  goes through a format layer (`paraprof.sample_io`) that dispatches on the
-  file extension: `.csv` (text, default) or `.h5`/`.hdf5` (HDF5 binary, ~half
-  the size and faster, via the optional `h5py` extra — `pip install
-  paraprof[hdf5]`). Both `samples_output_file` and `warm_start_file` accept any
-  supported format. New public helpers: `read_samples`/`write_samples`
-  (one-shot load/save), `combine_samples` (stream-merges files, mixing
-  formats), and `create_sample_writer`.
-- **Basin detection for the initial-optimization stage**, on by default.
-  Replaces the fixed all-at-once batch of Latin-hypercube global L-BFGS-B
-  starts with a *rolling* multistart: each converged optimum is clustered
-  online into a registry of distinct optima, and a Boender-Rinnooy Kan Bayesian
-  stopping rule (restricted to ROI-competitive optima) halts the stage once the
-  expected number of undiscovered ROI optima falls below
-  `basin_detection.undiscovered_threshold`, aborting any still-running
-  optimizations at that point. `n_initial_optimizations` is now an upper bound
-  rather than a fixed count. Knobs under `advanced_config['basin_detection']`:
-  `undiscovered_threshold` (set to `0` to disable early stopping), `min_starts`,
-  and `batch_size` (`None` = FD-aware auto: ≈ `n_workers` / the per-gradient
-  finite-difference fan-out). The clustering tolerance is a fixed internal
-  constant, not user-tunable. New sampler state `initial_optima_registry` plus
-  the `register_initial_optimum`, `basin_detection_roi_stats`,
-  `basin_detection_should_stop`, and `resolve_initial_opt_batch_size` helpers.
-- **Convergence-gated basin registration.** Only initial-optimization runs that
-  actually converge (terminate on the L-BFGS-B function tolerance, not by
-  exhausting `lbfgsb_max_iter`) are counted as distinct optima for the stopping
-  rule. A truncated descent still updates the global maximum, the solution
-  pool, and `initial_maxima` — it just doesn't mint a spurious basin. This
-  restores the Boender-Rinnooy Kan rule's precondition (local searches run to
-  convergence); without it, a stiff target under a too-small `lbfgsb_max_iter`
-  registered many pseudo-optima strewn along a valley (Rosenbrock-4D: 29 for a
-  one-optimum function), inflating `W` so the rule ran to the cap. Gating
-  collapses that to the true count (Rosenbrock 29→1, Himmelblau-4D 17→16) with
-  no change to adequate-budget behaviour or grid quality, and makes `n_optima`
-  wait for a genuinely converged optimum. Always on; no knob.
+- L-BFGS-B jobs whose start value is already known (population member,
+  patching or recheck seed) go straight to the gradient instead of
+  re-evaluating the start point: one evaluation saved per run.
+- `LBFGSB_LOOP` jobs (`optimization_method='lbfgsb'`) now start with the same
+  neighbour test as the post-DE polish: the best converged neighbour's
+  profiled parameters are evaluated at the cell and adopted if better. Unlike
+  the polish they do not inherit the neighbour's quasi-Newton history:
+  benchmarked on a 12-D nuisance target, inherited curvature cost +38%
+  evaluations in the loop (small near-converged steps carry finite-difference
+  noise rather than curvature), while on 4-D targets it saved 10-15%; a
+  step/curvature filter could not reconcile the two regimes without leaving
+  residual errors on stiff valleys, so the loop stays history-free.
+- Benchmarks (paraprof code-release paper draft, 50x50 grids, three seeds):
+  the per-cell cost of the scan stage drops by 27-48% on a target whose inner
+  optimum is the same at every cell (Himmelblau-4D (0,1)), by 9-28% on a 12-D
+  nuisance target, and is within +-10% elsewhere; quality is unchanged.
 
 ### Changed
 - **Updated default settings.** `roi_threshold` now defaults to `4.0` (was

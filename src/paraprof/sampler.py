@@ -31,12 +31,9 @@ DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve
 # the W count the rule depends on. The right value tracks internal scales
 # (bounds-normalization, L-BFGS-B tolerance), not the target.
 DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
-# Stop when the expected number of undiscovered ROI optima, W (W + 1) / (N - W - 2)
-# (Boender & Rinnooy Kan 1987), drops below this. 1.0 = "fewer than one optimum
-# still expected"; with the exact expression this matches the previous
-# default (0.5 on the approximation W^2 / (N - W - 1)) for W <= 3 and is less
-# strict for larger W.
-DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 1.0
+# Stop when the expected number of undiscovered ROI optima,
+# W (W + 1) / (N - W - 2) (Boender & Rinnooy Kan 1987), drops below this.
+DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5
 DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
 DEFAULT_BASIN_MIN_STARTS_FLOOR = 10         # ... floored at this many
 
@@ -82,11 +79,6 @@ SKIP_DE_WINDOW = 1
 SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
-# Gradient-norm exit for the L-BFGS-B jobs: finish when max_i |g_i| * extent_i
-# <= gtol * max(1, |f|). 1e-5 sits an order of magnitude above the
-# finite-difference floor at an exact optimum and fires only within ~1e-7 of
-# it, where the remaining error in f is below 1e-10. None disables it.
-DEFAULT_LBFGSB_GTOL = 1e-5
 
 DEFAULT_PATCHING_N_NEIGHBORS = 1
 
@@ -283,7 +275,6 @@ class ProfileProjector:
 
                 'lbfgsb': {
                     'ftol': float,                 # Default: 1e-9
-                    'gtol': float or None,         # Default: 1e-5 (None disables)
                     'gradient_method': str,        # Default: 'forward'
                 },
 
@@ -312,7 +303,7 @@ class ProfileProjector:
 
                 'basin_detection': {
                     'batch_size': int,              # Default: None (FD-aware auto)
-                    'undiscovered_threshold': float,# Default: 1.0 (0 disables early stop)
+                    'undiscovered_threshold': float,# Default: 0.5 (0 disables early stop)
                     'min_starts': int,              # Default: None (auto)
                 },
             }
@@ -504,7 +495,6 @@ class ProfileProjector:
 
             'lbfgsb': {
                 'ftol': DEFAULT_LBFGSB_FTOL,
-                'gtol': DEFAULT_LBFGSB_GTOL,
                 'gradient_method': 'forward',
             },
 
@@ -585,11 +575,7 @@ class ProfileProjector:
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
-        self.lbfgsb_gtol = config['lbfgsb']['gtol']
         self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
-        # Diagnostics: how often the L-BFGS-B early exits fired.
-        self.lbfgsb_gtol_exits = 0
-        self.lbfgsb_flat_exits = 0
 
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for

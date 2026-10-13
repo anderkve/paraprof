@@ -1,4 +1,4 @@
-"""Early exits of the asynchronous L-BFGS-B job and neighbour seeding in the lbfgsb mode.
+"""Flat-step exit of the asynchronous L-BFGS-B job, neighbour seeding, stopping rule.
 
 The job is driven synchronously: every task it emits is evaluated in-process and
 fed back through ``process_result``, which lets the tests count target
@@ -48,15 +48,31 @@ def _job(s, f, idx, start, job_type='LBFGSB_LOOP', seed_history=None):
                      seed_history=seed_history, start_fitness=float(f(full)))
 
 
-class TestGradientNormExit:
-    def test_converged_start_exits_after_one_gradient(self):
+class TestFlatStepExit:
+    def test_converged_start_ends_after_one_rejected_step(self):
+        # From the exact optimum the gradient is at the finite-difference
+        # floor, the first line-search step cannot change f, and the
+        # predicted Armijo decrease is far below ftol: the run ends as
+        # converged after the gradient plus one line-search evaluation
+        # (previously: 34 halvings and success = False).
         s, f = _make_sampler()
         job = _job(s, f, (10, 10), [0.0, 0.0])
         n, n_ls = _drive(job, f)
         assert job.success and job.converged
-        assert n_ls == 0
-        assert n == len(s.profiled_dims)           # forward-difference gradient only
-        assert s.lbfgsb_gtol_exits == 1
+        assert n_ls == 1
+        assert n == len(s.profiled_dims) + 1
+        assert np.allclose(job.current_params, 0.0)
+
+    def test_mirror_overshoot_is_not_mistaken_for_convergence(self):
+        # From (0.5, 0.5) on the sphere the unit step lands on the mirror
+        # point (-0.5, -0.5): f is unchanged but the predicted decrease is
+        # large, so the step must be halved, not accepted as convergence.
+        s, f = _make_sampler()
+        job = _job(s, f, (10, 10), [0.5, 0.5])
+        n, n_ls = _drive(job, f)
+        assert job.success and job.converged
+        assert n_ls >= 2
+        assert np.allclose(job.current_params, 0.0, atol=1e-6)
 
     def test_far_start_still_optimises(self):
         s, f = _make_sampler()
@@ -65,27 +81,6 @@ class TestGradientNormExit:
         assert job.success and job.converged
         assert np.allclose(job.current_params, 0.0, atol=1e-4)
         assert n > len(s.profiled_dims)
-
-    def test_gtol_none_disables_test(self):
-        s, f = _make_sampler(advanced_config={'lbfgsb': {'gtol': None}})
-        job = _job(s, f, (10, 10), [0.0, 0.0])
-        _drive(job, f)
-        assert s.lbfgsb_gtol_exits == 0
-
-
-class TestFlatStepExit:
-    def test_rejected_zero_change_step_ends_run(self):
-        # gtol disabled: the job must take a line-search step from the exact
-        # optimum; f cannot change there, so the flat-step exit ends the run
-        # instead of halving alpha ~34 times and reporting failure.
-        s, f = _make_sampler(advanced_config={'lbfgsb': {'gtol': None}})
-        job = _job(s, f, (10, 10), [0.0, 0.0])
-        n, n_ls = _drive(job, f)
-        assert job.success and job.converged
-        assert n_ls == 1
-        assert n == len(s.profiled_dims) + 1
-        assert s.lbfgsb_flat_exits == 1
-        assert np.allclose(job.current_params, 0.0)
 
 
 class TestNeighbourSeedingInLbfgsbMode:
@@ -100,7 +95,7 @@ class TestNeighbourSeedingInLbfgsbMode:
             'optimizer_state': history,
         }
 
-    def test_loop_job_tests_neighbour_and_inherits_history(self):
+    def test_loop_job_tests_neighbour_without_inheriting_history(self):
         s, f = _make_sampler()
         idx, nb = (10, 10), (10, 11)
         hist = {'s': [np.array([0.1, 0.0])], 'y': [np.array([0.2, 0.0])]}
@@ -113,14 +108,22 @@ class TestNeighbourSeedingInLbfgsbMode:
         tasks = job.start()
         assert job.status == 'NEEDS_NEIGHBOR_TEST'
         assert tasks[0]['context']['sub_type'] == 'LBFGS_NEIGHBOR_TEST'
-        assert len(job.s_hist) == 0            # not yet: only once the neighbour's point is adopted
-        t = tasks.pop(0)
-        tasks.extend(job.process_result({'target_val': float(f(t['params'])), 'params': t['params'], 'context': t['context']}))
-        assert len(job.s_hist) == 1 and np.allclose(job.s_hist[0], hist['s'][0])
+        assert len(job.s_hist) == 0          # loop jobs never inherit history
         n, _ = _drive(job, f, tasks)
         assert job.success
         # the neighbour's optimum beats the cell's own start and is adopted
         assert np.allclose(job.current_params, 0.0, atol=1e-6)
+
+    def test_polish_job_inherits_neighbour_history(self):
+        s, f = _make_sampler()
+        idx, nb = (10, 10), (10, 11)
+        hist = {'s': [np.array([0.1, 0.0])], 'y': [np.array([0.2, 0.0])]}
+        s.population[nb] = self._population_entry([0.0, 0.0], f(s._construct_params(nb, np.zeros(2))), hist)
+        s.population[idx] = self._population_entry([1.5, 1.5], f(s._construct_params(idx, np.array([1.5, 1.5]))))
+        job = _job(s, f, idx, [1.5, 1.5], job_type='LBFGSB')
+        tasks = job.start()
+        assert tasks[0]['context']['sub_type'] == 'LBFGS_NEIGHBOR_TEST'
+        assert len(job.s_hist) == 1 and np.allclose(job.s_hist[0], hist['s'][0])
 
     def test_loop_job_without_seedable_neighbour_starts_from_known_value(self):
         # No neighbour to test: the start value is known from the population,
@@ -145,14 +148,14 @@ class TestStoppingRule:
         (8, True),    # 2/5 = 0.4 < 0.5
     ])
     def test_expected_undiscovered_single_basin(self, N, expect):
-        s, _ = _make_sampler(advanced_config={'basin_detection': {'undiscovered_threshold': 0.5}})
+        s, _ = _make_sampler()
         s.basin_min_starts = 0
         s.global_max_target_val = 0.0
         s.initial_optima_registry = [{'point': np.zeros(4), 'point_norm': np.zeros(4), 'target_val': 0.0, 'count': N}]
         assert s.basin_detection_should_stop(N) is expect
 
     def test_formula_value(self):
-        s, _ = _make_sampler(advanced_config={'basin_detection': {'undiscovered_threshold': 0.5}})
+        s, _ = _make_sampler()
         s.basin_min_starts = 0
         s.global_max_target_val = 0.0
         # W = 2 optima, N = 12 hits: 2*3/(12-2-2) = 0.75 -> keep going at 0.5

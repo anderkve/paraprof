@@ -1,14 +1,5 @@
 """L-BFGS-B optimization job for asynchronous gradient-based optimization."""
 import numpy as np
-
-# A neighbour's (s, y) pairs are inherited only if they carry curvature
-# information worth more than finite-difference noise: the step must exceed
-# this fraction of the parameter extent and s.y / (|s||y|) must exceed the
-# cosine floor. Benchmarked on a 12-D nuisance target (unfiltered inheritance
-# cost +38% evaluations, no inheritance -3%, this filter -5% relative to the
-# previous code) and on 4-D targets (inheritance saves 10-15% there).
-INHERIT_PAIR_MIN_STEP = 3e-3
-INHERIT_PAIR_MIN_COS = 0.03
 import collections
 from .base import Job
 
@@ -18,13 +9,15 @@ class LBFGSBJob(Job):
 
     For grid-anchored jobs (types ``LBFGSB`` and ``LBFGSB_LOOP``) the run
     starts with a neighbor-test step: if a converged neighbor has better
-    fitness at our cell, we adopt its params and seed the (s, y) history
-    from its optimizer state.
+    fitness at our cell, we adopt its params. The post-DE polish (``LBFGSB``)
+    also seeds its (s, y) history from that neighbor's optimizer state; the
+    lbfgsb-mode loop does not (inherited curvature was found to cost more
+    than it saves in higher-dimensional inner problems).
 
-    Two early exits avoid spending line-search evaluations on a start that
-    is already converged: a gradient-norm test right after each gradient
-    (``lbfgsb.gtol``) and a flat-step test in the line search (a rejected
-    step whose |f change| is below ``ftol`` ends the run).
+    A rejected line-search step whose Armijo-predicted decrease is below
+    ``ftol`` ends the run as converged: the direction cannot buy a
+    measurable improvement, which is the case for a start that is already
+    stationary. Without this exit such a run halved alpha down to 1e-10.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
@@ -34,12 +27,6 @@ class LBFGSBJob(Job):
         self.lbfgsb_ftol = sampler.lbfgsb_ftol
         self.lbfgsb_max_iter = sampler.lbfgsb_max_iter
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
-        # Gradient-norm exit: finish once max_i |g_i| * extent_i falls below
-        # gtol * max(1, |f|), extent_i being the bounds width of opt dim i.
-        # None disables the test.
-        self.lbfgsb_gtol = getattr(sampler, 'lbfgsb_gtol', None)
-        _b = sampler.bounds[list(opt_dims)]
-        self._opt_extent = np.where(_b[:, 1] - _b[:, 0] > 0, _b[:, 1] - _b[:, 0], 1.0)
         # When True we piggyback compute_gradient=True on value-evaluating tasks.
         self.has_user_grad = sampler.grad_func is not None
 
@@ -90,7 +77,6 @@ class LBFGSBJob(Job):
         self.pending_g_old = None
 
         self.neighbor_params_to_test = None
-        self._neighbor_history = None
 
     def _get_full_params(self, partial_params):
         """Build full params from the opt-dim slice (passthrough for global opt)."""
@@ -143,11 +129,12 @@ class LBFGSBJob(Job):
                             best_neighbor_state = neighbor_state
 
             if best_neighbor_state:
-                # 1. Keep the neighbour's history ready; it is adopted only if
-                #    the neighbour's point wins the test below (curvature
-                #    learned along the neighbour's path helps from the
-                #    neighbour's optimum, and hurts from an unrelated start).
-                self._neighbor_history = best_neighbor_state['optimizer_state']
+                # 1. Seed the history (post-DE polish only; see class docstring)
+                if self.type == 'LBFGSB':
+                    self.s_hist.clear()
+                    self.y_hist.clear()
+                    self.s_hist.extend(best_neighbor_state['optimizer_state']['s'])
+                    self.y_hist.extend(best_neighbor_state['optimizer_state']['y'])
 
                 # 2. Get neighbor's best params to test
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
@@ -208,17 +195,6 @@ class LBFGSBJob(Job):
                 self.current_fitness = neighbor_fitness
                 self.current_objective = -neighbor_fitness
                 user_grad_for_current = result.get('user_gradient')
-                # Start from the neighbour's point: inherit its (s, y) pairs
-                # that pass the step / curvature filter.
-                self.s_hist.clear()
-                self.y_hist.clear()
-                for sv, yv in zip(self._neighbor_history['s'], self._neighbor_history['y']):
-                    rel = float(np.max(np.abs(sv) / self._opt_extent))
-                    sn, yn = float(np.linalg.norm(sv)), float(np.linalg.norm(yv))
-                    cos = float(np.dot(sv, yv)) / (sn * yn) if sn > 0 and yn > 0 else 0.0
-                    if rel > INHERIT_PAIR_MIN_STEP and cos > INHERIT_PAIR_MIN_COS:
-                        self.s_hist.append(sv)
-                        self.y_hist.append(yv)
             else:
                 # Fall back to our own params; discard the gradient since it
                 # was computed at the neighbor's params, not ours.
@@ -343,21 +319,6 @@ class LBFGSBJob(Job):
             self.pending_s_k = None
             self.pending_g_old = None
 
-        # Gradient-norm exit: the start (or the last accepted iterate) is a
-        # stationary point to within the finite-difference noise, so a line
-        # search would only burn evaluations. Counts as converged; the
-        # history held so far (own or inherited) is kept for the neighbours.
-        if self.lbfgsb_gtol is not None:
-            gscale = self.lbfgsb_gtol * max(1.0, abs(float(f)))
-            if float(np.max(np.abs(grad) * self._opt_extent)) <= gscale:
-                self.status = 'FINISHED'
-                self._is_finished = True
-                self.success = True
-                self.converged = True
-                if hasattr(self.sampler, 'lbfgsb_gtol_exits'):
-                    self.sampler.lbfgsb_gtol_exits += 1
-                return []
-
         # L-BFGS two-loop recursion. Pairs failing the curvature condition are
         # skipped so a degenerate dot product can't produce inf/nan rho.
         q = grad
@@ -470,8 +431,6 @@ class LBFGSBJob(Job):
             self._is_finished = True
             self.success = True
             self.converged = True
-            if hasattr(self.sampler, 'lbfgsb_flat_exits'):
-                self.sampler.lbfgsb_flat_exits += 1
             return []
 
         # Step rejected: shrink alpha and retry; bail out if it underflows.

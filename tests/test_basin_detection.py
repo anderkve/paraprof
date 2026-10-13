@@ -25,7 +25,7 @@ class TestConfig:
         assert s.basin_batch_size is None
         # merge_tol is a fixed internal constant, not a config knob.
         assert s.basin_merge_tol == pytest.approx(0.02)
-        assert s.basin_undiscovered_threshold == pytest.approx(1.0)
+        assert s.basin_undiscovered_threshold == pytest.approx(0.5)
         # min_starts auto: max(10, 3 * n_dims) = max(10, 6) = 10, capped at cap.
         assert s.basin_min_starts == 10
         assert s.initial_optima_registry == []
