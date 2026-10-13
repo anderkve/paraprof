@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A cell that a patching wave (or the suspect recheck) lifted into the region of interest did not get its un-activated neighbours activated, because dynamic activation only runs inside the DE / L-BFGS-B loop and the cell's own run had ended below the cutoff. The master now runs an activation round after patching and after the recheck and, when it finds new neighbours, repeats the optimisation loop, the patching waves and the recheck for them (at most three such rounds). Seen on a toy neutrino oscillation likelihood, where the edge cells of the second octant's well were left unmapped.
 - The flat-step exit of the L-BFGS-B line search now tests the Armijo-predicted decrease of the full step, not of the current (halved) step. On a stiff inner problem the first accepted step can be tiny, and testing at the halved step ended the run as "converged" while a few per cent of the profile cells were still 0.1-0.25 below their optimum (seen on a toy neutrino oscillation likelihood with nuisance parameters of very different scales).
 - `warm_start_file` was ignored on the first projection of `run_all_projections`
   (and therefore of `run_scan` and the GAMBIT plugin): the global optimisation

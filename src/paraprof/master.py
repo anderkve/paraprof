@@ -20,6 +20,9 @@ except ImportError:
 TASK_TERMINATE = -1
 
 
+# Cap on the activation rounds run after patching / the suspect recheck.
+MAX_POST_PATCH_ROUNDS = 3
+
 def _log_worker_error(result, sampler, logger):
     """Log an error reported by a worker, if any. Returns True if an error was reported."""
     error = result.get('error') if isinstance(result, dict) else None
@@ -594,6 +597,11 @@ def master_main(comm, sampler,
     de_successful_F = [] # Shared list for F/CR
     de_successful_CR = []
 
+    # Extra activation rounds after patching / recheck: a cell that patching
+    # lifts into the ROI may have un-activated neighbours (its own DE run
+    # ended below the ROI cutoff, so dynamic activation never reached them).
+    post_patch_rounds = 0
+
     # Wave-based patching state
     patching_wave_number = 0
     patching_updated_last_wave = None
@@ -778,6 +786,31 @@ def master_main(comm, sampler,
                     current_stage = stages.pop(0) if stages else None
                     continue
 
+            elif current_stage == 'POST_PATCH_ACTIVATION':
+                # Patching (or the recheck) can lift a cell into the ROI whose
+                # neighbours were never activated because the cell's own DE run
+                # ended below the cutoff. Activate them now and run the
+                # optimisation loop and the patching waves once more; bounded
+                # by MAX_POST_PATCH_ROUNDS.
+                new_jobs = []
+                if not sampler.is_refinement_run and post_patch_rounds < MAX_POST_PATCH_ROUNDS:
+                    new_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+                if not new_jobs:
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+                post_patch_rounds += 1
+                loop_stage = 'DE_LOOP' if sampler.optimization_method == 'de' else 'LBFGSB_LOOP'
+                extra = [loop_stage, 'PATCHING_WAVES']
+                if sampler.suspect_recheck_enabled and 'SUSPECT_RECHECK_WAVES' not in stages:
+                    extra.append('SUSPECT_RECHECK_WAVES')
+                stages[0:0] = extra
+                patching_wave_number = 0
+                patching_updated_last_wave = None
+                suspect_wave_number = 0
+                suspect_updated_last_wave = None
+                logger.info(f"--- Master: Post-patching activation round {post_patch_rounds}: "
+                            f"{len(new_jobs)} new neighbours of ROI cells; re-running {extra} ---")
+
             elif current_stage == 'PATCHING_WAVES':
                 # Check appropriate flag based on run type
                 patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
@@ -789,7 +822,7 @@ def master_main(comm, sampler,
                 # Check if max waves reached
                 if patching_wave_number >= sampler.max_patching_waves:
                     logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
-                    current_stage = stages.pop(0) if stages else None
+                    current_stage = 'POST_PATCH_ACTIVATION'
                     continue
 
                 logger.info(f"--- Master: Starting Patching Wave {patching_wave_number} ---")
@@ -803,7 +836,7 @@ def master_main(comm, sampler,
 
                 if not new_jobs:
                     logger.info("--- Master: No patching candidates found. Ending patching. ---")
-                    current_stage = stages.pop(0) if stages else None
+                    current_stage = 'POST_PATCH_ACTIVATION'
                     continue
 
                 # Record baseline fitness for all grid points at wave start
@@ -832,7 +865,7 @@ def master_main(comm, sampler,
 
                 if suspect_wave_number >= sampler.max_suspect_waves:
                     logger.info(f"--- Master: Max suspect waves ({sampler.max_suspect_waves}) reached. ---")
-                    current_stage = stages.pop(0) if stages else None
+                    current_stage = 'POST_PATCH_ACTIVATION'
                     continue
 
                 logger.info(f"--- Master: Starting Suspect Recheck Wave {suspect_wave_number} ---")
@@ -845,7 +878,7 @@ def master_main(comm, sampler,
 
                 if not new_jobs:
                     logger.info("--- Master: No suspect candidates. Ending suspect recheck. ---")
-                    current_stage = stages.pop(0) if stages else None
+                    current_stage = 'POST_PATCH_ACTIVATION'
                     continue
 
                 suspect_wave_baseline_fitness = {
@@ -987,7 +1020,7 @@ def master_main(comm, sampler,
                     else:
                         # No updates, patching converged
                         logger.info("--- Master: No updates in wave. Patching converged. ---")
-                        current_stage = stages.pop(0) if stages else None
+                        current_stage = 'POST_PATCH_ACTIVATION'
 
                 # Check if the suspect-recheck wave is now complete
                 if current_stage == 'WAITING_FOR_SUSPECT_WAVE' and \
@@ -1010,7 +1043,7 @@ def master_main(comm, sampler,
                         current_stage = 'SUSPECT_RECHECK_WAVES'
                     else:
                         logger.info("--- Master: No updates in wave. Suspect recheck converged. ---")
-                        current_stage = stages.pop(0) if stages else None
+                        current_stage = 'POST_PATCH_ACTIVATION'
 
                 # Rolling initial-optimization with basin detection. The job's
                 # on_finish has already clustered its endpoint into the registry;
