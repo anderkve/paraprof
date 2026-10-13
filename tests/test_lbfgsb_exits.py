@@ -113,6 +113,9 @@ class TestNeighbourSeedingInLbfgsbMode:
         tasks = job.start()
         assert job.status == 'NEEDS_NEIGHBOR_TEST'
         assert tasks[0]['context']['sub_type'] == 'LBFGS_NEIGHBOR_TEST'
+        assert len(job.s_hist) == 0            # not yet: only once the neighbour's point is adopted
+        t = tasks.pop(0)
+        tasks.extend(job.process_result({'target_val': float(f(t['params'])), 'params': t['params'], 'context': t['context']}))
         assert len(job.s_hist) == 1 and np.allclose(job.s_hist[0], hist['s'][0])
         n, _ = _drive(job, f, tasks)
         assert job.success
@@ -142,14 +145,14 @@ class TestStoppingRule:
         (8, True),    # 2/5 = 0.4 < 0.5
     ])
     def test_expected_undiscovered_single_basin(self, N, expect):
-        s, _ = _make_sampler()
+        s, _ = _make_sampler(advanced_config={'basin_detection': {'undiscovered_threshold': 0.5}})
         s.basin_min_starts = 0
         s.global_max_target_val = 0.0
         s.initial_optima_registry = [{'point': np.zeros(4), 'point_norm': np.zeros(4), 'target_val': 0.0, 'count': N}]
         assert s.basin_detection_should_stop(N) is expect
 
     def test_formula_value(self):
-        s, _ = _make_sampler()
+        s, _ = _make_sampler(advanced_config={'basin_detection': {'undiscovered_threshold': 0.5}})
         s.basin_min_starts = 0
         s.global_max_target_val = 0.0
         # W = 2 optima, N = 12 hits: 2*3/(12-2-2) = 0.75 -> keep going at 0.5

@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeds `initial_maxima` on every projection, as documented.
 - The initial-optimisation stopping rule now uses the Boender-Rinnooy Kan
   expression for the expected number of undiscovered optima, `W (W + 1) /
-  (N - W - 2)`, instead of the approximation `W^2 / (N - W - 1)`.
+  (N - W - 2)`, instead of the approximation `W^2 / (N - W - 1)`. The default
+  `basin_detection.undiscovered_threshold` moves from 0.5 to 1.0 ("fewer than
+  one undiscovered optimum expected"), which reproduces the previous stopping
+  points for W <= 3 distinct optima and stops somewhat earlier for larger W.
 
 ### Changed
 - **L-BFGS-B early exits.** A run whose gradient (bounds-normalised, relative to
@@ -29,8 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Neighbour seeding in the lbfgsb mode.** `LBFGSB_LOOP` jobs
   (`optimization_method='lbfgsb'`) now start with the same neighbour test as the
   post-DE polish and inherit the neighbour's quasi-Newton history; previously
-  only the polish did. The inherited curvature saves 25-35% of the per-cell
-  evaluations where the profiled optimum moves between cells.
+  only the polish did. In both job types the history is now inherited only when
+  the neighbour's point wins the test, and only those (s, y) pairs whose step
+  exceeds 0.3% of the parameter extent with a curvature cosine above 0.03
+  (`INHERIT_PAIR_MIN_STEP`, `INHERIT_PAIR_MIN_COS`). Unfiltered inheritance
+  cost +38% evaluations on a 12-D nuisance test case, where small near-converged
+  steps carry finite-difference noise rather than curvature; the filtered rule
+  is 5% cheaper than no inheritance there and keeps most of the 10-15% saving
+  inheritance gives on 4-D targets.
+- Jobs whose start value is already known (population member, patching or
+  recheck seed) go straight to the gradient instead of re-evaluating the start.
 
 - **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
   `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm

@@ -251,7 +251,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `suspect_recheck.seeds_from_pool`             | `3`                | Cross-projection pool seeds tested per suspect cell. |
 | `suspect_recheck.polish_threshold`            | `1e-3`             | Min logL improvement to trigger the L-BFGS-B polish. |
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
-| `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
+| `basin_detection.undiscovered_threshold`      | `1.0`              | Stop once the expected number of undiscovered ROI optima, `W(W+1)/(N-W-2)` for `W` distinct ROI optima from `N` converged starts, falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
