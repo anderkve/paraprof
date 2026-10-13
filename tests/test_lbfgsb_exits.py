@@ -168,3 +168,63 @@ class TestStoppingRule:
         s.initial_optima_registry[0]['count'] = 9
         s.initial_optima_registry[1]['count'] = 9
         assert s.basin_detection_should_stop(18) is True
+
+
+class TestBounds:
+    """Behaviour at a box edge: the Rosenbrock valley at x0 = 1.32 has its
+    inner optimum at the upper bound of x3 (true value -0.53916 at
+    [1.5812, 2.4509, 6.0]). Before the active-set handling the line search
+    underflowed there and the run was discarded, leaving the cell at the
+    seed value."""
+
+    def _rosen_cell(self):
+        s, f = _make_sampler('rosenbrock_4d', dims=(0,), grid=100)
+        return s, f, (61,)
+
+    def test_polish_converges_onto_the_bound(self):
+        s, f, idx = self._rosen_cell()
+        job = _job(s, f, idx, [1.408, 1.974, 3.897])    # neighbour cell's optimum
+        _drive(job, f)
+        assert job.success and job.converged
+        assert job.current_params[2] == pytest.approx(6.0)
+        assert job.current_fitness == pytest.approx(-0.53916, abs=2e-4)
+
+    def test_held_direction_has_no_component_into_the_wall(self):
+        s, f, idx = self._rosen_cell()
+        # At the optimum of the free variables with x3 on the bound the
+        # objective gradient in x3 points outward: the component is held and
+        # the first direction must not try to move it.
+        job = _job(s, f, idx, [1.5812, 2.4509, 6.0])
+        tasks = job.start()
+        while job.status != 'NEEDS_LINE_SEARCH':
+            t = tasks.pop(0)
+            tasks.extend(job.process_result({'target_val': float(f(t['params'])), 'params': t['params'], 'context': t['context']}))
+        assert job.current_gradient[2] < 0              # wants to increase x3
+        assert job.search_direction[2] == 0.0
+
+    def test_fd_step_is_taken_inward_at_a_bound(self):
+        s, f, idx = self._rosen_cell()
+        job = _job(s, f, idx, [1.5, 2.4, 6.0])
+        job.status = 'NEEDS_INITIAL_F'
+        tasks = job.start()
+        steps = {t['context']['dim']: t['context']['step'] for t in tasks}
+        assert steps[0] > 0 and steps[1] > 0 and steps[2] < 0
+        assert all(t['params'][3] <= 6.0 for t in tasks)
+
+    def test_underflow_keeps_the_best_point(self):
+        # Force a line search that cannot accept any step: a direction with
+        # the wrong sign on a sphere. The run must end successful at the
+        # point it had reached, not discard it.
+        s, f = _make_sampler()
+        job = _job(s, f, (10, 10), [0.5, 0.5])
+        tasks = job.start()
+        while job.status != 'NEEDS_LINE_SEARCH':
+            t = tasks.pop(0)
+            tasks.extend(job.process_result({'target_val': float(f(t['params'])), 'params': t['params'], 'context': t['context']}))
+        job.search_direction = -job.search_direction     # ascent direction of the objective
+        job.current_gradient = -job.current_gradient     # keep the predicted decrease positive
+        tasks = [job._calculate_line_search_task()]
+        n, n_ls = _drive(job, f, tasks)
+        assert job.is_finished() and job.success and not job.converged
+        assert np.allclose(job.current_params, [0.5, 0.5])
+        assert n_ls > 20

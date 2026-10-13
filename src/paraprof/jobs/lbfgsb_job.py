@@ -21,6 +21,12 @@ class LBFGSBJob(Job):
     1e-10. The test is on the full step on purpose: on a stiff problem the
     first accepted step can be tiny and the halving has to be allowed to
     reach it.
+
+    Bounds are handled with an active set: a variable sitting at a bound
+    whose objective gradient points outward is held for that iteration (its
+    gradient and direction components are zeroed), finite-difference steps
+    are taken inward at a bound, and a line search that underflows keeps the
+    best point seen instead of discarding the run.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
@@ -90,6 +96,14 @@ class LBFGSBJob(Job):
     def _get_partial_params_from_full(self, full_params):
         """Slice a full parameter vector down to opt_dims."""
         return full_params[list(self.opt_dims)]
+
+    def _opt_bounds(self):
+        """(lo, hi) arrays of the box over the optimised dims."""
+        if self.grid_idx is None:
+            b = self.sampler.bounds[list(self.opt_dims)]
+        else:
+            b = self.sampler._profiled_bounds
+        return b[:, 0], b[:, 1]
 
     def _construct_full_params_for_task(self, partial_params_to_eval):
         """Full bounded parameter vector for a worker task (global or grid-anchored)."""
@@ -252,19 +266,27 @@ class LBFGSBJob(Job):
         self._user_grad_opt = self._seed_user_grad_opt(user_grad_full)
         per_dim_fd_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
         signs = (1, -1) if self.lbfgsb_gradient_method == "central" else (1,)
+        lo, hi = self._opt_bounds()
 
         self.pending_grad_evals = 0
         for i in range(self.n_opt_dims):
             if np.isfinite(self._user_grad_opt[i]):
                 self.sampler.target_calls_saved_by_user_gradient += per_dim_fd_cost
                 continue
-            for sign in signs:
+            # Steps that leave the box are dropped (the task would be clipped
+            # back onto x and the difference would read zero). A forward step
+            # at a bound is taken inward instead; a central difference at a
+            # bound becomes the one-sided inward difference.
+            steps = [sign * eps[i] for sign in signs if lo[i] <= x[i] + sign * eps[i] <= hi[i]]
+            if not steps:
+                steps = [-eps[i] if x[i] - eps[i] >= lo[i] else eps[i]]
+            for k, step in enumerate(steps):
                 x_step = x.copy()
-                x_step[i] += sign * eps[i]
+                x_step[i] += step
                 tasks.append({
                     'params': self._construct_full_params_for_task(x_step),
                     'context': {'type': self.type, 'job_id': self.id,
-                                'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'sign': sign},
+                                'sub_type': 'LBFGS_GRADIENT', 'dim': i, 'k': k, 'step': float(step)},
                 })
                 self.pending_grad_evals += 1
 
@@ -277,9 +299,10 @@ class LBFGSBJob(Job):
     def _process_gradient_result(self, result):
         """Processes a returned likelihood evaluation for a gradient calculation."""
         context = result['context']
-        dim, sign = context['dim'], context['sign']
+        dim, k = context['dim'], context['k']
 
-        self.gradient_components[(dim, sign)] = -result['target_val'] # Store objective
+        # (objective value, FD step actually taken)
+        self.gradient_components[(dim, k)] = (-result['target_val'], context['step'])
         self.pending_grad_evals -= 1
 
         # Check if all components for the gradient have been computed
@@ -297,12 +320,13 @@ class LBFGSBJob(Job):
         for i in range(self.n_opt_dims):
             if self._user_grad_opt is not None and np.isfinite(self._user_grad_opt[i]):
                 grad[i] = self._user_grad_opt[i]
-            elif self.lbfgsb_gradient_method == "central":
-                f_plus = self.gradient_components[(i, 1)]
-                f_minus = self.gradient_components[(i, -1)]
-                grad[i] = (f_plus - f_minus) / (2 * self.current_eps[i])
-            else:  # "forward"
-                grad[i] = (self.gradient_components[(i, 1)] - f) / self.current_eps[i]
+            elif (i, 1) in self.gradient_components:   # two-sided
+                f_a, step_a = self.gradient_components[(i, 0)]
+                f_b, step_b = self.gradient_components[(i, 1)]
+                grad[i] = (f_a - f_b) / (step_a - step_b)
+            else:                                       # one-sided (forward, or central at a bound)
+                f_a, step_a = self.gradient_components[(i, 0)]
+                grad[i] = (f_a - f) / step_a
 
         self.current_gradient = grad
 
@@ -322,9 +346,19 @@ class LBFGSBJob(Job):
             self.pending_s_k = None
             self.pending_g_old = None
 
+        # Active set: a variable at a bound whose objective gradient points
+        # outward is held this iteration. The direction is built from the
+        # projected gradient and zeroed in the held components, so the
+        # clipped step is the step the quasi-Newton model asked for. Without
+        # this the free components are computed as if the held one moved
+        # too, and the Armijo test can fail at every step length.
+        lo, hi = self._opt_bounds()
+        x = self.current_params
+        held = ((x <= lo) & (grad > 0)) | ((x >= hi) & (grad < 0))
+
         # L-BFGS two-loop recursion. Pairs failing the curvature condition are
         # skipped so a degenerate dot product can't produce inf/nan rho.
-        q = grad
+        q = np.where(held, 0.0, grad)
         a = []
         usable_pairs = []
         for s, y in zip(self.s_hist, self.y_hist):
@@ -354,7 +388,17 @@ class LBFGSBJob(Job):
             beta = rho * np.dot(y, z)
             z = z + s * (alpha - beta)
 
-        self.search_direction = -z
+        d = -z
+        d[held] = 0.0
+        if not np.any(d):
+            # Every component is held: a stationary point of the box-constrained problem.
+            self.status = 'FINISHED'
+            self._is_finished = True
+            self.success = True
+            self.converged = True
+            return []
+
+        self.search_direction = d
         self.status = 'NEEDS_LINE_SEARCH'
         self.line_search_alpha = 1.0
 
@@ -441,12 +485,18 @@ class LBFGSBJob(Job):
             self.converged = True
             return []
 
-        # Step rejected: shrink alpha and retry; bail out if it underflows.
+        # Step rejected: shrink alpha and retry. If alpha underflows, no step
+        # length passed the Armijo test: the run ends at the current point,
+        # which is the best it has seen (every accepted step improved on the
+        # previous one), and that point is written back like any other
+        # endpoint. Discarding it would throw away the progress made so far;
+        # the run just does not count as converged.
         self.line_search_alpha *= 0.5
         if self.line_search_alpha < 1e-10:
             self.status = 'FINISHED'
             self._is_finished = True
-            self.success = False
+            self.success = True
+            self.converged = False
             return []
 
         return [self._calculate_line_search_task()]
@@ -457,10 +507,14 @@ class LBFGSBJob(Job):
         if self.success:
             self.improvement = self.current_fitness - self.start_fitness
         else:
-            # Failed cell-anchored optimization: keep the cell as 'converged'
-            # so patching can pick it up later.
-            if self.type in ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB'] and self.grid_idx in self.sampler.population:
-                self.sampler.population[self.grid_idx]['status'] = 'converged'
+            # Failed cell-anchored optimization: return the cell to its
+            # terminal status so patching (or, in lbfgsb mode, dynamic
+            # activation) can pick it up later instead of leaving it queued.
+            cell_types = ['LBFGSB', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB',
+                          'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB']
+            if self.type in cell_types and self.grid_idx in self.sampler.population:
+                self.sampler.population[self.grid_idx]['status'] = (
+                    'optimized' if self.type == 'POST_ACTIVATION_LBFGSB' else 'converged')
             return None
 
         if self.type == 'INITIAL_OPTIMIZATION':
