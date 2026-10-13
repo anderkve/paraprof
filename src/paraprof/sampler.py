@@ -93,6 +93,8 @@ DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-3  # min improvement over current to trigg
 
 # Activation-population mix ratios (neighbours / global pool / random LHS).
 # Hidden — defaults dominate; tuning only degraded benchmarks.
+# Cap on stored global-stage points (see record_global_stage_point).
+GLOBAL_STAGE_POINTS_CAP = 50_000
 DEFAULT_ACTIVATION_MIX_RATIOS = {
     'neighbors': 0.5,
     'global':    0.25,
@@ -289,6 +291,10 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
+                },
+
+                'activation': {
+                    'global_stage_seeding': str,   # Default: 'cells' ('cells', 'population' or 'off')
                 },
 
                 'suspect_recheck': {
@@ -511,6 +517,10 @@ class ProfileProjector:
                 'pool_seeded_initial_maxima': True,
             },
 
+            'activation': {
+                'global_stage_seeding': 'cells',
+            },
+
             'suspect_recheck': {
                 'enabled': DEFAULT_SUSPECT_RECHECK_ENABLED,
                 'max_waves': DEFAULT_SUSPECT_MAX_WAVES,
@@ -650,6 +660,17 @@ class ProfileProjector:
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
 
+        # What the evaluations of the global stage that lie in the region of
+        # interest are used for at activation (see record_global_stage_point):
+        # 'cells': activate every cell such a point falls in, with the point
+        # as warm start, and put the cell's best such point into the
+        # starting population of any cell activated later; 'population':
+        # only the latter; 'off': neither.
+        self.global_stage_seeding = config['activation']['global_stage_seeding']
+        if self.global_stage_seeding not in ('cells', 'population', 'off'):
+            raise ValueError("advanced_config['activation']['global_stage_seeding'] must be "
+                             f"'cells', 'population' or 'off', got {self.global_stage_seeding!r}")
+
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
         # wrong optimum but slipped past the fitness-only patching filter.
@@ -711,6 +732,12 @@ class ProfileProjector:
         # online by register_initial_optimum and consumed by the basin-detection
         # stopping rule. Reset per projection alongside initial_maxima.
         self.initial_optima_registry = []
+        # Global-stage evaluations within roi_threshold of the running global
+        # maximum, as (value, full params). Kept across projections (reset
+        # when a global stage runs); binned into the current grid at
+        # activation, see _bin_global_stage_points.
+        self.global_stage_points = []
+        self.global_stage_cell_best = {}
         self.population = {}  # {grid_idx: state_dict}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
@@ -841,6 +868,7 @@ class ProfileProjector:
         # Reset state variables
         self.initial_maxima = []
         self.initial_optima_registry = []
+        self.global_stage_cell_best = {}
         self._initial_opt_start_points = None
         self._initial_opt_lhs_idx = 0
         self.population = {}
@@ -1478,6 +1506,7 @@ class ProfileProjector:
         rolling multistart. Jobs consume points from it sequentially, so any
         prefix of the design is itself space-filling."""
         n_points = max(int(n_points), 1)
+        self.global_stage_points = []
         lhs = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
         unit_samples = lhs.random(n=n_points)
         self._initial_opt_start_points = (
@@ -1612,14 +1641,54 @@ class ProfileProjector:
             )
         return lo, hi
 
+    def record_global_stage_point(self, full_params, target_val):
+        """Keep a global-stage evaluation that lies within ``roi_threshold`` of
+        the running global maximum.
+
+        The converged endpoints of the global starts cluster in a handful of
+        cells, so they alone seed few cells and only with the modes that won
+        there. The points a start passes through on its way are spread over
+        the region of interest and carry whatever mode the start was in; a
+        cell seeded with one gets a chance at that mode before the neighbour
+        propagation reaches it with another. Costs no evaluations."""
+        if self.global_stage_seeding == 'off':
+            return
+        if not np.isfinite(target_val) or target_val < self.global_max_target_val - self.roi_threshold:
+            return
+        self.global_stage_points.append((float(target_val), np.array(full_params, dtype=float)))
+        if len(self.global_stage_points) > 2 * GLOBAL_STAGE_POINTS_CAP:
+            cut = self.global_max_target_val - self.roi_threshold
+            self.global_stage_points = [p for p in self.global_stage_points if p[0] >= cut]
+            if len(self.global_stage_points) > GLOBAL_STAGE_POINTS_CAP:
+                self.global_stage_points.sort(key=lambda p: -p[0])
+                del self.global_stage_points[GLOBAL_STAGE_POINTS_CAP:]
+
+    def _bin_global_stage_points(self):
+        """Best stored global-stage point per cell of the current grid, within
+        ``roi_threshold`` of the final global maximum: {grid_idx: (value, full params)}."""
+        cut = self.global_max_target_val - self.roi_threshold
+        best = {}
+        if self.global_stage_seeding != 'off':
+            for val, pt in self.global_stage_points:
+                if val < cut:
+                    continue
+                idx = self._get_grid_indices_from_point(pt)
+                if idx not in best or val > best[idx][0]:
+                    best[idx] = (val, pt)
+        self.global_stage_cell_best = best
+        return best
+
     def create_activation_jobs(self, next_job_id):
-        """Generates ActivationJobs for grid points near found maxima."""
+        """ActivationJobs for the cells around the found maxima and, with
+        ``global_stage_seeding == 'cells'``, for every cell in the region of
+        interest that a global-stage evaluation fell in."""
         if not self.initial_maxima:
             self.logger.warning("Warning: No initial maxima found. Cannot create activation jobs.")
             return [], next_job_id
 
         jobs = []
         activation_job_created_for_grid_points = set()
+        cell_best = self._bin_global_stage_points()
 
         for maximum in self.initial_maxima:
             point = maximum['point']
@@ -1644,7 +1713,26 @@ class ProfileProjector:
                 self.pending_activation_indices.add(neighbor_idx)
                 next_job_id += 1
 
-        self.logger.info(f"--- Generating {len(jobs)} activation jobs ---")
+        n_from_optima = len(jobs)
+        if self.global_stage_seeding == 'cells':
+            for grid_idx, (val, point) in sorted(cell_best.items(), key=lambda kv: -kv[1][0]):
+                if (grid_idx in activation_job_created_for_grid_points) or \
+                   (grid_idx in self.population) or (grid_idx in self.pending_activation_indices):
+                    continue
+                job = ActivationJob(
+                    job_id=next_job_id,
+                    sampler=self,
+                    grid_idx=grid_idx,
+                    warm_start_params=point[self.profiled_dims]
+                )
+                jobs.append(job)
+                activation_job_created_for_grid_points.add(grid_idx)
+                self.pending_activation_indices.add(grid_idx)
+                next_job_id += 1
+
+        self.logger.info(f"--- Generating {len(jobs)} activation jobs ({n_from_optima} around the "
+                         f"global optima, {len(jobs) - n_from_optima} from global-stage points in the "
+                         f"region of interest) ---")
         return jobs, next_job_id
 
 

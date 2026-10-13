@@ -70,6 +70,16 @@ class ActivationJob(Job):
             unit_samples = lhs_sampler.random(n=n_from_random)
             samples_list.extend(prof_bounds[:, 0] + unit_samples * (prof_bounds[:, 1] - prof_bounds[:, 0]))
 
+        # Mode diversity from the global stage: the best global-stage point
+        # that fell in this cell takes the first random slot, unless it is the
+        # warm start already (see ProfileProjector.record_global_stage_point).
+        cell_best = self.sampler.global_stage_cell_best.get(self.grid_idx)
+        if (cell_best is not None and n_from_random > 0
+                and self.sampler.global_stage_seeding != 'off'):
+            cand = cell_best[1][self.sampler.profiled_dims]
+            if self.warm_start_params is None or not np.allclose(cand, self.warm_start_params):
+                samples_list[len(samples_list) - n_from_random] = cand
+
         # Cross-projection knowledge transfer: replace the last random LHS slot
         # with the past evaluation closest to this cell in projection-dim space.
         # Silent no-op when the pool is empty or proximity_warm_start is off.

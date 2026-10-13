@@ -1,9 +1,13 @@
 # Implementation plan: curvature-scaled quasi-Newton polish
 
 Status: implemented in `LBFGSBJob` (see the class docstring and the
-changelog). Deviations from the plan below: a positive curvature estimate
-outside `[1e-6, 1] * width` is clipped to that range rather than replaced by
-the box width (only a non-positive or non-finite estimate falls back); a
+changelog). Deviations from the plan below: the probe scale is used only when
+every probed direction is convex, otherwise the box width is the scale in
+every dimension (mixing the two at far starts on a quartic gave a 60x
+anisotropic metric and runs that crept to the iteration cap: 1001
+evaluations per global start on the 12-D nuisance target against 339 with
+the identity metric; all-or-nothing gives 335); a positive estimate outside
+`[1e-6, 1] * width` is clipped to that range; a
 history-free step is capped so that no coordinate moves by more than a
 quarter of its box, which bounds the number of Armijo halvings from a far
 start when the fallback scale is in use; and a converged start on a stiff

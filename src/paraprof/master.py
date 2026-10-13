@@ -950,6 +950,8 @@ def master_main(comm, sampler,
             sampler._register_target_call(
                 result['params'], result['target_val'],
                 phase=phase_for_job_type(result['context'].get('type')))
+            if result['context'].get('type') == 'INITIAL_OPTIMIZATION':
+                sampler.record_global_stage_point(result['params'], result['target_val'])
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:

@@ -42,11 +42,12 @@ class LBFGSBJob(Job):
     one-round curvature probe after the first gradient: one evaluation per
     dimension at x0 + h_i e_i (h_i = 1% of the box width) gives a diagonal
     second derivative h_ii, and scale_i = 1 / sqrt(h_ii), clipped to
-    [1e-6, 1] times the box width. A flat or concave direction, or a start
-    that is already converged (no probe issued), keeps the box width as its
-    scale. With an empty history the first step is then a diagonal Newton
-    step; a history-free step is in any case capped to move no coordinate
-    by more than a quarter of its box. The stored (s, y) pairs stay in raw
+    [1e-6, 1] times the box width, used only when every probed direction is
+    convex; otherwise, and for a start that is already converged (no probe
+    issued), the box width is the scale in every dimension. With an empty
+    history the first step is then a diagonal Newton step; a history-free
+    step is in any case capped to move no coordinate by more than a quarter
+    of its box. The stored (s, y) pairs stay in raw
     units, so neighbour seeding and ``optimizer_state`` are unaffected. The
     finite-difference step is ``FD_REL * scale`` per dimension.
     """
@@ -435,16 +436,24 @@ class LBFGSBJob(Job):
 
     def _set_scale_from_curvature(self):
         """scale_i = 1 / sqrt(h_ii) from the probe, clipped to [SCALE_MIN_FRAC, 1]
-        times the box width; a non-positive or non-finite estimate keeps the
-        box width."""
+        times the box width, used only when every probed direction is convex
+        (h_ii finite and positive). A start outside the convex region keeps
+        the box width in every dimension: the local curvature there says
+        little about the basin (on a quartic it changes by orders of
+        magnitude along the way), and mixing probe scales with box widths
+        gave metrics with a 60x anisotropy that made L-BFGS creep."""
         f0 = self.current_objective
         g = self.current_gradient
+        scales = {}
         for i, (f_i, h) in self.curvature_components.items():
             h_ii = 2.0 * (f_i - f0 - g[i] * h) / (h * h)
-            if np.isfinite(h_ii) and h_ii > 0:
-                sc = 1.0 / np.sqrt(h_ii)
-                self.scale[i] = min(max(sc, SCALE_MIN_FRAC * self.width[i]), self.width[i])
-                self.scale_from_curvature[i] = True
+            if not (np.isfinite(h_ii) and h_ii > 0):
+                return
+            sc = 1.0 / np.sqrt(h_ii)
+            scales[i] = min(max(sc, SCALE_MIN_FRAC * self.width[i]), self.width[i])
+        for i, sc in scales.items():
+            self.scale[i] = sc
+            self.scale_from_curvature[i] = True
 
     def _compute_direction_and_line_search(self):
         """Quasi-Newton direction (two-loop recursion in scaled coordinates,

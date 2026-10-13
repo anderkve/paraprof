@@ -74,13 +74,13 @@ class TestCurvatureProbe:
         assert job.iteration <= 3
         assert np.allclose(job.current_params, 0.0, atol=1e-6)
 
-    def test_flat_direction_keeps_the_box_width(self):
+    def test_flat_direction_keeps_the_box_width_everywhere(self):
+        # One non-convex direction and the whole scale stays the box width.
         s = _sampler(quad_flat, BOX)
         job = _job(s, quad_flat, (10,), [5e-4, 0.4])
         _drive(job, quad_flat)
-        assert job.scale_from_curvature[0] and not job.scale_from_curvature[1]
-        assert job.scale[0] == pytest.approx(W0, rel=0.1)
-        assert job.scale[1] == job.width[1] == 2.0
+        assert not job.scale_from_curvature.any()
+        assert np.array_equal(job.scale, job.width) and job.width[0] == 2.0
         assert job.success and job.converged
         assert abs(job.current_params[0]) < 1e-6
 
