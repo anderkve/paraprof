@@ -1,8 +1,16 @@
 # Implementation plan: curvature-scaled quasi-Newton polish
 
-Status: planned, to be implemented after the current benchmark sweeps finish
-(the sweeps fix the numbers of the code-release paper; this change gets its own
-before/after pass).
+Status: implemented in `LBFGSBJob` (see the class docstring and the
+changelog). Deviations from the plan below: a positive curvature estimate
+outside `[1e-6, 1] * width` is clipped to that range rather than replaced by
+the box width (only a non-positive or non-finite estimate falls back); a
+history-free step is capped so that no coordinate moves by more than a
+quarter of its box, which bounds the number of Armijo halvings from a far
+start when the fallback scale is in use; and a converged start on a stiff
+direction still gets the probe, because the first gradient is taken with the
+box-scaled finite-difference step and its forward-difference bias
+(eps * h_ii / 2) reads as a gradient there. The benchmark results are recorded
+in the paper draft's `benchmark_extra.md`.
 
 ## Problem
 

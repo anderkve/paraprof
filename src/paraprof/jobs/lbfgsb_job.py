@@ -3,6 +3,15 @@ import numpy as np
 import collections
 from .base import Job
 
+# Finite-difference step as a fraction of the per-dimension scale.
+FD_REL = 1e-7
+# Curvature-probe step as a fraction of the box width.
+CURVATURE_PROBE_FRAC = 0.01
+# Smallest scale a curvature estimate may set, as a fraction of the box width.
+SCALE_MIN_FRAC = 1e-6
+# Largest coordinate move of a history-free step, as a fraction of the box width.
+FIRST_STEP_CAP = 0.25
+
 
 class LBFGSBJob(Job):
     """Self-contained async L-BFGS-B run (initial eval, gradient, line search, history).
@@ -27,6 +36,19 @@ class LBFGSBJob(Job):
     gradient and direction components are zeroed), finite-difference steps
     are taken inward at a bound, and a line search that underflows keeps the
     best point seen instead of discarding the run.
+
+    The two-loop recursion runs in scaled coordinates u = x / scale, with a
+    per-dimension scale fixed for the job's lifetime. The scale comes from a
+    one-round curvature probe after the first gradient: one evaluation per
+    dimension at x0 + h_i e_i (h_i = 1% of the box width) gives a diagonal
+    second derivative h_ii, and scale_i = 1 / sqrt(h_ii), clipped to
+    [1e-6, 1] times the box width. A flat or concave direction, or a start
+    that is already converged (no probe issued), keeps the box width as its
+    scale. With an empty history the first step is then a diagonal Newton
+    step; a history-free step is in any case capped to move no coordinate
+    by more than a quarter of its box. The stored (s, y) pairs stay in raw
+    units, so neighbour seeding and ``optimizer_state`` are unaffected. The
+    finite-difference step is ``FD_REL * scale`` per dimension.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
@@ -79,6 +101,21 @@ class LBFGSBJob(Job):
         # not just lbfgsb_max_iter.
         self.converged = False
         self._eps_array = np.empty(self.n_opt_dims)
+
+        # Per-dimension scale of the quasi-Newton metric: box width until the
+        # curvature probe replaces it (see class docstring).
+        if self.n_opt_dims > 0:
+            lo, hi = self._opt_bounds()
+            width = np.asarray(hi - lo, dtype=float)
+            width = np.where(np.isfinite(width) & (width > 0), width, 1.0)
+        else:
+            width = np.zeros(0)
+        self.width = width
+        self.scale = width.copy()
+        self.scale_from_curvature = np.zeros(self.n_opt_dims, dtype=bool)
+        self._probe_done = False
+        self.curvature_components = {}
+        self.pending_curvature_evals = 0
 
         self.search_direction = None
         self.line_search_alpha = 1.0
@@ -234,6 +271,9 @@ class LBFGSBJob(Job):
         elif self.status == 'NEEDS_GRADIENT' and sub_type == 'LBFGS_GRADIENT':
             new_tasks = self._process_gradient_result(result)
 
+        elif self.status == 'NEEDS_CURVATURE' and sub_type == 'LBFGS_CURVATURE':
+            new_tasks = self._process_curvature_result(result)
+
         elif self.status == 'NEEDS_LINE_SEARCH' and sub_type == 'LBFGS_LINE_SEARCH':
             new_tasks = self._process_line_search_result(result)
 
@@ -247,7 +287,7 @@ class LBFGSBJob(Job):
         sliced = np.asarray(user_grad_full)[list(self.opt_dims)]
         return np.where(np.isfinite(sliced), -sliced, np.nan)
 
-    def _calculate_gradient_tasks(self, base_eps=1e-8, user_grad_full=None):
+    def _calculate_gradient_tasks(self, user_grad_full=None):
         """Generates tasks for the gradient at ``current_params``. Issues FD
         tasks only for dims the user did not supply; finalizes immediately
         if the user covered every dim."""
@@ -258,8 +298,10 @@ class LBFGSBJob(Job):
         x = self.current_params
         self.gradient_components = {}
 
-        # Per-dim step scaled with magnitude for numerical stability.
-        np.maximum(np.abs(x) * base_eps, 1e-10, out=self._eps_array)
+        # Per-dim step tied to the scale of the metric, so the difference is
+        # taken over the same fraction of the local length scale in every
+        # direction.
+        np.maximum(self.scale * FD_REL, 1e-10, out=self._eps_array)
         eps = self._eps_array
         self.current_eps = eps
 
@@ -292,7 +334,7 @@ class LBFGSBJob(Job):
 
         # Nothing to wait for if the user covered every dim.
         if self.pending_grad_evals == 0:
-            return self._finalize_gradient_and_line_search()
+            return self._finalize_gradient()
 
         return tasks
 
@@ -307,13 +349,14 @@ class LBFGSBJob(Job):
 
         # Check if all components for the gradient have been computed
         if self.pending_grad_evals == 0:
-            return self._finalize_gradient_and_line_search()
+            return self._finalize_gradient()
 
         return [] # Not ready yet, no new task
 
-    def _finalize_gradient_and_line_search(self):
-        """Assemble grad (user-supplied + FD), update history, return the
-        first line-search task."""
+    def _finalize_gradient(self):
+        """Assemble grad (user-supplied + FD) and update the history; then
+        either issue the curvature probe (first gradient of a run that will
+        iterate) or go on to the search direction."""
         grad = np.zeros(self.n_opt_dims)
         f = self.current_objective
 
@@ -346,6 +389,69 @@ class LBFGSBJob(Job):
             self.pending_s_k = None
             self.pending_g_old = None
 
+        if not self._probe_done:
+            self._probe_done = True
+            # A start that is already converged (the predicted decrease of a
+            # box-scaled gradient step is below ftol) gets no probe: the run
+            # ends on the flat-step exit after one line-search evaluation.
+            predicted = 1e-4 * float(np.sum((grad * self.width) ** 2))
+            if predicted >= self.lbfgsb_ftol:
+                return self._calculate_curvature_tasks()
+
+        return self._compute_direction_and_line_search()
+
+    def _calculate_curvature_tasks(self):
+        """One evaluation per optimised dim at x0 + h_i e_i (h_i = 1% of the
+        box width, taken inward at a bound) for the diagonal curvature."""
+        x = self.current_params
+        lo, hi = self._opt_bounds()
+        self.curvature_components = {}
+        self.pending_curvature_evals = 0
+        tasks = []
+        for i in range(self.n_opt_dims):
+            h = CURVATURE_PROBE_FRAC * self.width[i]
+            if x[i] + h > hi[i]:
+                h = -h
+            x_step = x.copy()
+            x_step[i] += h
+            tasks.append({
+                'params': self._construct_full_params_for_task(x_step),
+                'context': {'type': self.type, 'job_id': self.id,
+                            'sub_type': 'LBFGS_CURVATURE', 'dim': i, 'step': float(h),
+                            'compute_gradient': False},
+            })
+            self.pending_curvature_evals += 1
+        self.status = 'NEEDS_CURVATURE'
+        return tasks
+
+    def _process_curvature_result(self, result):
+        context = result['context']
+        self.curvature_components[context['dim']] = (-result['target_val'], context['step'])
+        self.pending_curvature_evals -= 1
+        if self.pending_curvature_evals == 0:
+            self._set_scale_from_curvature()
+            return self._compute_direction_and_line_search()
+        return []
+
+    def _set_scale_from_curvature(self):
+        """scale_i = 1 / sqrt(h_ii) from the probe, clipped to [SCALE_MIN_FRAC, 1]
+        times the box width; a non-positive or non-finite estimate keeps the
+        box width."""
+        f0 = self.current_objective
+        g = self.current_gradient
+        for i, (f_i, h) in self.curvature_components.items():
+            h_ii = 2.0 * (f_i - f0 - g[i] * h) / (h * h)
+            if np.isfinite(h_ii) and h_ii > 0:
+                sc = 1.0 / np.sqrt(h_ii)
+                self.scale[i] = min(max(sc, SCALE_MIN_FRAC * self.width[i]), self.width[i])
+                self.scale_from_curvature[i] = True
+
+    def _compute_direction_and_line_search(self):
+        """Quasi-Newton direction (two-loop recursion in scaled coordinates,
+        active-set projection at the bounds); returns the first line-search task."""
+        grad = self.current_gradient
+        sc = self.scale
+
         # Active set: a variable at a bound whose objective gradient points
         # outward is held this iteration. The direction is built from the
         # projected gradient and zeroed in the held components, so the
@@ -356,15 +462,17 @@ class LBFGSBJob(Job):
         x = self.current_params
         held = ((x <= lo) & (grad > 0)) | ((x >= hi) & (grad < 0))
 
-        # L-BFGS two-loop recursion. Pairs failing the curvature condition are
-        # skipped so a degenerate dot product can't produce inf/nan rho.
-        q = np.where(held, 0.0, grad)
+        # L-BFGS two-loop recursion in u = x / scale: the gradient enters as
+        # grad * scale, the pairs as (s / scale, y * scale); s·y is invariant.
+        # Pairs failing the curvature condition are skipped so a degenerate
+        # dot product can't produce inf/nan rho.
+        q = np.where(held, 0.0, grad) * sc
         a = []
         usable_pairs = []
-        for s, y in zip(self.s_hist, self.y_hist):
-            ys = float(np.dot(y, s))
+        for s_raw, y_raw in zip(self.s_hist, self.y_hist):
+            ys = float(np.dot(y_raw, s_raw))
             if ys > 1e-30:
-                usable_pairs.append((s, y, ys))
+                usable_pairs.append((s_raw / sc, y_raw * sc, ys))
 
         for s, y, ys in reversed(usable_pairs):
             rho = 1.0 / ys
@@ -388,7 +496,7 @@ class LBFGSBJob(Job):
             beta = rho * np.dot(y, z)
             z = z + s * (alpha - beta)
 
-        d = -z
+        d = -(z * sc)
         d[held] = 0.0
         if not np.any(d):
             # Every component is held: a stationary point of the box-constrained problem.
@@ -397,6 +505,15 @@ class LBFGSBJob(Job):
             self.success = True
             self.converged = True
             return []
+
+        if not usable_pairs:
+            # No curvature pairs yet: the step length is only as good as the
+            # scale. Cap it so no coordinate moves more than a fixed fraction
+            # of its box; a far start then needs a few iterations instead of
+            # twenty halvings.
+            m = float(np.max(np.abs(d) / self.width))
+            if m > FIRST_STEP_CAP:
+                d *= FIRST_STEP_CAP / m
 
         self.search_direction = d
         self.status = 'NEEDS_LINE_SEARCH'
