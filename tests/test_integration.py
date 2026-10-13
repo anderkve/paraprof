@@ -359,6 +359,28 @@ SUSPECT_RUNNER = textwrap.dedent("""
             for idx, st in sampler.population.items():
                 after[idx] = st['best_fitness']
 
+            # Post-check: can any ROI cell still be improved by re-polishing it
+            # from a neighbour's profiled parameters? Counts wrong-optimum cells
+            # that survived every stage (scipy L-BFGS-B; cheap on Rosenbrock).
+            from scipy.optimize import minimize as _min
+            roi_cut = sampler.global_max_target_val - sampler.roi_threshold
+            pdims = list(sampler.profiled_dims)
+            lo, hi = sampler.bounds[pdims, 0], sampler.bounds[pdims, 1]
+            still, worst = 0, 0.0
+            for idx, st in sampler.population.items():
+                if st['best_fitness'] < roi_cut:
+                    continue
+                best_here = st['best_fitness']
+                for nb in sampler._get_valid_neighbors(idx):
+                    if nb not in sampler.population:
+                        continue
+                    seed = sampler._best_profiled_params(nb)
+                    obj = lambda z, idx=idx: -sampler.target_func(sampler._construct_params(idx, z))
+                    r = _min(obj, np.clip(seed, lo, hi), method='L-BFGS-B', bounds=list(zip(lo, hi)))
+                    if -r.fun > best_here + 1e-3:
+                        still += 1
+                        worst = max(worst, -r.fun - best_here)
+                        break
             if before['snapshot'] is None:
                 payload = {'fired': False}
             else:
@@ -372,6 +394,8 @@ SUSPECT_RUNNER = textwrap.dedent("""
                     'max_improvement': float(diff.max()),
                     'min_change': float(diff.min()),
                     'total_delta': float(diff.sum()),
+                    'n_still_improvable': still,
+                    'worst_remaining': float(worst),
                 }
             print('RESULT', json.dumps(payload), flush=True)
         terminate_workers(comm, rank)
@@ -407,18 +431,29 @@ def _run_suspect():
 
 
 def test_suspect_recheck_fixes_rosenbrock_strip():
-    """Rosenbrock-4D 80x80 should produce a wrong-optimum strip that the
-    suspect-recheck pass detects and fixes — with zero regressions."""
+    """Rosenbrock-4D 80x80: no wrong-optimum strip may survive the scan.
+
+    With the original polish this case reliably produced a contiguous strip
+    of cells stuck on a wrong inner optimum (off by 3-25 logL) that only the
+    suspect-recheck pass fixed. Since the L-BFGS-B jobs test their
+    neighbours' parameters and inherit their quasi-Newton history (and no
+    longer fail at converged starts), the strip usually does not form at all
+    and the recheck has nothing to improve, so an improvement count cannot be
+    required. What is required: the recheck stage runs, never regresses a
+    cell, and the final grid has no cell that a neighbour's parameters can
+    improve by more than the small residual left by lbfgsb_max_iter=20 on
+    this stiff valley.
+    """
     result = _run_suspect()
 
     assert result['fired'], "Suspect-recheck stage never ran"
 
-    # The pass must improve at least one cell. Observed on this case: typically
-    # 4-10 cells improved by 4-20 logL each; rare unlucky MPI orderings give
-    # only a sub-logL improvement, so we don't pin a size threshold here.
-    assert result['n_improved'] >= 1, (
-        f"Suspect recheck did not improve any cells: {result}"
-    )
+    # No wrong-optimum cell survives: re-polishing every ROI cell from each
+    # neighbour's parameters finds at most a handful of sub-0.1 logL residuals
+    # (observed: 3-4 cells, worst 0.03-0.06, with and without the recheck
+    # having fired on anything).
+    assert result['n_still_improvable'] <= 8, result
+    assert result['worst_remaining'] < 0.5, result
 
     # Never regress a cell. The LBFGSB polish only writes back when
     # current_fitness > state['best_fitness'], so this is a structural

@@ -228,8 +228,9 @@ def run_all_projections(comm, sampler, projections,
         if proj_idx > 0:
             sampler._reset_for_new_projection(projection_config)
 
-        # Enable warm start after first projection
-        skip_init_opt = (proj_idx > 0)
+        # Skip the global optimisation stage when initial maxima can be seeded
+        # from the pool (projections after the first) or from a warm-start file.
+        skip_init_opt = (proj_idx > 0) or bool(getattr(sampler, 'warm_start_file', None))
 
         # Run projection (handles coarse + refinement automatically)
         results = run_projection(
@@ -1129,6 +1130,11 @@ def master_main(comm, sampler,
                 f"  User Gradient Errors: {sampler.user_gradient_errors} "
                 f"(fell back to finite differences for these)"
             )
+    if getattr(sampler, 'lbfgsb_gtol_exits', 0) or getattr(sampler, 'lbfgsb_flat_exits', 0):
+        logger.info(
+            f"  L-BFGS-B early exits: {sampler.lbfgsb_gtol_exits} on the gradient test, "
+            f"{sampler.lbfgsb_flat_exits} on a flat line-search step"
+        )
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     if sampler.de_allow_early_DE_exit and sampler.de_cells_skipped:

@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `warm_start_file` was ignored on the first projection of `run_all_projections`
+  (and therefore of `run_scan` and the GAMBIT plugin): the global optimisation
+  stage was skipped only from the second projection on. A warm-start file now
+  seeds `initial_maxima` on every projection, as documented.
+- The initial-optimisation stopping rule now uses the Boender-Rinnooy Kan
+  expression for the expected number of undiscovered optima, `W (W + 1) /
+  (N - W - 2)`, instead of the approximation `W^2 / (N - W - 1)`.
+
 ### Changed
+- **L-BFGS-B early exits.** A run whose gradient (bounds-normalised, relative to
+  `max(1, |f|)`) is below the new `advanced_config['lbfgsb']['gtol']` (default
+  `1e-5`, `None` disables) finishes as converged without a line search, and a
+  rejected line-search step that changes the target by less than `ftol` ends the
+  run as converged instead of halving the step down to `1e-10`. A polish that
+  started exactly at its optimum used to spend 7 (n = 2) to 34 (n = 8) line-search
+  evaluations and then report failure; it now costs one gradient. The end-of-run
+  summary reports how often each exit fired (`sampler.lbfgsb_gtol_exits`,
+  `sampler.lbfgsb_flat_exits`).
+- **Neighbour seeding in the lbfgsb mode.** `LBFGSB_LOOP` jobs
+  (`optimization_method='lbfgsb'`) now start with the same neighbour test as the
+  post-DE polish and inherit the neighbour's quasi-Newton history; previously
+  only the polish did. The inherited curvature saves 25-35% of the per-cell
+  evaluations where the profiled optimum moves between cells.
+
 - **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
   `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
   stage that produced the point (`paraprof.PHASE_*`, described in

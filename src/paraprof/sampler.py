@@ -77,6 +77,11 @@ SKIP_DE_WINDOW = 1
 SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
+# Gradient-norm exit for the L-BFGS-B jobs: finish when max_i |g_i| * extent_i
+# <= gtol * max(1, |f|). 1e-5 sits an order of magnitude above the
+# finite-difference floor at an exact optimum and fires only within ~1e-7 of
+# it, where the remaining error in f is below 1e-10. None disables it.
+DEFAULT_LBFGSB_GTOL = 1e-5
 
 DEFAULT_PATCHING_N_NEIGHBORS = 1
 
@@ -273,6 +278,7 @@ class ProfileProjector:
 
                 'lbfgsb': {
                     'ftol': float,                 # Default: 1e-9
+                    'gtol': float or None,         # Default: 1e-5 (None disables)
                     'gradient_method': str,        # Default: 'forward'
                 },
 
@@ -493,6 +499,7 @@ class ProfileProjector:
 
             'lbfgsb': {
                 'ftol': DEFAULT_LBFGSB_FTOL,
+                'gtol': DEFAULT_LBFGSB_GTOL,
                 'gradient_method': 'forward',
             },
 
@@ -573,7 +580,11 @@ class ProfileProjector:
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
+        self.lbfgsb_gtol = config['lbfgsb']['gtol']
         self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
+        # Diagnostics: how often the L-BFGS-B early exits fired.
+        self.lbfgsb_gtol_exits = 0
+        self.lbfgsb_flat_exits = 0
 
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for
@@ -1543,7 +1554,7 @@ class ProfileProjector:
         found. Failing a max prior, the Boender-Rinnooy Kan rule applies once
         ``n_completed`` reaches ``basin_min_starts``: with ``W`` distinct ROI
         optima over ``N`` ROI starts it stops once the expected undiscovered
-        ROI optima ``W**2/(N-W-1)`` fall below ``basin_undiscovered_threshold``.
+        ROI optima ``W (W + 1) / (N - W - 2)`` fall below ``basin_undiscovered_threshold``.
         """
         n_distinct = len(self.initial_optima_registry)
 
@@ -1559,10 +1570,14 @@ class ProfileProjector:
         W, n_roi = self.basin_detection_roi_stats()
         if W < 1:
             return False
-        denom = n_roi - W - 1
+        # Boender & Rinnooy Kan (1987): after N local searches from uniform
+        # starts found W distinct optima, the posterior expectation of the
+        # total number of optima is W (N - 1) / (N - W - 2), so the expected
+        # number still undiscovered is W (W + 1) / (N - W - 2).
+        denom = n_roi - W - 2
         if denom <= 0:
             return False
-        expected_undiscovered = (W * W) / denom
+        expected_undiscovered = W * (W + 1) / denom
         return expected_undiscovered < self.basin_undiscovered_threshold
 
     @staticmethod

@@ -110,7 +110,7 @@ class TestStoppingRule:
                                 basic_projection_2d):
         s = _make_sampler(simple_2d_function, simple_bounds_2d, basic_projection_2d)
         s.global_max_target_val = 0.0
-        # 10 starts all in one basin: W=1, N_roi=10 -> 1/(10-1-1)=0.125 < 0.5.
+        # 10 starts all in one basin: W=1, N_roi=10 -> W(W+1)/(N-W-2) = 2/7 = 0.29 < 0.5.
         for _ in range(10):
             s.register_initial_optimum(np.array([3.0, 2.0]), 0.0)
         assert s.basin_detection_should_stop(10) is True

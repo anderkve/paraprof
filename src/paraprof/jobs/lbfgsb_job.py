@@ -7,9 +7,15 @@ from .base import Job
 class LBFGSBJob(Job):
     """Self-contained async L-BFGS-B run (initial eval, gradient, line search, history).
 
-    For grid-anchored LBFGSB jobs the run starts with a neighbor-test
-    step: if a converged neighbor has better fitness at our cell, we
-    adopt its params and seed the (s, y) history from its optimizer state.
+    For grid-anchored jobs (types ``LBFGSB`` and ``LBFGSB_LOOP``) the run
+    starts with a neighbor-test step: if a converged neighbor has better
+    fitness at our cell, we adopt its params and seed the (s, y) history
+    from its optimizer state.
+
+    Two early exits avoid spending line-search evaluations on a start that
+    is already converged: a gradient-norm test right after each gradient
+    (``lbfgsb.gtol``) and a flat-step test in the line search (a rejected
+    step whose |f change| is below ``ftol`` ends the run).
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
                  grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
@@ -19,6 +25,12 @@ class LBFGSBJob(Job):
         self.lbfgsb_ftol = sampler.lbfgsb_ftol
         self.lbfgsb_max_iter = sampler.lbfgsb_max_iter
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
+        # Gradient-norm exit: finish once max_i |g_i| * extent_i falls below
+        # gtol * max(1, |f|), extent_i being the bounds width of opt dim i.
+        # None disables the test.
+        self.lbfgsb_gtol = getattr(sampler, 'lbfgsb_gtol', None)
+        _b = sampler.bounds[list(opt_dims)]
+        self._opt_extent = np.where(_b[:, 1] - _b[:, 0] > 0, _b[:, 1] - _b[:, 0], 1.0)
         # When True we piggyback compute_gradient=True on value-evaluating tasks.
         self.has_user_grad = sampler.grad_func is not None
 
@@ -33,7 +45,9 @@ class LBFGSBJob(Job):
         self.start_fitness = start_fitness
         self.improvement = 0.0
 
-        if self.type == 'LBFGSB':
+        # Grid-anchored jobs (the post-DE polish and the lbfgsb-mode loop) start
+        # with a neighbour test and inherit the neighbour's quasi-Newton history.
+        if self.type in ('LBFGSB', 'LBFGSB_LOOP'):
             self.status = 'NEEDS_NEIGHBOR_TEST'
             self.fallback_params = self.start_params_partial
         else:
@@ -146,7 +160,18 @@ class LBFGSBJob(Job):
                 # Fall through to the 'NEEDS_INITIAL_F' logic
 
         if self.status == 'NEEDS_INITIAL_F':
-            # This is the fallback: evaluate the starting params
+            # The start value is usually already known (population member,
+            # patching / recheck seed): go straight to the gradient instead
+            # of re-evaluating it. Re-evaluate when it is unknown (global
+            # starts, refinement) or when the user gradient must be fetched
+            # alongside the value.
+            if np.isfinite(self.start_fitness) and not self.has_user_grad:
+                self.current_params = np.asarray(self.start_params_partial, dtype=float)
+                self.current_fitness = float(self.start_fitness)
+                self.current_objective = -self.current_fitness
+                self.status = 'NEEDS_GRADIENT'
+                return self._calculate_gradient_tasks()
+            # Fallback: evaluate the starting params
             # (either for global opt, or for optimization with no neighbors)
             context = {
                 'type': self.type,
@@ -297,6 +322,21 @@ class LBFGSBJob(Job):
             self.pending_s_k = None
             self.pending_g_old = None
 
+        # Gradient-norm exit: the start (or the last accepted iterate) is a
+        # stationary point to within the finite-difference noise, so a line
+        # search would only burn evaluations. Counts as converged; the
+        # history held so far (own or inherited) is kept for the neighbours.
+        if self.lbfgsb_gtol is not None:
+            gscale = self.lbfgsb_gtol * max(1.0, abs(float(f)))
+            if float(np.max(np.abs(grad) * self._opt_extent)) <= gscale:
+                self.status = 'FINISHED'
+                self._is_finished = True
+                self.success = True
+                self.converged = True
+                if hasattr(self.sampler, 'lbfgsb_gtol_exits'):
+                    self.sampler.lbfgsb_gtol_exits += 1
+                return []
+
         # L-BFGS two-loop recursion. Pairs failing the curvature condition are
         # skipped so a degenerate dot product can't produce inf/nan rho.
         q = grad
@@ -395,6 +435,23 @@ class LBFGSBJob(Job):
 
             self.status = 'NEEDS_GRADIENT'
             return self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
+
+        # Step rejected while the decrease the Armijo test asks for is itself
+        # below ftol: the direction cannot buy a measurable improvement at
+        # any step length (this is the "start is already stationary" case,
+        # where halving alpha down to 1e-10 would only burn evaluations).
+        # A rejected step with f_new == f_old but a large predicted decrease
+        # (an overshoot to a mirror point) is not caught here and keeps
+        # halving as before.
+        predicted = abs(c1 * alpha * np.dot(g_old, x_new_bounded - x_old))
+        if predicted < self.lbfgsb_ftol:
+            self.status = 'FINISHED'
+            self._is_finished = True
+            self.success = True
+            self.converged = True
+            if hasattr(self.sampler, 'lbfgsb_flat_exits'):
+                self.sampler.lbfgsb_flat_exits += 1
+            return []
 
         # Step rejected: shrink alpha and retry; bail out if it underflows.
         self.line_search_alpha *= 0.5
