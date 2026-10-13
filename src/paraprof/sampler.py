@@ -1715,10 +1715,19 @@ class ProfileProjector:
 
         n_from_optima = len(jobs)
         if self.global_stage_seeding == 'cells':
+            # Sparse seeds: a global-stage point activates its cell only when
+            # neither the cell nor a Moore neighbour is activated or seeded
+            # already (greedy, best value first). The cells in between are
+            # reached by neighbour propagation, with a better warm start than
+            # a trajectory point, and get their own global-stage point in the
+            # starting population then (see ActivationJob).
+            covered = set()
+            for idx in activation_job_created_for_grid_points | set(self.population) | self.pending_activation_indices:
+                covered.update(self._get_valid_neighbors(idx, include_center=True))
             for grid_idx, (val, point) in sorted(cell_best.items(), key=lambda kv: -kv[1][0]):
-                if (grid_idx in activation_job_created_for_grid_points) or \
-                   (grid_idx in self.population) or (grid_idx in self.pending_activation_indices):
+                if grid_idx in covered:
                     continue
+                covered.update(self._get_valid_neighbors(grid_idx, include_center=True))
                 job = ActivationJob(
                     job_id=next_job_id,
                     sampler=self,
