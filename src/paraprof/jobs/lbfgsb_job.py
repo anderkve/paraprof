@@ -88,6 +88,12 @@ class LBFGSBJob(Job):
         self.gradient_components = {}
         self.pending_grad_evals = 0
         self.current_gradient = None
+        # Derived quantities at the current point and at the finite-difference
+        # points of the last gradient (derived mode: the snap step after the
+        # polish needs the Jacobian of q); None where unknown.
+        self._current_derived = self.sampler._cached_derived_full(start_params_full) if start_params_full is not None else None
+        self._grad_derived = {}
+        self._grad_base_derived = None
         # User gradient sliced to opt_dims, in the objective frame; NaN = "use FD".
         self._user_grad_opt = None
 
@@ -130,6 +136,53 @@ class LBFGSBJob(Job):
         if self.grid_idx is None:
             return partial_params
         return self.sampler._construct_params(self.grid_idx, partial_params)
+
+    def _value(self, result):
+        """The fitness this job optimises for an evaluation result: the target
+        value, or in derived mode the cell-anchored penalised value."""
+        return self.sampler.fitness_for_cell(result, self.grid_idx)
+
+    def _derived_snap_point(self):
+        """Derived mode: the end point of the polish projected back into its
+        cell with the finite-difference Jacobian of q from the last gradient;
+        None if the point is inside the cell or the Jacobian is unavailable."""
+        sampler = self.sampler
+        x_full = self._construct_full_params_for_task(self.current_params)
+        d = self._current_derived
+        if d is None:
+            d = sampler._cached_derived_full(x_full)
+        if d is None or self._grad_base_derived is None:
+            return None
+        idx = sampler.derived_idx
+        q = np.asarray(d, dtype=float)[idx]
+        lo, hi = [], []
+        for ax, k in zip(sampler.grid_axes, self.grid_idx):
+            w = (ax[-1] - ax[0]) / max(len(ax) - 1, 1)
+            lo.append(ax[k] - 0.48 * w)
+            hi.append(ax[k] + 0.48 * w)
+        lo, hi = np.array(lo), np.array(hi)
+        if np.all(q >= lo) and np.all(q <= hi):
+            return None
+        n = len(self.current_params)
+        J = np.zeros((len(idx), n))
+        base = np.asarray(self._grad_base_derived, dtype=float)[idx]
+        for i in range(n):
+            ent = self._grad_derived.get((i, 0))
+            if ent is None or ent[0] is None or ent[1] == 0:
+                return None
+            J[:, i] = (np.asarray(ent[0], dtype=float)[idx] - base) / ent[1]
+        if not np.all(np.isfinite(J)):
+            return None
+        t = np.clip(q, lo, hi)
+        JJt = J @ J.T
+        try:
+            delta = J.T @ np.linalg.solve(JJt, t - q)
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(delta)):
+            return None
+        x_part = sampler._ensure_bounds(np.asarray(self.current_params, dtype=float) + delta, list(self.opt_dims))
+        return self._construct_full_params_for_task(x_part)
 
     def _get_partial_params_from_full(self, full_params):
         """Slice a full parameter vector down to opt_dims."""
@@ -243,12 +296,13 @@ class LBFGSBJob(Job):
         new_tasks = []
 
         if self.status == 'NEEDS_NEIGHBOR_TEST' and sub_type == 'LBFGS_NEIGHBOR_TEST':
-            neighbor_fitness = result['target_val']
+            neighbor_fitness = self._value(result)
 
             if neighbor_fitness > self.start_fitness:
                 self.current_params = self.neighbor_params_to_test
                 self.current_fitness = neighbor_fitness
                 self.current_objective = -neighbor_fitness
+                self._current_derived = result.get('derived')
                 user_grad_for_current = result.get('user_gradient')
             else:
                 # Fall back to our own params; discard the gradient since it
@@ -262,9 +316,10 @@ class LBFGSBJob(Job):
             new_tasks = self._calculate_gradient_tasks(user_grad_full=user_grad_for_current)
 
         elif self.status == 'NEEDS_INITIAL_F' and sub_type == 'LBFGS_INITIAL_F':
-            self.current_fitness = result['target_val']
+            self.current_fitness = self._value(result)
             self.current_objective = -self.current_fitness
             self.current_params = self._get_partial_params_from_full(result['params'])
+            self._current_derived = result.get('derived')
 
             self.status = 'NEEDS_GRADIENT'
             new_tasks = self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
@@ -298,6 +353,8 @@ class LBFGSBJob(Job):
         tasks = []
         x = self.current_params
         self.gradient_components = {}
+        self._grad_derived = {}
+        self._grad_base_derived = self._current_derived
 
         # Per-dim step tied to the scale of the metric, so the difference is
         # taken over the same fraction of the local length scale in every
@@ -345,7 +402,8 @@ class LBFGSBJob(Job):
         dim, k = context['dim'], context['k']
 
         # (objective value, FD step actually taken)
-        self.gradient_components[(dim, k)] = (-result['target_val'], context['step'])
+        self.gradient_components[(dim, k)] = (-self._value(result), context['step'])
+        self._grad_derived[(dim, k)] = (result.get('derived'), context['step'])
         self.pending_grad_evals -= 1
 
         # Check if all components for the gradient have been computed
@@ -427,7 +485,7 @@ class LBFGSBJob(Job):
 
     def _process_curvature_result(self, result):
         context = result['context']
-        self.curvature_components[context['dim']] = (-result['target_val'], context['step'])
+        self.curvature_components[context['dim']] = (-self._value(result), context['step'])
         self.pending_curvature_evals -= 1
         if self.pending_curvature_evals == 0:
             self._set_scale_from_curvature()
@@ -549,7 +607,7 @@ class LBFGSBJob(Job):
 
     def _process_line_search_result(self, result):
         """Handle a line-search result; accept, shrink alpha, or fail."""
-        f_new = -result['target_val']
+        f_new = -self._value(result)
         alpha = result['context']['alpha']
 
         x_old = self.current_params
@@ -577,6 +635,7 @@ class LBFGSBJob(Job):
                 self.converged = bool(reached_ftol)
                 self.current_params = x_new_bounded
                 self.current_fitness = -f_new
+                self._current_derived = result.get('derived')
                 return []
 
             # Stash s_k and g_old so history is updated only after the next
@@ -587,6 +646,7 @@ class LBFGSBJob(Job):
             self.current_params = x_new_bounded
             self.current_fitness = -f_new
             self.current_objective = f_new
+            self._current_derived = result.get('derived')
 
             self.status = 'NEEDS_GRADIENT'
             return self._calculate_gradient_tasks(user_grad_full=result.get('user_gradient'))
@@ -680,6 +740,12 @@ class LBFGSBJob(Job):
 
                     full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
                     self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
+
+            if self.sampler.derived_mode and self.sampler.derived_snap:
+                snap = self._derived_snap_point()
+                if snap is not None:
+                    from .derived_snap_job import DerivedSnapJob
+                    return DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap), next_job_id + 1
 
         elif self.type == 'REFINEMENT_LBFGSB':
             # Refinement cells skip DE and get a minimal population state here.

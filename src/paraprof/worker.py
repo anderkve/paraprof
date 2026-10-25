@@ -91,8 +91,14 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
         context = task['context']
 
         error_message = None
+        derived = None
         try:
             target_val = target_func(params)
+            # A target may return (logL, derived) where derived is an array-like
+            # or a {name: value} dict of derived quantities (see
+            # ProfileProjector(derived_names=...)).
+            if isinstance(target_val, (tuple, list)) and len(target_val) == 2:
+                target_val, derived = target_val
         except Exception as e:
             logger.error(f"Error evaluating target function at params {params}: {e}")
             target_val = -np.inf
@@ -128,6 +134,7 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
         context['worker_rank'] = myrank
         result = {
             'target_val': target_val,
+            'derived': derived,
             'params': params,
             'context': context,
             'error': error_message,

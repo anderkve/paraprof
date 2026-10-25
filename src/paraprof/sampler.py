@@ -138,6 +138,9 @@ class ProfileProjector:
                  volume_sampling=None,
                  # Parameter naming (optional, enables string dims in projections)
                  parameter_names=None,
+                 # Names of the derived quantities the target returns alongside logL
+                 # (enables projections over derived quantities, see _reset_for_new_projection)
+                 derived_names=None,
                  # Advanced configuration (optional)
                  advanced_config=None):
         """
@@ -411,10 +414,31 @@ class ProfileProjector:
         for i, proj in enumerate(projections):
             if not isinstance(proj, dict):
                 raise InvalidProjectionError(f"Projection {i} must be a dictionary", projection=proj)
-            if 'dims' not in proj:
-                raise InvalidProjectionError(f"Projection {i} missing 'dims' key", projection=proj)
             if 'grid_points' not in proj:
                 raise InvalidProjectionError(f"Projection {i} missing 'grid_points' key", projection=proj)
+            if 'derived' in proj:
+                # Projection over derived quantities: the grid is laid over the
+                # named derived quantities, every input parameter is profiled.
+                if not derived_names:
+                    raise InvalidProjectionError(
+                        f"Projection {i} is over derived quantities but derived_names was not given",
+                        projection=proj)
+                unknown = [d for d in proj['derived'] if d not in derived_names]
+                if unknown:
+                    raise InvalidProjectionError(
+                        f"Projection {i}: derived quantities {unknown} are not in derived_names {list(derived_names)}",
+                        projection=proj)
+                if 'ranges' not in proj or len(proj['ranges']) != len(proj['derived']):
+                    raise InvalidProjectionError(
+                        f"Projection {i} over derived quantities needs 'ranges', one [lo, hi] per derived quantity",
+                        projection=proj)
+                if len(proj['grid_points']) != len(proj['derived']):
+                    raise InvalidProjectionError(
+                        f"Projection {i}: grid_points must have one entry per derived quantity", projection=proj)
+                proj['dims'] = []
+                continue
+            if 'dims' not in proj:
+                raise InvalidProjectionError(f"Projection {i} missing 'dims' key", projection=proj)
 
             dims = proj['dims']
             grid_points = proj['grid_points']
@@ -517,6 +541,15 @@ class ProfileProjector:
                 'pool_seeded_initial_maxima': True,
             },
 
+            # Projections over derived quantities: the anchoring penalty is
+            # penalty_scale * roi_threshold per squared cell width outside the
+            # cell; snap adds one evaluation after each polish that ends
+            # outside its cell, at the point projected back into it.
+            'derived': {
+                'penalty_scale': 1.0,
+                'snap': True,
+            },
+
             'activation': {
                 'global_stage_seeding': 'cells',
             },
@@ -582,6 +615,7 @@ class ProfileProjector:
         self.de_num_generations = config['de']['num_generations']
         self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
         self.de_allow_early_DE_exit = config['de']['allow_early_DE_exit']
+        self._cfg_allow_early_DE_exit = self.de_allow_early_DE_exit     # restored per projection (derived mode turns it off)
 
         # L-BFGS-B configuration
         self.lbfgsb_ftol = config['lbfgsb']['ftol']
@@ -607,6 +641,21 @@ class ProfileProjector:
         self.clustering_min_samples = config['clustering']['min_samples']
         self.clustering_eps_multiplier = config['clustering']['eps_multiplier']
         self.clustering_projection_weight = config['clustering']['projection_weight']
+
+        # --- Derived quantities (projections over functions of the inputs) ---
+        # Every evaluation result may carry a 'derived' array; _register_target_call
+        # caches it by the evaluated point so cells can be looked up for any
+        # evaluated point. In derived mode (set per projection) the search runs
+        # on the penalised fitness f - kappa * dist^2(q, cell) and the reported
+        # cell value is the best f among the evaluations that landed in the cell.
+        self.derived_names = list(derived_names) if derived_names else None
+        self._derived_cache = {}
+        self.derived_cell_best = {}
+        self.derived_mode = False
+        self.derived_idx = []
+        self.derived_ranges = None
+        self.derived_penalty_scale = config['derived']['penalty_scale']
+        self.derived_snap = config['derived']['snap']
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -676,6 +725,7 @@ class ProfileProjector:
         # wrong optimum but slipped past the fitness-only patching filter.
         sc = config['suspect_recheck']
         self.suspect_recheck_enabled = sc['enabled']
+        self._cfg_suspect_recheck_enabled = self.suspect_recheck_enabled   # restored per projection (derived mode turns it off)
         self.max_suspect_waves = sc['max_waves']
         self.suspect_param_k = sc['param_k']
         self.suspect_max_fraction = sc['max_fraction']
@@ -806,8 +856,24 @@ class ProfileProjector:
             if resolved is not None:
                 projection_config['dims'] = resolved
 
+        self.derived_mode = 'derived' in projection_config
+        if self.derived_mode:
+            names = list(projection_config['derived'])
+            self.derived_idx = [self.derived_names.index(n) for n in names]
+            self.derived_ranges = np.asarray(projection_config['ranges'], dtype=float).reshape(len(names), 2)
+            projection_config['dims'] = []
+            self.derived_cell_best = {}
+        # Stages that rebuild a cell's vector from a neighbour's profiled vector
+        # (patching, recheck) and the one-generation DE exit have no meaning
+        # when the cell is defined through q(x): off in derived mode.
+        self.de_allow_early_DE_exit = False if self.derived_mode else self._cfg_allow_early_DE_exit
+        self.suspect_recheck_enabled = False if self.derived_mode else self._cfg_suspect_recheck_enabled
+
         self.logger.info("=" * 80)
-        self.logger.info(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
+        if self.derived_mode:
+            self.logger.info(f"--- Configuring for projection on derived quantities: {projection_config['derived']} ---")
+        else:
+            self.logger.info(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
         self.logger.info("=" * 80)
 
         self.projection_dims = sorted(projection_config['dims'])
@@ -817,7 +883,7 @@ class ProfileProjector:
             grid_points[i] += 1
         self.grid_points_per_dim = grid_points
 
-        if len(self.projection_dims) != len(self.grid_points_per_dim):
+        if not self.derived_mode and len(self.projection_dims) != len(self.grid_points_per_dim):
             raise ValueError("Length of projection_dims must match length of grid_points_per_dim.")
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
@@ -836,8 +902,8 @@ class ProfileProjector:
             )
 
         # Read patching configuration
-        self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True)
-        self.patch_refined_grid = projection_config.get('patch_refined_grid', False)
+        self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True) and not self.derived_mode
+        self.patch_refined_grid = projection_config.get('patch_refined_grid', False) and not self.derived_mode
 
         # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
@@ -848,7 +914,7 @@ class ProfileProjector:
             self.logger.info(f"  Patching on refined grid: {'Enabled' if self.patch_refined_grid else 'Disabled'}")
 
         self.profiled_dims = [d for d in range(self.dims) if d not in self.projection_dims]
-        self.n_proj_dims = len(self.projection_dims)
+        self.n_proj_dims = len(self.grid_points_per_dim)   # grid dimensionality (equals len(projection_dims) unless derived mode)
         self.n_prof_dims = len(self.profiled_dims)
 
         # Detect direct evaluation mode (no profiled dimensions to optimize)
@@ -862,7 +928,10 @@ class ProfileProjector:
 
         self.grid_shape = tuple(self.grid_points_per_dim)
 
-        self.grid_axes = [np.linspace(self.bounds[d, 0], self.bounds[d, 1], n) for d, n in zip(self.projection_dims, self.grid_points_per_dim)]
+        if self.derived_mode:
+            self.grid_axes = [np.linspace(lo, hi, n) for (lo, hi), n in zip(self.derived_ranges, self.grid_points_per_dim)]
+        else:
+            self.grid_axes = [np.linspace(self.bounds[d, 0], self.bounds[d, 1], n) for d, n in zip(self.projection_dims, self.grid_points_per_dim)]
         self.profile_likelihood_grid = {} # Use a dict for sparse grid
 
         # Reset state variables
@@ -941,6 +1010,19 @@ class ProfileProjector:
                     'profiled_params': np.empty(0),
                     'likelihood': state['best_fitness'],
                     'full_params': state['full_params'].copy()
+                }
+            elif self.derived_mode:
+                # The reported value is the best evaluation that landed in the
+                # cell; a cell no evaluation entered is left out (unattainable
+                # or not converged into).
+                rec = self.derived_cell_best.get(grid_idx)
+                if rec is None:
+                    continue
+                solutions[grid_idx] = {
+                    'profiled_params': rec[1].copy(),
+                    'likelihood': rec[0],
+                    'full_params': rec[1].copy(),
+                    'derived': rec[2].copy(),
                 }
             else:
                 best_ind_idx = np.argmax(state['fitnesses'])
@@ -1163,11 +1245,19 @@ class ProfileProjector:
             self.logger.warning(f"Warning: Could not write to sample file: {e}")
 
 
-    def _register_target_call(self, params, target_val, phase=PHASE_UNKNOWN):
+    def _register_target_call(self, params, target_val, phase=PHASE_UNKNOWN, derived=None):
         """Record a completed target call (master only). Global max is updated
         by jobs. ``phase`` (see :mod:`paraprof.phases`) tags the sample-log row
-        with the algorithm stage that produced the point."""
+        with the algorithm stage that produced the point. ``derived`` is the
+        array of derived quantities the target returned with this evaluation,
+        cached by point; in derived mode it also updates the in-cell record."""
         self.target_calls += 1
+        if derived is not None and self.derived_names:
+            d = self._as_derived_array(derived)
+            if d is not None:
+                self._derived_cache[np.ascontiguousarray(params, dtype=float).tobytes()] = d
+                if self.derived_mode:
+                    self._note_derived_sample(params, target_val, d)
         if self.samples_output_file:
             self.samples_buffer.append((params, target_val, phase))
             if len(self.samples_buffer) >= self.sample_buffer_size:
@@ -1178,7 +1268,12 @@ class ProfileProjector:
         if grid_axes is None:
             grid_axes = self.grid_axes
 
-        grid_coords = point[self.projection_dims]
+        if self.derived_mode:
+            grid_coords = self._derived_coords_of(point)
+            if grid_coords is None:
+                return None
+        else:
+            grid_coords = point[self.projection_dims]
         indices = []
         for i, coord in enumerate(grid_coords):
             axis = grid_axes[i]
@@ -1189,6 +1284,100 @@ class ProfileProjector:
         return tuple(indices)
 
 
+    # ---- derived quantities -------------------------------------------------
+
+    def _as_derived_array(self, derived):
+        """Normalise a target's derived output (array-like or {name: value}) to
+        a float array in derived_names order; None if it cannot be read."""
+        try:
+            if isinstance(derived, dict):
+                return np.array([float(derived[n]) for n in self.derived_names], dtype=float)
+            d = np.asarray(derived, dtype=float).ravel()
+            if d.shape[0] != len(self.derived_names):
+                return None
+            return d
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _cached_derived_full(self, params):
+        """The full derived array of an evaluated point from the cache, or None."""
+        return self._derived_cache.get(np.ascontiguousarray(params, dtype=float).tobytes())
+
+    def _cached_derived_coords(self, params):
+        """Projection coordinates (the current projection's derived quantities)
+        of an evaluated point, from the cache; None if unknown."""
+        d = self._derived_cache.get(np.ascontiguousarray(params, dtype=float).tobytes())
+        if d is None:
+            return None
+        return d[self.derived_idx]
+
+    def _derived_coords_of(self, params):
+        """As _cached_derived_coords, evaluating the target on the master for a
+        point that was never evaluated (counted like any other evaluation)."""
+        q = self._cached_derived_coords(params)
+        if q is not None or self.target_func is None:
+            return q
+        try:
+            out = self.target_func(np.asarray(params, dtype=float))
+        except Exception:
+            return None
+        if not (isinstance(out, (tuple, list)) and len(out) == 2):
+            return None
+        val, derived = out
+        self._register_target_call(np.asarray(params, dtype=float), float(val), phase=PHASE_UNKNOWN, derived=derived)
+        return self._cached_derived_coords(params)
+
+    def _derived_cell_distance(self, q, grid_idx):
+        """Distance of the derived coordinates q outside the cell of node
+        grid_idx, in cell widths per axis (zero inside the cell)."""
+        d2 = 0.0
+        for j, (ax, idx) in enumerate(zip(self.grid_axes, grid_idx)):
+            w = (ax[-1] - ax[0]) / max(len(ax) - 1, 1)
+            if w <= 0:
+                continue
+            out = abs(q[j] - ax[idx]) / w - 0.5
+            if out > 0:
+                d2 += out * out
+        return d2
+
+    def fitness_for_cell(self, result, grid_idx):
+        """The fitness a cell-anchored job sees for an evaluation: the target
+        value, minus the anchoring penalty in derived mode."""
+        v = result['target_val']
+        if not self.derived_mode or grid_idx is None:
+            return v
+        d = result.get('derived')
+        d = self._as_derived_array(d) if d is not None else None
+        if d is None:
+            return -np.inf
+        q = d[self.derived_idx]
+        if not np.all(np.isfinite(q)):
+            return -np.inf
+        return v - self.derived_penalty_scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+
+    def _note_derived_sample(self, params, target_val, derived):
+        """Derived mode: record an evaluation as the best value seen inside
+        its cell, and keep the global maximum current from raw values."""
+        if not np.isfinite(target_val):
+            return
+        if target_val > self.global_max_target_val:
+            self.global_max_target_val = target_val
+        q = derived[self.derived_idx]
+        if not np.all(np.isfinite(q)):
+            return
+        idx = []
+        for j, ax in enumerate(self.grid_axes):
+            n = len(ax)
+            pos = (q[j] - ax[0]) / (ax[-1] - ax[0]) * (n - 1)
+            k = int(round(pos))
+            if k < 0 or k > n - 1 or abs(pos - k) > 0.5 + 1e-9:
+                return
+            idx.append(k)
+        idx = tuple(idx)
+        cur = self.derived_cell_best.get(idx)
+        if cur is None or target_val > cur[0]:
+            self.derived_cell_best[idx] = (float(target_val), np.array(params, dtype=float), np.array(q, dtype=float))
+
     def _get_grid_coords_from_indices(self, grid_idx, grid_axes=None):
         """Projection-space coordinates at the given grid indices."""
         if grid_axes is None:
@@ -1198,7 +1387,8 @@ class ProfileProjector:
     def _construct_params(self, grid_idx, profiled_params, grid_axes=None):
         """Assemble a full parameter vector from a grid index + profiled-dim values."""
         full_params = np.zeros(self.dims)
-        full_params[self.projection_dims] = self._get_grid_coords_from_indices(grid_idx, grid_axes)
+        if not self.derived_mode:       # derived mode: no input coordinate is fixed by the cell
+            full_params[self.projection_dims] = self._get_grid_coords_from_indices(grid_idx, grid_axes)
         full_params[self.profiled_dims] = profiled_params
         return full_params
 
@@ -1311,11 +1501,23 @@ class ProfileProjector:
                              for _f, _c, entry in self.global_solution_pool])
             proj_dims = self.projection_dims
             profiled_dims = self.profiled_dims
-            extent = self.bounds[proj_dims, 1] - self.bounds[proj_dims, 0]
+            if self.derived_mode:
+                # projection coordinates are the cached derived values; entries
+                # without them (never evaluated with derived output) are dropped
+                qs = [self._cached_derived_coords(fp) for fp in full]
+                keep = [i for i, q in enumerate(qs) if q is not None]
+                if not keep:
+                    return None
+                proj = np.array([qs[i] for i in keep])
+                full = full[keep]
+                extent = self.derived_ranges[:, 1] - self.derived_ranges[:, 0]
+            else:
+                proj = full[:, proj_dims]
+                extent = self.bounds[proj_dims, 1] - self.bounds[proj_dims, 0]
             extent = np.where(extent > 0, extent, 1.0)
             cache = {
                 'size': n_pool,
-                'proj': full[:, proj_dims],
+                'proj': proj,
                 'profiled': full[:, profiled_dims],
                 'extent': extent,
             }
@@ -1325,7 +1527,7 @@ class ProfileProjector:
         deltas = (cache['proj'] - target) / cache['extent']
         dists = np.einsum('ij,ij->i', deltas, deltas)
 
-        n_cached = cache['size']
+        n_cached = len(cache['proj'])
         k = min(n_samples, n_cached)
         if k < n_cached:
             nearest = np.argpartition(dists, k - 1)[:k]
@@ -1359,6 +1561,8 @@ class ProfileProjector:
                           & (params <= self.bounds[:, 1])):
                 continue
             grid_idx = self._get_grid_indices_from_point(params)
+            if grid_idx is None:
+                continue
             cur = best_per_cell.get(grid_idx)
             if cur is None or entry['fitness'] > cur['fitness']:
                 best_per_cell[grid_idx] = entry
@@ -1396,6 +1600,9 @@ class ProfileProjector:
             self.logger.info("  No warm-start file found or provided. Skipping warm start.")
             return
 
+        if self.derived_mode:
+            self.logger.info("  Warm start from a sample file is not available for projections over derived quantities. Skipping.")
+            return
         self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
             samples = read_samples(warm_start_file)
@@ -1673,6 +1880,8 @@ class ProfileProjector:
                 if val < cut:
                     continue
                 idx = self._get_grid_indices_from_point(pt)
+                if idx is None:
+                    continue
                 if idx not in best or val > best[idx][0]:
                     best[idx] = (val, pt)
         self.global_stage_cell_best = best
@@ -1694,7 +1903,7 @@ class ProfileProjector:
             point = maximum['point']
             grid_idx = self._get_grid_indices_from_point(point)
 
-            if grid_idx in activation_job_created_for_grid_points:
+            if grid_idx is None or grid_idx in activation_job_created_for_grid_points:
                 continue
 
             for neighbor_idx in self._get_valid_neighbors(grid_idx, include_center=True):

@@ -151,7 +151,7 @@ class DEGridPointJob(Job):
     def process_result(self, result):
         """Compare trial fitness with target and store successful F/CR."""
         point_idx = result['context']['point_idx']
-        trial_fitness = result['target_val']
+        trial_fitness = self.sampler.fitness_for_cell(result, self.grid_idx)
 
         if point_idx not in self.trial_info:
             logger.warning(f"Warning: Received result for DE point_idx {point_idx} with no trial info. Ignoring.")

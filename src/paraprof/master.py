@@ -290,7 +290,8 @@ def _volume_eval_batch(comm, sampler, logger, items, myrank):
         _log_worker_error(result, sampler, logger)
         target_val = result['target_val']
         sampler._register_target_call(
-            result['params'], target_val, phase=phase_for_job_type('VOLUME'))
+            result['params'], target_val, phase=phase_for_job_type('VOLUME'),
+            derived=result.get('derived'))
         if target_val > sampler.global_max_target_val:
             logger.warning(
                 f"--- Volume sampling found a NEW GLOBAL MAX: "
@@ -573,7 +574,7 @@ def master_main(comm, sampler,
     # Helper function to queue tasks
     def _queue_tasks(tasks, job_type):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB', 'DERIVED_SNAP']:
             high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -949,7 +950,8 @@ def master_main(comm, sampler,
             _log_user_gradient_error(result, sampler, logger)
             sampler._register_target_call(
                 result['params'], result['target_val'],
-                phase=phase_for_job_type(result['context'].get('type')))
+                phase=phase_for_job_type(result['context'].get('type')),
+                derived=result.get('derived'))
             if result['context'].get('type') == 'INITIAL_OPTIMIZATION':
                 sampler.record_global_stage_point(result['params'], result['target_val'])
 

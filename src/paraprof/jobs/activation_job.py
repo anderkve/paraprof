@@ -108,7 +108,7 @@ class ActivationJob(Job):
         ]
 
     def process_result(self, result):
-        self.fitnesses[result['context']['point_idx']] = result['target_val']
+        self.fitnesses[result['context']['point_idx']] = self.sampler.fitness_for_cell(result, self.grid_idx)
         self.evals_remaining -= 1
         if self.evals_remaining == 0:
             self.success = True
