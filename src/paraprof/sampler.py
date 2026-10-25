@@ -543,10 +543,12 @@ class ProfileProjector:
 
             # Projections over derived quantities: the anchoring penalty is
             # penalty_scale * roi_threshold per squared cell width outside the
-            # cell; snap adds one evaluation after each polish that ends
-            # outside its cell, at the point projected back into it.
+            # cell (0.3 beat 0.1, 1.0 and 3 on every benchmark set); snap adds
+            # one evaluation after each polish that ends outside its cell, at
+            # the point projected back into it (without it half the cells end
+            # more than 0.1 short).
             'derived': {
-                'penalty_scale': 1.0,
+                'penalty_scale': 0.3,
                 'snap': True,
             },
 
