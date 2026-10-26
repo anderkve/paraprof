@@ -71,7 +71,6 @@ class TestCellBookkeeping:
         assert abs(s.fitness_for_cell(res, (6, 6)) - (-1.0 - s.derived_penalty_scale * s.roi_threshold)) < 1e-12
         assert s.fitness_for_cell(res, None) == -1.0
         assert s.fitness_for_cell({'target_val': -1.0, 'derived': None}, (6, 6)) == -np.inf
-        assert abs(s.fitness_for_cell(res, (6, 6), penalty_scale=2.0) - (-1.0 - 2.0 * s.roi_threshold)) < 1e-12
 
     def test_register_caches_derived_and_records_in_cell_best(self):
         s = _sampler()

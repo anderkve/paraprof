@@ -311,9 +311,7 @@ box in the derived quantities. The stages run as in input space, with these diff
   derived mode.
 
 Knobs in `advanced_config['derived']`: `penalty_scale` (0.3), `snap` (True), `project_margin`
-(0.005 cell widths), `edge_margin` (0.002; `None` turns the finishing evaluation off),
-`second_stage_factor` (0; a positive value adds a second polish with the penalty multiplied by
-it after a polish that ended outside its cell) and `second_stage_max_iter` (100). On the 4-D
+(0.005 cell widths) and `edge_margin` (0.002; `None` turns the finishing evaluation off). On the 4-D
 Himmelblau function profiled over linear, product and nonlinear maps of its inputs, the derived
 mode gets 99% of the cells of the region of interest within 0.1 of the constrained maximum at a
 few times the cost of an input-space scan; binning the evaluations of an input-space run onto

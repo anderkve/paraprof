@@ -95,10 +95,6 @@ class LBFGSBJob(Job):
         self._grad_derived = {}
         self._grad_base_derived = None
         self._jac_cache = None
-        # Derived mode: the anchoring penalty scale this run uses (None = the
-        # sampler's) and which stage it is (2 = the stiff polish after a snap).
-        self.penalty_scale = None
-        self.derived_stage = 1
         # The point the current line-search task evaluates; set by
         # _calculate_line_search_task.
         self._ls_trial = None
@@ -156,7 +152,7 @@ class LBFGSBJob(Job):
     def _value(self, result):
         """The fitness this job optimises for an evaluation result: the target
         value, or in derived mode the cell-anchored penalised value."""
-        return self.sampler.fitness_for_cell(result, self.grid_idx, self.penalty_scale)
+        return self.sampler.fitness_for_cell(result, self.grid_idx)
 
     def _last_gradient_jacobian(self):
         """Derived mode: the finite-difference Jacobian (m x n) of the
@@ -206,8 +202,7 @@ class LBFGSBJob(Job):
         q0 = np.asarray(self._grad_base_derived, dtype=float)[sampler.derived_idx]
         viol0 = sampler._derived_margin_violation(q0, self.grid_idx, sampler.derived_project_margin)
         if self._merit_mu is None:
-            scale = sampler.derived_penalty_scale if self.penalty_scale is None else self.penalty_scale
-            self._merit_mu = scale * sampler.roi_threshold
+            self._merit_mu = sampler.derived_penalty_scale * sampler.roi_threshold
         gd = float(np.dot(grad, d))
         if viol0 > 0 and gd - self._merit_mu * viol0 > -1e-12:
             self._merit_mu = max(self._merit_mu, 2.0 * max(gd, 0.0) / viol0 + self._merit_mu)
@@ -899,7 +894,7 @@ class LBFGSBJob(Job):
                         margin = self.sampler.derived_project_margin
                         snap = self.sampler._project_into_cell(x_full, q, J, grid_idx, margin=margin)
                         if snap is not None:
-                            return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap, stage=self.derived_stage),
+                            return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap),
                                     next_job_id + 1)
                         # Converged on a face of the shrunk cell: one evaluation
                         # just inside the true face recovers most of the margin.
@@ -907,7 +902,7 @@ class LBFGSBJob(Job):
                         if self.converged and edge is not None:
                             pt = self.sampler._edge_point(x_full, q, J, grid_idx, margin, edge)
                             if pt is not None:
-                                return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, pt, stage=2),
+                                return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, pt),
                                         next_job_id + 1)
 
         elif self.type == 'REFINEMENT_LBFGSB':

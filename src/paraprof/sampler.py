@@ -339,8 +339,6 @@ class ProfileProjector:
                     'snap': bool,                   # Default: True (the polish constrains its steps to the cell with the Jacobian of the derived quantities)
                     'project_margin': float,        # Default: 0.005 (how far inside the cell's faces the polish keeps its steps, in cell widths)
                     'edge_margin': float,           # Default: 0.002 (a polish that converged on a face ends with one evaluation this far inside the true face; None = off)
-                    'second_stage_factor': float,   # Default: 0 (penalty multiplier of a second polish after a polish that ended outside its cell; 0 = none)
-                    'second_stage_max_iter': int,   # Default: 100 (iteration cap of that polish)
                 },
             }
 
@@ -576,16 +574,12 @@ class ProfileProjector:
             # them project_margin cell widths inside its faces, and ends with
             # one evaluation edge_margin inside the true face when it converged
             # on one; a polish that still ends outside gets one evaluation at
-            # the point projected back in, and then a second polish with the
-            # penalty times second_stage_factor (0 = none; the constrained
-            # steps made it unnecessary on the benchmark sets).
+            # the point projected back in.
             'derived': {
                 'penalty_scale': 0.3,
                 'snap': True,
                 'project_margin': 0.005,
                 'edge_margin': 0.002,          # None = off
-                'second_stage_factor': 0.0,
-                'second_stage_max_iter': 100,
             },
 
             'activation': {
@@ -694,8 +688,6 @@ class ProfileProjector:
         self.derived_ranges = None
         self.derived_penalty_scale = config['derived']['penalty_scale']
         self.derived_snap = config['derived']['snap']
-        self.derived_second_stage_factor = config['derived']['second_stage_factor']
-        self.derived_second_stage_max_iter = config['derived']['second_stage_max_iter']
         self.derived_project_margin = config['derived']['project_margin']
         self.derived_edge_margin = config['derived']['edge_margin']
 
@@ -1390,10 +1382,9 @@ class ProfileProjector:
                 d2 += out * out
         return d2
 
-    def fitness_for_cell(self, result, grid_idx, penalty_scale=None):
+    def fitness_for_cell(self, result, grid_idx):
         """The fitness a cell-anchored job sees for an evaluation: the target
-        value, minus the anchoring penalty in derived mode (``penalty_scale``
-        overrides the configured scale, as the second-stage polish does)."""
+        value, minus the anchoring penalty in derived mode."""
         v = result['target_val']
         if not self.derived_mode or grid_idx is None:
             return v
@@ -1404,13 +1395,11 @@ class ProfileProjector:
         q = d[self.derived_idx]
         if not np.all(np.isfinite(q)):
             return -np.inf
-        scale = self.derived_penalty_scale if penalty_scale is None else penalty_scale
-        return v - scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+        return v - self.derived_penalty_scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
 
-    def derived_penalised_value(self, value, q, grid_idx, penalty_scale=None):
+    def derived_penalised_value(self, value, q, grid_idx):
         """The penalised value of a known (value, q) pair for a cell."""
-        scale = self.derived_penalty_scale if penalty_scale is None else penalty_scale
-        return value - scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+        return value - self.derived_penalty_scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
 
     def _cell_box(self, grid_idx):
         """Lower and upper corners of the node-centred cell in derived coordinates."""
