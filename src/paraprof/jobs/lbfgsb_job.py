@@ -344,8 +344,10 @@ class LBFGSBJob(Job):
                         if neighbor_state['best_fitness'] > best_neighbor_fitness:
                             best_neighbor_fitness = neighbor_state['best_fitness']
                             best_neighbor_state = neighbor_state
+                            best_neighbor_idx_found = neighbor_idx
 
             if best_neighbor_state:
+                best_neighbor_idx = best_neighbor_idx_found
                 # 1. Seed the history (post-DE polish only; see class docstring)
                 if self.type == 'LBFGSB':
                     self.s_hist.clear()
@@ -353,9 +355,11 @@ class LBFGSBJob(Job):
                     self.s_hist.extend(best_neighbor_state['optimizer_state']['s'])
                     self.y_hist.extend(best_neighbor_state['optimizer_state']['y'])
 
-                # 2. Get neighbor's best params to test
+                # 2. Get neighbor's best params to test (derived mode: moved
+                #    into this cell with the neighbour's Jacobian first)
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
-                self.neighbor_params_to_test = best_neighbor_state['profiled_params'][neighbor_best_idx]
+                self.neighbor_params_to_test = self.sampler._seed_for_cell(
+                    best_neighbor_idx, best_neighbor_state['profiled_params'][neighbor_best_idx], self.grid_idx)
 
                 # 3. Create a task to test these params at *our* grid point
                 full_params_test = self.sampler._construct_params(self.grid_idx, self.neighbor_params_to_test)

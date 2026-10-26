@@ -50,18 +50,23 @@ class ActivationJob(Job):
         )
 
         if self.warm_start_params is not None and n_from_neighbors > 0:
-            samples_list.append(self.warm_start_params)
+            # derived mode: the neighbour's optimum moved into this cell first
+            warm = self.sampler._seed_for_cell(None, self.warm_start_params, self.grid_idx)
+            samples_list.append(warm)
             for _ in range(n_from_neighbors - 1):
                 perturbation = np.random.normal(0, WARM_START_PERTURBATION_STD, size=self.n_prof_dims)
-                perturbed = self.warm_start_params + perturbation * (prof_bounds[:, 1] - prof_bounds[:, 0])
+                perturbed = warm + perturbation * (prof_bounds[:, 1] - prof_bounds[:, 0])
                 perturbed = self.sampler._ensure_bounds(perturbed, self.sampler.profiled_dims)
                 samples_list.append(perturbed)
         else:
             n_from_random += n_from_neighbors
 
         if self.sampler.derived_mode:
-            # pool points nearest to the cell in derived coordinates, on distinct branches
+            # pool points nearest to the cell in derived coordinates, on distinct
+            # branches, each moved into the cell with its own cell's Jacobian
             global_samples = self.sampler._branch_seeds_from_pool(self.grid_idx, n_from_global)
+            if global_samples is not None:
+                global_samples = np.array([self.sampler._seed_for_cell(None, g, self.grid_idx) for g in global_samples])
         else:
             global_samples = self.sampler._sample_from_global_pool(n_from_global)
         if global_samples is not None:
@@ -94,7 +99,7 @@ class ActivationJob(Job):
             cell_coords = self.sampler._get_grid_coords_from_indices(self.grid_idx)
             prox = self.sampler._sample_proximity_from_global_pool(1, cell_coords)
             if prox is not None and len(prox) > 0:
-                samples_list[-1] = prox[0]
+                samples_list[-1] = self.sampler._seed_for_cell(None, prox[0], self.grid_idx)
 
         self.all_profiled_params = np.array(samples_list)
         self.all_full_params = [

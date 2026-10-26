@@ -127,6 +127,13 @@ class TestCellBookkeeping:
                                 'optimizer_state': None, 'derived_jacobian': J}
         seed = s._seed_for_cell((8, 6), x, (9, 6))
         assert lo[0] <= _target(seed)[1][0] <= hi[0]
+        # without a source cell the point's own cell (or a neighbour with a Jacobian) supplies it
+        seed = s._seed_for_cell(None, x, (9, 6))
+        assert lo[0] <= _target(seed)[1][0] <= hi[0]
+        y = np.array([0.0, 0.0, 1.0, 0.0])                        # u = 1: cell (7, 6), no Jacobian of its own; (8, 6) is a neighbour
+        s._register_target_call(y, _target(y)[0], derived=np.array([1.0, 0.0]))
+        seed = s._seed_for_cell(None, y, (9, 6))
+        assert lo[0] <= _target(seed)[1][0] <= hi[0]
 
 
 def _drive(job, tasks=None):

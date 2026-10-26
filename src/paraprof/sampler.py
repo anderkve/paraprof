@@ -1475,19 +1475,58 @@ class ProfileProjector:
             return None
         return np.clip(np.asarray(x_full, dtype=float) + delta, self.bounds[:, 0], self.bounds[:, 1])
 
+    def _cell_of_cached_point(self, vec):
+        """Derived mode: the cell a cached evaluated point falls in (None when
+        its derived values are unknown or lie outside the grid)."""
+        q = self._cached_derived_coords(vec)
+        if q is None:
+            return None
+        idx = []
+        for j, ax in enumerate(self.grid_axes):
+            n = len(ax)
+            pos = (q[j] - ax[0]) / (ax[-1] - ax[0]) * (n - 1)
+            k = int(round(pos))
+            if k < 0 or k > n - 1 or abs(pos - k) > 0.5 + 1e-9:
+                return None
+            idx.append(k)
+        return tuple(idx)
+
+    def _stored_jacobian_near(self, idx):
+        """The Jacobian stored by the polish of cell ``idx``, or of one of its
+        Moore neighbours (the best-valued one); None when none is stored."""
+        if idx is None:
+            return None
+        st = self.population.get(idx)
+        if st is not None and st.get('derived_jacobian') is not None:
+            return st['derived_jacobian']
+        best, jac = -np.inf, None
+        for nb in self._get_valid_neighbors(idx):
+            st = self.population.get(nb)
+            if st is not None and st.get('derived_jacobian') is not None and st['best_fitness'] > best:
+                best, jac = st['best_fitness'], st['derived_jacobian']
+        return jac
+
     def _seed_for_cell(self, src_idx, vec, grid_idx):
-        """A seed vector taken from cell ``src_idx`` for cell ``grid_idx``. In
-        derived mode the vector is projected into the target cell with the
-        Jacobian stored by the source cell's polish (the raw vector when none
-        is stored); in input mode it is returned as is."""
+        """A seed vector for cell ``grid_idx``. In derived mode the vector is
+        projected into the target cell with the Jacobian stored by the polish
+        of the cell it came from (``src_idx``, or the cell its own derived
+        values place it in when None, or a neighbour of that cell), so that a
+        neighbour's optimum competes in the target cell on its own value
+        rather than through the anchoring penalty. The raw vector is returned
+        when no Jacobian is stored, and always in input mode."""
         if not self.derived_mode or src_idx == grid_idx:
             return vec
-        st = self.population.get(src_idx)
-        jac = st.get('derived_jacobian') if st else None
         q = self._cached_derived_coords(vec)
-        if jac is None or q is None:
+        if q is None:
             return vec
-        x = self._project_into_cell(vec, q, jac, grid_idx)
+        if src_idx is None:
+            src_idx = self._cell_of_cached_point(vec)
+            if src_idx == grid_idx:
+                return vec
+        jac = self._stored_jacobian_near(src_idx)
+        if jac is None:
+            return vec
+        x = self._project_into_cell(vec, q, jac, grid_idx, margin=self.derived_project_margin)
         return vec if x is None else x
 
     def _branch_seeds_from_pool(self, grid_idx, n):
