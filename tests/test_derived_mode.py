@@ -279,6 +279,7 @@ class TestRecheckPolishesOtherBasins:
         near = own + np.array([0.01, -0.01, 0.0, 0.0])             # the same basin, a hair away
         other = np.array([3.0, 3.0, -2.0, -2.0])                   # u = v = 1 too, far away in input space
         worse = np.array([-3.0, -3.0, 4.0, 4.0])                   # u = v = 1, but far below the tolerance
+        s.derived_recheck_max_polishes = 2                           # off by default
         job = SuspectRecheckJob(0, s, (7, 7), [own, near, other, worse], wave_number=0)
         fits = [val, val - 0.001, val - 0.5, val - 3.0]
         for i, (seed, f) in enumerate(zip(job.candidate_seeds, fits)):
