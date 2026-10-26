@@ -2868,6 +2868,19 @@ class ProfileProjector:
             return out
 
         roi_cutoff = self.global_max_target_val - self.roi_threshold
+        if self.derived_mode:
+            # A cell of a derived-plane projection can hold several basins of
+            # the inner problem (the preimage of a cell is a slab of the input
+            # space), and a chain of cells that followed the wrong one is as
+            # smooth as a correct chain, so the outlier test below cannot see
+            # it. Every cell of the region of interest is rechecked instead,
+            # with the neighbours' points moved into it; later waves then
+            # carry a better basin along the chain.
+            cells = sorted((idx for idx, st in self.population.items() if st['best_fitness'] >= roi_cutoff),
+                           key=lambda i: -self.population[i]['best_fitness'])
+            self.logger.info(f"--- Suspect detection (derived mode): all {len(cells)} ROI cells rechecked ---")
+            return cells
+
         extent = self._profiled_extent()
         param_d = {}
         for idx, st in self.population.items():
@@ -2958,7 +2971,7 @@ class ProfileProjector:
             pool_seeds = self._sample_proximity_from_global_pool(n_pool, target_coords)
             if pool_seeds is not None:
                 for s in pool_seeds:
-                    _add(s)
+                    _add(self._seed_for_cell(None, s, grid_idx))
 
         return seeds
 

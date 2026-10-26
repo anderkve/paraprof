@@ -243,6 +243,18 @@ class TestSampleLog:
         assert s2._cached_derived_coords(x).tolist() == d.tolist()
 
 
+class TestRecheckSelection:
+    def test_every_roi_cell_is_rechecked_in_derived_mode(self):
+        s = _sampler()
+        base = {'profiled_params': np.zeros((1, 4)), 'fitnesses': np.array([0.0]), 'status': 'optimized',
+                'improvement_history': [], 'last_update_gen': 0, 'optimizer_state': None}
+        s.global_max_target_val = 0.0
+        for idx, f in [((6, 6), 0.0), ((7, 6), -1.0), ((8, 6), -3.9), ((9, 6), -4.5)]:
+            s.population[idx] = dict(base, best_fitness=f, fitnesses=np.array([f]))
+        assert s._find_suspect_cells(0, []) == [(6, 6), (7, 6), (8, 6)]          # within roi_threshold = 4, best first
+        assert set(s._find_suspect_cells(1, [(7, 6)])) == {(6, 6), (8, 6)}      # later waves: neighbours of the winners
+
+
 class TestOneDimensional:
     """A 1-D projection over one derived quantity: the same machinery with one axis."""
 
