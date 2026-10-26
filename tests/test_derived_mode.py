@@ -236,6 +236,40 @@ class TestSampleLog:
         assert s2._cached_derived_coords(x).tolist() == d.tolist()
 
 
+class TestOneDimensional:
+    """A 1-D projection over one derived quantity: the same machinery with one axis."""
+
+    def _sampler1d(self):
+        bounds = np.array([[-5.0, 5.0]] * 4)
+        proj = {'derived': ['u'], 'ranges': [[-6.0, 6.0]], 'grid_points': [12]}
+        return ProfileProjector(target_func=_target, bounds=bounds, projections=[proj],
+                                derived_names=['u', 'v'], pop_per_grid_point=2)
+
+    def test_setup_and_cells(self):
+        s = self._sampler1d()
+        assert s.derived_mode and s.n_proj_dims == 1 and s.derived_idx == [0]
+        assert len(s.grid_axes) == 1 and len(s.grid_axes[0]) == 13
+        x = np.array([1.0, 2.0, 2.0, -1.0])            # u = 3 -> node 9; v is ignored
+        s._register_target_call(x, _target(x)[0], derived=_target(x)[1])
+        assert s._get_grid_indices_from_point(x) == (9,)
+        lo, hi = s._cell_box((9,))
+        assert lo.tolist() == [2.5] and hi.tolist() == [3.5]
+        assert s._derived_cell_distance(np.array([4.0]), (9,)) == 0.25
+        assert (9,) in s.derived_cell_best
+
+    def test_polish_converges_on_the_face(self):
+        # the profile over u is -u^2 / 4; the cell u in [2.5, 3.5] has its maximum at u = 2.5
+        s = self._sampler1d()
+        job = _cell_job(s, (9,), [1.5, 0.3, 1.5, -0.2])
+        n = _drive(job)
+        assert job.success and job.converged
+        u = _target(job.current_params)[1][0]
+        assert 2.5 <= u <= 2.5 + 0.03 and n < 60
+        assert job.current_fitness > -(2.5 + 0.005) ** 2 / 4 - 1e-4
+        nxt = job.on_finish(1)
+        assert nxt is not None and abs(_target(nxt[0].full_params)[1][0] - (2.5 + 0.002)) < 1e-6
+
+
 # --------------------------------------------------------------------------- #
 # End-to-end under mpiexec: profile of a separable quadratic over (x0 + x2, x1 + x3)
 # --------------------------------------------------------------------------- #
