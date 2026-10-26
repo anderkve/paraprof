@@ -341,6 +341,7 @@ class ProfileProjector:
                     'edge_margin': float,           # Default: 0.002 (a polish that converged on a face ends with one evaluation this far inside the true face; None = off)
                     'recheck_tolerance': float,     # Default: 1.0 (the recheck may also polish seeds from other basins this close to the cell's value)
                     'recheck_max_polishes': int,    # Default: 0 (how many such seeds per cell; 0 = only a seed that beats the cell's value, as in input mode)
+                    'project_activation_seeds': bool,  # Default: True (move a starting population's warm start and pool points into the cell)
                 },
             }
 
@@ -589,6 +590,10 @@ class ProfileProjector:
                 # the cost of a 2-D scan for a gain of 0.005 within 0.1)
                 'recheck_tolerance': 1.0,
                 'recheck_max_polishes': 0,
+                # whether the warm start and pool points of a cell's starting
+                # population are moved into the cell first (patching, recheck
+                # and the polish's neighbour test always move their seeds)
+                'project_activation_seeds': True,
             },
 
             'activation': {
@@ -701,6 +706,7 @@ class ProfileProjector:
         self.derived_edge_margin = config['derived']['edge_margin']
         self.derived_recheck_tolerance = config['derived']['recheck_tolerance']
         self.derived_recheck_max_polishes = int(config['derived']['recheck_max_polishes'])
+        self.derived_project_activation_seeds = bool(config['derived']['project_activation_seeds'])
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
