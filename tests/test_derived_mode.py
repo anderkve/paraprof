@@ -127,6 +127,13 @@ class TestCellBookkeeping:
                                 'optimizer_state': None, 'derived_jacobian': J}
         seed = s._seed_for_cell((8, 6), x, (9, 6))
         assert lo[0] <= _target(seed)[1][0] <= hi[0]
+        # the step is shortest in box units: a narrow box is moved less than a wide one
+        wide = ProfileProjector(target_func=_target, bounds=np.array([[-5.0, 5.0], [-5.0, 5.0], [-0.05, 0.05], [-5.0, 5.0]]),
+                                projections=[{'derived': ['u', 'v'], 'ranges': [[-6.0, 6.0], [-6.0, 6.0]], 'grid_points': [12, 12]}],
+                                derived_names=['u', 'v'], pop_per_grid_point=2)
+        y = np.array([0.0, 0.0, 0.0, 0.0])
+        moved = wide._project_into_cell(y, np.array([0.0, 0.0]), J, (9, 6))      # u must go to about 2.5
+        assert abs(moved[2]) <= 0.05 and moved[0] > 2.4 and abs(_target(moved)[1][0] - 2.5) < 0.1
         # without a source cell the point's own cell (or a neighbour with a Jacobian) supplies it
         seed = s._seed_for_cell(None, x, (9, 6))
         assert lo[0] <= _target(seed)[1][0] <= hi[0]

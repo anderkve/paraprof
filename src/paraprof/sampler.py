@@ -1427,11 +1427,31 @@ class ProfileProjector:
         out = np.maximum(lo + margin * w - q, q - (hi - margin * w))
         return float(np.sum(np.maximum(out, 0.0) / w))
 
+    def _box_scaled_step(self, J, r):
+        """The step dx with J dx = r that is shortest in units of the box
+        widths: dx = W J^T (J W J^T)^-1 r with W = diag(width^2). In raw units
+        the shortest step moves the parameter with the largest entry of J,
+        which is the one with the narrowest box (a well-measured parameter);
+        in box units the move is spread to the parameters that can afford it.
+        None when the system is singular."""
+        J = np.asarray(J, dtype=float)
+        width = self.bounds[:, 1] - self.bounds[:, 0]
+        width = np.where(np.isfinite(width) & (width > 0), width, 1.0)
+        JW = J * width[None, :]
+        M = JW @ JW.T
+        if not np.all(np.isfinite(M)) or np.linalg.cond(M) > 1e12:
+            return None
+        try:
+            delta = (JW.T @ np.linalg.solve(M, np.asarray(r, dtype=float))) * width
+        except np.linalg.LinAlgError:
+            return None
+        return delta if np.all(np.isfinite(delta)) else None
+
     def _project_into_cell(self, x_full, q, J, grid_idx, margin=0.02):
         """x moved so that q(x) lands inside the cell of grid_idx to first order,
-        with the Jacobian J (m x n) of q at x: the minimum-norm step to the
-        nearest point of the cell shrunk by ``margin`` of its width. None when
-        q is inside already or J is unusable."""
+        with the Jacobian J (m x n) of q at x: the shortest step in box units
+        to the nearest point of the cell shrunk by ``margin`` of its width.
+        None when q is inside already or J is unusable."""
         lo, hi = self._cell_box(grid_idx)
         w = hi - lo
         q = np.asarray(q, dtype=float)
@@ -1441,11 +1461,8 @@ class ProfileProjector:
         J = np.asarray(J, dtype=float)
         if J.shape != (len(q), len(x_full)) or not np.all(np.isfinite(J)):
             return None
-        try:
-            delta = J.T @ np.linalg.solve(J @ J.T, t - q)
-        except np.linalg.LinAlgError:
-            return None
-        if not np.all(np.isfinite(delta)):
+        delta = self._box_scaled_step(J, t - q)
+        if delta is None:
             return None
         return np.clip(np.asarray(x_full, dtype=float) + delta, self.bounds[:, 0], self.bounds[:, 1])
 
@@ -1474,12 +1491,8 @@ class ProfileProjector:
         J = np.asarray(J, dtype=float)
         if J.shape != (len(q), len(x_full)) or not np.all(np.isfinite(J)):
             return None
-        Ja = J[rows]
-        try:
-            delta = Ja.T @ np.linalg.solve(Ja @ Ja.T, np.array(target) - q[rows])
-        except np.linalg.LinAlgError:
-            return None
-        if not np.all(np.isfinite(delta)):
+        delta = self._box_scaled_step(J[rows], np.array(target) - q[rows])
+        if delta is None:
             return None
         return np.clip(np.asarray(x_full, dtype=float) + delta, self.bounds[:, 0], self.bounds[:, 1])
 
