@@ -283,6 +283,11 @@ class LBFGSBJob(Job):
             HJ = np.column_stack([self._apply_inverse_hessian(Ja[k], held, usable_pairs)
                                   for k in range(len(rows))])
             M = Ja @ HJ
+            # Dependent constraint rows (parallel gradients of the derived
+            # quantities at this point) or an all-held step make M singular
+            # or nearly so; the free step with the penalty is the fallback.
+            if not np.all(np.isfinite(M)) or np.linalg.cond(M) > 1e12:
+                return d_free
             try:
                 lam = np.linalg.solve(M, Ja @ d_free - r)
             except np.linalg.LinAlgError:
