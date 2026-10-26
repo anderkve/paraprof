@@ -11,6 +11,7 @@ from .exceptions import (
 from .sample_io import create_sample_writer, read_samples
 from .phases import PHASE_UNKNOWN
 from .volume import normalize_volume_config
+from .derived_constants import PROJECT_MARGIN
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
@@ -51,6 +52,7 @@ MEMORY_SIZE_MULTIPLIER = 25  # DE memory size = max_grid_size * multiplier
 # stiff projections (Rosenbrock-style narrow valleys) at negligible cost
 # vs the earlier roi_threshold/1000 default.
 DEFAULT_CONVERGENCE_THRESHOLD = 1e-6
+
 
 # DE mutation knobs. Sensitivity benchmarks show all three supported
 # strategies give equivalent grid quality; defaults dominate, so these are
@@ -336,12 +338,7 @@ class ProfileProjector:
 
                 'derived': {                        # projections over derived quantities
                     'penalty_scale': float,         # Default: 0.3 (anchoring penalty per squared cell width, in units of roi_threshold)
-                    'snap': bool,                   # Default: True (the polish constrains its steps to the cell with the Jacobian of the derived quantities)
-                    'project_margin': float,        # Default: 0.005 (how far inside the cell's faces the polish keeps its steps, in cell widths)
-                    'edge_margin': float,           # Default: 0.002 (a polish that converged on a face ends with one evaluation this far inside the true face; None = off)
-                    'recheck_tolerance': float,     # Default: 1.0 (the recheck may also polish seeds from other basins this close to the cell's value)
-                    'recheck_max_polishes': int,    # Default: 0 (how many such seeds per cell; 0 = only a seed that beats the cell's value, as in input mode)
-                    'project_activation_seeds': bool,  # Default: True (move a starting population's warm start and pool points into the cell)
+                    'recheck_max_polishes': int,    # Default: 0 (seeds from other basins within 1.0 of a cell's value that the recheck polishes as well; 0 = only a seed that beats the cell's value, as in input mode)
                 },
             }
 
@@ -571,29 +568,15 @@ class ProfileProjector:
 
             # Projections over derived quantities: the anchoring penalty is
             # penalty_scale * roi_threshold per squared cell width outside the
-            # cell (0.3 beat 0.1, 1.0 and 3 on every benchmark set). With snap
-            # the polish constrains its steps to the cell through the
-            # finite-difference Jacobian of the derived quantities, keeping
-            # them project_margin cell widths inside its faces, and ends with
-            # one evaluation edge_margin inside the true face when it converged
-            # on one; a polish that still ends outside gets one evaluation at
-            # the point projected back in.
+            # cell (0.3 beat 0.1, 1.0 and 3 on every benchmark set). The
+            # recheck may also polish seeds from other basins near a cell's
+            # value (recheck_max_polishes of them; 0 = only a seed that beats
+            # the cell's value: the extra polishes doubled the cost of a 2-D
+            # scan for a gain of 0.005 within 0.1, and help a 1-D profile with
+            # nearly tied basins).
             'derived': {
                 'penalty_scale': 0.3,
-                'snap': True,
-                'project_margin': 0.005,
-                'edge_margin': 0.002,          # None = off
-                # the recheck of a derived-plane cell may also polish seeds from
-                # other basins within recheck_tolerance of the cell's value
-                # (recheck_max_polishes of them; 0 = only a seed that beats the
-                # cell's value, as in input mode: the extra polishes doubled
-                # the cost of a 2-D scan for a gain of 0.005 within 0.1)
-                'recheck_tolerance': 1.0,
                 'recheck_max_polishes': 0,
-                # whether the warm start and pool points of a cell's starting
-                # population are moved into the cell first (patching, recheck
-                # and the polish's neighbour test always move their seeds)
-                'project_activation_seeds': True,
             },
 
             'activation': {
@@ -701,12 +684,7 @@ class ProfileProjector:
         self.derived_idx = []
         self.derived_ranges = None
         self.derived_penalty_scale = config['derived']['penalty_scale']
-        self.derived_snap = config['derived']['snap']
-        self.derived_project_margin = config['derived']['project_margin']
-        self.derived_edge_margin = config['derived']['edge_margin']
-        self.derived_recheck_tolerance = config['derived']['recheck_tolerance']
         self.derived_recheck_max_polishes = int(config['derived']['recheck_max_polishes'])
-        self.derived_project_activation_seeds = bool(config['derived']['project_activation_seeds'])
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -1456,7 +1434,7 @@ class ProfileProjector:
             return None
         return delta if np.all(np.isfinite(delta)) else None
 
-    def _project_into_cell(self, x_full, q, J, grid_idx, margin=0.02):
+    def _project_into_cell(self, x_full, q, J, grid_idx, margin=PROJECT_MARGIN):
         """x moved so that q(x) lands inside the cell of grid_idx to first order,
         with the Jacobian J (m x n) of q at x: the shortest step in box units
         to the nearest point of the cell shrunk by ``margin`` of its width.
@@ -1556,7 +1534,7 @@ class ProfileProjector:
         jac = self._stored_jacobian_near(src_idx)
         if jac is None:
             return vec
-        x = self._project_into_cell(vec, q, jac, grid_idx, margin=self.derived_project_margin)
+        x = self._project_into_cell(vec, q, jac, grid_idx, margin=PROJECT_MARGIN)
         return vec if x is None else x
 
     def _branch_seeds_from_pool(self, grid_idx, n):

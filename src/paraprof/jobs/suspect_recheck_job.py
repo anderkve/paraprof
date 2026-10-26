@@ -1,5 +1,7 @@
 """Suspect-cell recheck job: tests multiple candidate seeds at one grid cell."""
 import numpy as np
+
+from ..derived_constants import RECHECK_TOLERANCE
 from .base import Job
 
 
@@ -59,7 +61,7 @@ class SuspectRecheckJob(Job):
         value by more than polish_threshold and, in derived mode, up to
         recheck_max_polishes further seeds that lie in another basin (farther
         than 5% of the profiled extent from the cell's point and from each
-        other) within recheck_tolerance of the cell's value. A cell of a
+        other) within RECHECK_TOLERANCE of the cell's value. A cell of a
         derived-plane projection can hold several basins of the inner
         problem, and a seed from a better one, moved into the cell to first
         order, can evaluate below the incumbent by the projection error alone;
@@ -76,7 +78,7 @@ class SuspectRecheckJob(Job):
         order = np.argsort(-self.seed_fitness)
         for i in order:
             f = self.seed_fitness[i]
-            if not np.isfinite(f) or f < self.current_best_fitness - sampler.derived_recheck_tolerance:
+            if not np.isfinite(f) or f < self.current_best_fitness - RECHECK_TOLERANCE:
                 break
             seed = np.asarray(self.candidate_seeds[i], dtype=float)
             if all(np.linalg.norm((seed - t) / extent) > 0.05 for t in taken):

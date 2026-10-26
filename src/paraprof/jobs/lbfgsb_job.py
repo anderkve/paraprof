@@ -1,5 +1,7 @@
 """L-BFGS-B optimization job for asynchronous gradient-based optimization."""
 import numpy as np
+
+from ..derived_constants import PROJECT_MARGIN, EDGE_MARGIN
 import collections
 from .base import Job
 
@@ -200,7 +202,7 @@ class LBFGSBJob(Job):
         whose step inward costs more fitness than mu buys back)."""
         sampler = self.sampler
         q0 = np.asarray(self._grad_base_derived, dtype=float)[sampler.derived_idx]
-        viol0 = sampler._derived_margin_violation(q0, self.grid_idx, sampler.derived_project_margin)
+        viol0 = sampler._derived_margin_violation(q0, self.grid_idx, PROJECT_MARGIN)
         if self._merit_mu is None:
             self._merit_mu = sampler.derived_penalty_scale * sampler.roi_threshold
         gd = float(np.dot(grad, d))
@@ -219,7 +221,7 @@ class LBFGSBJob(Job):
         q = d[sampler.derived_idx]
         if not np.all(np.isfinite(q)):
             return np.inf
-        return sampler._derived_margin_violation(q, self.grid_idx, sampler.derived_project_margin)
+        return sampler._derived_margin_violation(q, self.grid_idx, PROJECT_MARGIN)
 
     def _trial_point(self, x_new):
         """The point a line-search task evaluates for the raw step x_new:
@@ -232,7 +234,7 @@ class LBFGSBJob(Job):
         quantities stay in the cell to first order. Faces the free step would
         cross (and faces the current point already lies beyond) become linear
         equality constraints J_a d = r_a on the step, r_a pointing to the face
-        moved ``project_margin`` cell widths inward, and the step is the
+        moved PROJECT_MARGIN cell widths inward, and the step is the
         minimiser of the quadratic model subject to them,
         d = d_free - H^-1 J_a^T (J_a H^-1 J_a^T)^-1 (J_a d_free - r_a),
         with H^-1 the two-loop recursion. Faces that the constrained step
@@ -250,7 +252,7 @@ class LBFGSBJob(Job):
         self._constrained_step = True
         lo, hi = sampler._cell_box(self.grid_idx)
         w = hi - lo
-        m = sampler.derived_project_margin
+        m = PROJECT_MARGIN
         lo_m, hi_m = lo + m * w, hi - m * w
         tol = 1e-9 * w
         active = {}
@@ -692,7 +694,7 @@ class LBFGSBJob(Job):
 
         d = -self._apply_inverse_hessian(grad, held, usable_pairs)
         self._sqp = None
-        if self.sampler.derived_mode and self.grid_idx is not None and self.sampler.derived_snap:
+        if self.sampler.derived_mode and self.grid_idx is not None:
             d = self._constrain_direction_to_cell(d, held, usable_pairs)
         if not np.any(d):
             # Every component is held: a stationary point of the box-constrained problem.
@@ -893,21 +895,18 @@ class LBFGSBJob(Job):
                     J, q, x_full = jac
                     # kept for the patching and recheck seeds of the neighbours
                     self.sampler.population[grid_idx]['derived_jacobian'] = J
-                    if self.sampler.derived_snap:
-                        from .derived_snap_job import DerivedSnapJob
-                        margin = self.sampler.derived_project_margin
-                        snap = self.sampler._project_into_cell(x_full, q, J, grid_idx, margin=margin)
-                        if snap is not None:
-                            return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap),
+                    from .derived_snap_job import DerivedSnapJob
+                    snap = self.sampler._project_into_cell(x_full, q, J, grid_idx, margin=PROJECT_MARGIN)
+                    if snap is not None:
+                        return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap),
+                                next_job_id + 1)
+                    # Converged on a face of the shrunk cell: one evaluation
+                    # just inside the true face recovers most of the margin.
+                    if self.converged:
+                        pt = self.sampler._edge_point(x_full, q, J, grid_idx, PROJECT_MARGIN, EDGE_MARGIN)
+                        if pt is not None:
+                            return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, pt),
                                     next_job_id + 1)
-                        # Converged on a face of the shrunk cell: one evaluation
-                        # just inside the true face recovers most of the margin.
-                        edge = self.sampler.derived_edge_margin
-                        if self.converged and edge is not None:
-                            pt = self.sampler._edge_point(x_full, q, J, grid_idx, margin, edge)
-                            if pt is not None:
-                                return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, pt),
-                                        next_job_id + 1)
 
         elif self.type == 'REFINEMENT_LBFGSB':
             # Refinement cells skip DE and get a minimal population state here.

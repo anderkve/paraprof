@@ -317,11 +317,10 @@ box in the derived quantities. The stages run as in input space, with these diff
   (`[params..., logL, phase, derived...]`), and a warm start from such a file works in
   derived mode.
 
-Knobs in `advanced_config['derived']`: `penalty_scale` (0.3), `snap` (True), `project_margin`
-(0.005 cell widths), `edge_margin` (0.002; `None` turns the finishing evaluation off), and
-`recheck_max_polishes` (0) with `recheck_tolerance` (1.0): a positive count makes the recheck
-also polish that many seeds from other basins within the tolerance of a cell's value, which
-helps a 1-D profile with nearly tied basins and doubles the cost of a 2-D scan. On the 4-D
+Knobs in `advanced_config['derived']`: `penalty_scale` (0.3) and `recheck_max_polishes` (0; a
+positive count makes the recheck also polish that many seeds from other basins within 1.0 of a
+cell's value, which helps a 1-D profile with nearly tied basins and doubles the cost of a 2-D
+scan). On the 4-D
 Himmelblau function profiled over linear, product and nonlinear maps of its inputs, the derived
 mode gets 99% of the cells of the region of interest within 0.1 of the constrained maximum at a
 few times the cost of an input-space scan; binning the evaluations of an input-space run onto
