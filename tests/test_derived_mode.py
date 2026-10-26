@@ -255,6 +255,30 @@ class TestRecheckSelection:
         assert set(s._find_suspect_cells(1, [(7, 6)])) == {(6, 6), (8, 6)}      # later waves: neighbours of the winners
 
 
+class TestRecheckPolishesOtherBasins:
+    def test_distinct_seed_within_tolerance_is_polished(self):
+        from paraprof.jobs.suspect_recheck_job import SuspectRecheckJob
+        s = _sampler()
+        own = np.array([0.5, 0.5, 0.5, 0.5])                       # u = v = 1: cell (7, 7)
+        val = _target(own)[0]
+        s.population[(7, 7)] = {'profiled_params': np.array([own]), 'fitnesses': np.array([val]), 'best_fitness': val,
+                                'status': 'optimized', 'improvement_history': [], 'last_update_gen': 0, 'optimizer_state': None}
+        near = own + np.array([0.01, -0.01, 0.0, 0.0])             # the same basin, a hair away
+        other = np.array([3.0, 3.0, -2.0, -2.0])                   # u = v = 1 too, far away in input space
+        worse = np.array([-3.0, -3.0, 4.0, 4.0])                   # u = v = 1, but far below the tolerance
+        job = SuspectRecheckJob(0, s, (7, 7), [own, near, other, worse], wave_number=0)
+        fits = [val, val - 0.001, val - 0.5, val - 3.0]
+        for i, (seed, f) in enumerate(zip(job.candidate_seeds, fits)):
+            job.process_result({'target_val': f, 'derived': _target(seed)[1], 'params': seed, 'context': {'seed_idx': i}})
+        chosen = job._seeds_to_polish()
+        assert not job.will_update                                  # no seed beats the cell's own value
+        assert len(chosen) == 1 and np.allclose(chosen[0][0], other)
+        spawned, nxt = job.on_finish(5)
+        assert spawned.type == 'SUSPECT_RECHECK_LBFGSB' and nxt == 6
+        s.derived_recheck_max_polishes = 0
+        assert job._seeds_to_polish() == [] and job.on_finish(5) is None
+
+
 class TestOneDimensional:
     """A 1-D projection over one derived quantity: the same machinery with one axis."""
 

@@ -998,19 +998,21 @@ def master_main(comm, sampler,
                 del active_jobs[job_id_finished]
 
                 if spawn_result:
-                    new_job, next_job_id = spawn_result
-                    active_jobs[new_job.id] = new_job
-                    initial_tasks = new_job.start()
+                    spawned, next_job_id = spawn_result
+                    # one job, or a list of jobs (a recheck polishing several seeds)
+                    for new_job in (spawned if isinstance(spawned, list) else [spawned]):
+                        active_jobs[new_job.id] = new_job
+                        initial_tasks = new_job.start()
 
-                    # Track child jobs spawned within a wave so the wave's
-                    # completion check knows to wait for them.
-                    if is_patch_test_job and new_job.type == 'PATCHING_LBFGSB':
-                        patching_wave_lbfgsb_jobs.add(new_job.id)
-                    if is_suspect_test_job and new_job.type == 'SUSPECT_RECHECK_LBFGSB':
-                        suspect_wave_lbfgsb_jobs.add(new_job.id)
+                        # Track child jobs spawned within a wave so the wave's
+                        # completion check knows to wait for them.
+                        if is_patch_test_job and new_job.type == 'PATCHING_LBFGSB':
+                            patching_wave_lbfgsb_jobs.add(new_job.id)
+                        if is_suspect_test_job and new_job.type == 'SUSPECT_RECHECK_LBFGSB':
+                            suspect_wave_lbfgsb_jobs.add(new_job.id)
 
-                    # Add to correct priority queue
-                    _queue_tasks(initial_tasks, new_job.type)
+                        # Add to correct priority queue
+                        _queue_tasks(initial_tasks, new_job.type)
 
                 # Check if the patching wave is now complete
                 if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \

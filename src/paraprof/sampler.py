@@ -339,6 +339,8 @@ class ProfileProjector:
                     'snap': bool,                   # Default: True (the polish constrains its steps to the cell with the Jacobian of the derived quantities)
                     'project_margin': float,        # Default: 0.005 (how far inside the cell's faces the polish keeps its steps, in cell widths)
                     'edge_margin': float,           # Default: 0.002 (a polish that converged on a face ends with one evaluation this far inside the true face; None = off)
+                    'recheck_tolerance': float,     # Default: 1.0 (the recheck also polishes seeds from other basins this close to the cell's value)
+                    'recheck_max_polishes': int,    # Default: 2 (how many such seeds per cell; 0 = only the best seed, as in input mode)
                 },
             }
 
@@ -580,6 +582,10 @@ class ProfileProjector:
                 'snap': True,
                 'project_margin': 0.005,
                 'edge_margin': 0.002,          # None = off
+                # the recheck of a derived-plane cell also polishes seeds from
+                # other basins within recheck_tolerance of the cell's value
+                'recheck_tolerance': 1.0,
+                'recheck_max_polishes': 2,
             },
 
             'activation': {
@@ -690,6 +696,8 @@ class ProfileProjector:
         self.derived_snap = config['derived']['snap']
         self.derived_project_margin = config['derived']['project_margin']
         self.derived_edge_margin = config['derived']['edge_margin']
+        self.derived_recheck_tolerance = config['derived']['recheck_tolerance']
+        self.derived_recheck_max_polishes = int(config['derived']['recheck_max_polishes'])
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
