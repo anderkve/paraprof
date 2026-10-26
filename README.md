@@ -299,10 +299,17 @@ box in the derived quantities. The stages run as in input space, with these diff
   face ends with one evaluation just inside the true face. A run that still ends outside
   (no Jacobian, as with a user-supplied gradient) gets one evaluation at the point
   projected back into the cell.
-- Neighbour seeds for patching and the suspect recheck are projected into the target cell
-  with the Jacobian stored by the source cell's polish; the pool seeds of a cell's starting
-  population are the pool points nearest to the cell in the derived plane, on distinct
-  branches. The early DE exit is off.
+- Every point handed to a cell from elsewhere (a neighbour's optimum as warm start, a pool
+  point, a patching or recheck seed) is first moved into the cell with the Jacobian stored by
+  the polish of the cell it came from, by the shortest step in units of the box widths, so
+  that it competes on its own value rather than through the penalty. The pool seeds of a
+  cell's starting population are the pool points nearest to the cell in the derived plane,
+  on distinct branches. The early DE exit is off.
+- A cell of a derived-plane projection can hold several basins of the inner problem, and a
+  chain of cells that followed the wrong one is as smooth as a correct chain, so the suspect
+  recheck examines every cell of the region of interest instead of statistical outliers, with
+  the rechecked cells seeding each other; a better basin found in one cell then propagates
+  along the chain wave by wave.
 - Cells that no evaluation entered are left out of the output: a cell with no preimage in
   the box (the derived quantities cannot take those values) is unattainable, and the output
   does not distinguish it from a cell the search never reached.
@@ -311,13 +318,19 @@ box in the derived quantities. The stages run as in input space, with these diff
   derived mode.
 
 Knobs in `advanced_config['derived']`: `penalty_scale` (0.3), `snap` (True), `project_margin`
-(0.005 cell widths) and `edge_margin` (0.002; `None` turns the finishing evaluation off). On the 4-D
+(0.005 cell widths), `edge_margin` (0.002; `None` turns the finishing evaluation off), and
+`recheck_max_polishes` (0) with `recheck_tolerance` (1.0): a positive count makes the recheck
+also polish that many seeds from other basins within the tolerance of a cell's value, which
+helps a 1-D profile with nearly tied basins and doubles the cost of a 2-D scan. On the 4-D
 Himmelblau function profiled over linear, product and nonlinear maps of its inputs, the derived
 mode gets 99% of the cells of the region of interest within 0.1 of the constrained maximum at a
 few times the cost of an input-space scan; binning the evaluations of an input-space run onto
-the same planes gets 8-12%. Projections over derived quantities cost more than input-space ones
-because the search per cell runs over all parameters with a soft constraint instead of over the
-profiled ones with the rest fixed.
+the same planes gets 8-12%. A 1-D profile over one derived quantity costs 2-8k evaluations after
+the global stage on the same function and is exact on the quantities tested; on the toy neutrino
+likelihood's Jarlskog invariant, whose cells hold several nearly tied basins, one seed in three
+leaves a stretch of cells 0.05-0.15 short. Projections over derived quantities cost more than
+input-space ones because the search per cell runs over all parameters with a soft constraint
+instead of over the profiled ones with the rest fixed.
 
 ## Visualization
 
