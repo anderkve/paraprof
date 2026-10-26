@@ -59,7 +59,11 @@ class ActivationJob(Job):
         else:
             n_from_random += n_from_neighbors
 
-        global_samples = self.sampler._sample_from_global_pool(n_from_global)
+        if self.sampler.derived_mode:
+            # pool points nearest to the cell in derived coordinates, on distinct branches
+            global_samples = self.sampler._branch_seeds_from_pool(self.grid_idx, n_from_global)
+        else:
+            global_samples = self.sampler._sample_from_global_pool(n_from_global)
         if global_samples is not None:
             samples_list.extend(global_samples)
         else:

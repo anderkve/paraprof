@@ -32,7 +32,7 @@ class PatchingTestJob(Job):
 
     def process_result(self, result):
         """Store the test fitness result."""
-        self.test_fitness = result['target_val']
+        self.test_fitness = self.sampler.fitness_for_cell(result, self.grid_idx)   # the target value; penalised in derived mode
         self.success = True
         self._is_finished = True
 

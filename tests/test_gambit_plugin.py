@@ -29,6 +29,7 @@ PLUGIN_DIR = REPO_ROOT / "GAMBIT_plugin"
 
 
 RUNNER = textwrap.dedent("""
+    import tempfile
     import json
     import sys
     import types
@@ -127,6 +128,7 @@ RUNNER = textwrap.dedent("""
     utils_mod.copydoc = _copydoc
     utils_mod.version = _version
     utils_mod.with_mpi = True
+    utils_mod.get_directory = lambda name, **kwargs: tempfile.mkdtemp(prefix=name + '_')
     sys.modules['utils'] = utils_mod
 
     # ---- Load the plugin -----------------------------------------------------

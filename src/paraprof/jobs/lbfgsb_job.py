@@ -94,6 +94,22 @@ class LBFGSBJob(Job):
         self._current_derived = self.sampler._cached_derived_full(start_params_full) if start_params_full is not None else None
         self._grad_derived = {}
         self._grad_base_derived = None
+        self._jac_cache = None
+        # Derived mode: the anchoring penalty scale this run uses (None = the
+        # sampler's) and which stage it is (2 = the stiff polish after a snap).
+        self.penalty_scale = None
+        self.derived_stage = 1
+        # The point the current line-search task evaluates; set by
+        # _calculate_line_search_task.
+        self._ls_trial = None
+        # Derived mode with a Jacobian: the line search runs on the merit
+        # function -fitness + mu * (distance outside the shrunk cell); _sqp
+        # holds (violation at the current point, directional derivative of
+        # the merit along the full step) for the current direction, None
+        # when the plain Armijo test applies.
+        self._merit_mu = None
+        self._sqp = None
+        self._constrained_step = False
         # User gradient sliced to opt_dims, in the objective frame; NaN = "use FD".
         self._user_grad_opt = None
 
@@ -140,30 +156,19 @@ class LBFGSBJob(Job):
     def _value(self, result):
         """The fitness this job optimises for an evaluation result: the target
         value, or in derived mode the cell-anchored penalised value."""
-        return self.sampler.fitness_for_cell(result, self.grid_idx)
+        return self.sampler.fitness_for_cell(result, self.grid_idx, self.penalty_scale)
 
-    def _derived_snap_point(self):
-        """Derived mode: the end point of the polish projected back into its
-        cell with the finite-difference Jacobian of q from the last gradient;
-        None if the point is inside the cell or the Jacobian is unavailable."""
-        sampler = self.sampler
-        x_full = self._construct_full_params_for_task(self.current_params)
-        d = self._current_derived
-        if d is None:
-            d = sampler._cached_derived_full(x_full)
-        if d is None or self._grad_base_derived is None:
+    def _last_gradient_jacobian(self):
+        """Derived mode: the finite-difference Jacobian (m x n) of the
+        projection's derived quantities at the point of the last gradient,
+        assembled from that gradient's evaluations; None when any is missing
+        (a user-supplied gradient, or a point without derived values)."""
+        if self._jac_cache is not None:
+            return self._jac_cache
+        if self._grad_base_derived is None:
             return None
-        idx = sampler.derived_idx
-        q = np.asarray(d, dtype=float)[idx]
-        lo, hi = [], []
-        for ax, k in zip(sampler.grid_axes, self.grid_idx):
-            w = (ax[-1] - ax[0]) / max(len(ax) - 1, 1)
-            lo.append(ax[k] - 0.48 * w)
-            hi.append(ax[k] + 0.48 * w)
-        lo, hi = np.array(lo), np.array(hi)
-        if np.all(q >= lo) and np.all(q <= hi):
-            return None
-        n = len(self.current_params)
+        idx = self.sampler.derived_idx
+        n = self.n_opt_dims
         J = np.zeros((len(idx), n))
         base = np.asarray(self._grad_base_derived, dtype=float)[idx]
         for i in range(n):
@@ -171,18 +176,122 @@ class LBFGSBJob(Job):
             if ent is None or ent[0] is None or ent[1] == 0:
                 return None
             J[:, i] = (np.asarray(ent[0], dtype=float)[idx] - base) / ent[1]
-        if not np.all(np.isfinite(J)):
+        if not np.all(np.isfinite(J)) or not np.all(np.isfinite(base)):
             return None
-        t = np.clip(q, lo, hi)
-        JJt = J @ J.T
-        try:
-            delta = J.T @ np.linalg.solve(JJt, t - q)
-        except np.linalg.LinAlgError:
+        self._jac_cache = J
+        return J
+
+    def _derived_jacobian(self):
+        """Derived mode: (J, q, x_full) at the end point, with J the Jacobian
+        from the last gradient evaluations; None when unavailable."""
+        sampler = self.sampler
+        x_full = self._construct_full_params_for_task(self.current_params)
+        d = self._current_derived
+        if d is None:
+            d = sampler._cached_derived_full(x_full)
+        if d is None:
             return None
-        if not np.all(np.isfinite(delta)):
+        q = np.asarray(d, dtype=float)[sampler.derived_idx]
+        J = self._last_gradient_jacobian()
+        if J is None or not np.all(np.isfinite(q)):
             return None
-        x_part = sampler._ensure_bounds(np.asarray(self.current_params, dtype=float) + delta, list(self.opt_dims))
-        return self._construct_full_params_for_task(x_part)
+        return J, q, x_full
+
+    def _merit_data(self, grad, d):
+        """(violation at the current point, directional derivative of the
+        merit function along d), raising mu first when d would otherwise not
+        be a descent direction of the merit (a point outside the shrunk cell
+        whose step inward costs more fitness than mu buys back)."""
+        sampler = self.sampler
+        q0 = np.asarray(self._grad_base_derived, dtype=float)[sampler.derived_idx]
+        viol0 = sampler._derived_margin_violation(q0, self.grid_idx, sampler.derived_project_margin)
+        if self._merit_mu is None:
+            scale = sampler.derived_penalty_scale if self.penalty_scale is None else self.penalty_scale
+            self._merit_mu = scale * sampler.roi_threshold
+        gd = float(np.dot(grad, d))
+        if viol0 > 0 and gd - self._merit_mu * viol0 > -1e-12:
+            self._merit_mu = max(self._merit_mu, 2.0 * max(gd, 0.0) / viol0 + self._merit_mu)
+        return viol0, gd - self._merit_mu * viol0
+
+    def _merit_violation(self, result):
+        """Violation term of the merit function for an evaluation result
+        (inf when the result carries no usable derived values)."""
+        sampler = self.sampler
+        d = result.get('derived')
+        d = sampler._as_derived_array(d) if d is not None else None
+        if d is None:
+            return np.inf
+        q = d[sampler.derived_idx]
+        if not np.all(np.isfinite(q)):
+            return np.inf
+        return sampler._derived_margin_violation(q, self.grid_idx, sampler.derived_project_margin)
+
+    def _trial_point(self, x_new):
+        """The point a line-search task evaluates for the raw step x_new:
+        clipped to the box over the optimised dims."""
+        opt_indices = self.sampler.profiled_dims if self.grid_idx is not None else self.opt_dims
+        return self.sampler._ensure_bounds(x_new, opt_indices)
+
+    def _constrain_direction_to_cell(self, d_free, held, usable_pairs):
+        """Derived mode: the quasi-Newton step d_free bent so that the derived
+        quantities stay in the cell to first order. Faces the free step would
+        cross (and faces the current point already lies beyond) become linear
+        equality constraints J_a d = r_a on the step, r_a pointing to the face
+        moved ``project_margin`` cell widths inward, and the step is the
+        minimiser of the quadratic model subject to them,
+        d = d_free - H^-1 J_a^T (J_a H^-1 J_a^T)^-1 (J_a d_free - r_a),
+        with H^-1 the two-loop recursion. Faces that the constrained step
+        would cross in turn are added and the step re-solved. Without a
+        Jacobian (user-supplied gradient) the free step is returned, and the
+        anchoring penalty alone keeps the run near its cell."""
+        sampler = self.sampler
+        self._constrained_step = False
+        J = self._last_gradient_jacobian()
+        if J is None or self._grad_base_derived is None:
+            return d_free
+        q0 = np.asarray(self._grad_base_derived, dtype=float)[sampler.derived_idx]
+        if not np.all(np.isfinite(q0)):
+            return d_free
+        self._constrained_step = True
+        lo, hi = sampler._cell_box(self.grid_idx)
+        w = hi - lo
+        m = sampler.derived_project_margin
+        lo_m, hi_m = lo + m * w, hi - m * w
+        tol = 1e-9 * w
+        active = {}
+        d = d_free
+        for _ in range(len(q0)):
+            q_pred = q0 + J @ d
+            added = False
+            for j in range(len(q0)):
+                if j in active:
+                    continue
+                if q_pred[j] < lo_m[j] - tol[j]:
+                    active[j] = lo_m[j]
+                    added = True
+                elif q_pred[j] > hi_m[j] + tol[j]:
+                    active[j] = hi_m[j]
+                    added = True
+            if not added:
+                break
+            # A capped first step scales d uniformly below, which keeps the
+            # constrained faces linear in alpha; the merit data below is
+            # computed for the step as issued.
+            rows = sorted(active)
+            Ja = J[rows]
+            r = np.array([active[j] for j in rows]) - q0[rows]
+            HJ = np.column_stack([self._apply_inverse_hessian(Ja[k], held, usable_pairs)
+                                  for k in range(len(rows))])
+            M = Ja @ HJ
+            try:
+                lam = np.linalg.solve(M, Ja @ d_free - r)
+            except np.linalg.LinAlgError:
+                return d_free
+            d_new = d_free - HJ @ lam
+            if not np.all(np.isfinite(d_new)):
+                return d_free
+            d = d_new
+        return d
 
     def _get_partial_params_from_full(self, full_params):
         """Slice a full parameter vector down to opt_dims."""
@@ -268,9 +377,12 @@ class LBFGSBJob(Job):
             # The start value is usually already known (population member,
             # patching / recheck seed): go straight to the gradient instead
             # of re-evaluating it. Re-evaluate when it is unknown (global
-            # starts, refinement) or when the user gradient must be fetched
-            # alongside the value.
-            if np.isfinite(self.start_fitness) and not self.has_user_grad:
+            # starts, refinement), when the user gradient must be fetched
+            # alongside the value, or when a derived-mode cell run has no
+            # derived values for its start (the first constrained step
+            # needs them).
+            derived_known = not self.sampler.derived_mode or self.grid_idx is None or self._current_derived is not None
+            if np.isfinite(self.start_fitness) and not self.has_user_grad and derived_known:
                 self.current_params = np.asarray(self.start_params_partial, dtype=float)
                 self.current_fitness = float(self.start_fitness)
                 self.current_objective = -self.current_fitness
@@ -355,6 +467,7 @@ class LBFGSBJob(Job):
         self.gradient_components = {}
         self._grad_derived = {}
         self._grad_base_derived = self._current_derived
+        self._jac_cache = None
 
         # Per-dim step tied to the scale of the metric, so the difference is
         # taken over the same fraction of the local length scale in every
@@ -513,34 +626,14 @@ class LBFGSBJob(Job):
             self.scale[i] = sc
             self.scale_from_curvature[i] = True
 
-    def _compute_direction_and_line_search(self):
-        """Quasi-Newton direction (two-loop recursion in scaled coordinates,
-        active-set projection at the bounds); returns the first line-search task."""
-        grad = self.current_gradient
+    def _apply_inverse_hessian(self, v, held, usable_pairs):
+        """H^-1 v for the current quasi-Newton model: the two-loop recursion in
+        the scaled coordinates u = x / scale with the held components zeroed
+        (see _compute_direction_and_line_search). ``v`` is a covector in the
+        objective frame (a gradient); the result is a step in x."""
         sc = self.scale
-
-        # Active set: a variable at a bound whose objective gradient points
-        # outward is held this iteration. The direction is built from the
-        # projected gradient and zeroed in the held components, so the
-        # clipped step is the step the quasi-Newton model asked for. Without
-        # this the free components are computed as if the held one moved
-        # too, and the Armijo test can fail at every step length.
-        lo, hi = self._opt_bounds()
-        x = self.current_params
-        held = ((x <= lo) & (grad > 0)) | ((x >= hi) & (grad < 0))
-
-        # L-BFGS two-loop recursion in u = x / scale: the gradient enters as
-        # grad * scale, the pairs as (s / scale, y * scale); s·y is invariant.
-        # Pairs failing the curvature condition are skipped so a degenerate
-        # dot product can't produce inf/nan rho.
-        q = np.where(held, 0.0, grad) * sc
+        q = np.where(held, 0.0, v) * sc
         a = []
-        usable_pairs = []
-        for s_raw, y_raw in zip(self.s_hist, self.y_hist):
-            ys = float(np.dot(y_raw, s_raw))
-            if ys > 1e-30:
-                usable_pairs.append((s_raw / sc, y_raw * sc, ys))
-
         for s, y, ys in reversed(usable_pairs):
             rho = 1.0 / ys
             alpha = rho * np.dot(s, q)
@@ -563,8 +656,40 @@ class LBFGSBJob(Job):
             beta = rho * np.dot(y, z)
             z = z + s * (alpha - beta)
 
-        d = -(z * sc)
-        d[held] = 0.0
+        out = z * sc
+        out[held] = 0.0
+        return out
+
+    def _compute_direction_and_line_search(self):
+        """Quasi-Newton direction (two-loop recursion in scaled coordinates,
+        active-set projection at the bounds); returns the first line-search task."""
+        grad = self.current_gradient
+        sc = self.scale
+
+        # Active set: a variable at a bound whose objective gradient points
+        # outward is held this iteration. The direction is built from the
+        # projected gradient and zeroed in the held components, so the
+        # clipped step is the step the quasi-Newton model asked for. Without
+        # this the free components are computed as if the held one moved
+        # too, and the Armijo test can fail at every step length.
+        lo, hi = self._opt_bounds()
+        x = self.current_params
+        held = ((x <= lo) & (grad > 0)) | ((x >= hi) & (grad < 0))
+
+        # L-BFGS two-loop recursion in u = x / scale: the gradient enters as
+        # grad * scale, the pairs as (s / scale, y * scale); s·y is invariant.
+        # Pairs failing the curvature condition are skipped so a degenerate
+        # dot product can't produce inf/nan rho.
+        usable_pairs = []
+        for s_raw, y_raw in zip(self.s_hist, self.y_hist):
+            ys = float(np.dot(y_raw, s_raw))
+            if ys > 1e-30:
+                usable_pairs.append((s_raw / sc, y_raw * sc, ys))
+
+        d = -self._apply_inverse_hessian(grad, held, usable_pairs)
+        self._sqp = None
+        if self.sampler.derived_mode and self.grid_idx is not None and self.sampler.derived_snap:
+            d = self._constrain_direction_to_cell(d, held, usable_pairs)
         if not np.any(d):
             # Every component is held: a stationary point of the box-constrained problem.
             self.status = 'FINISHED'
@@ -582,6 +707,8 @@ class LBFGSBJob(Job):
             if m > FIRST_STEP_CAP:
                 d *= FIRST_STEP_CAP / m
 
+        if self._constrained_step:
+            self._sqp = self._merit_data(grad, d)
         self.search_direction = d
         self.status = 'NEEDS_LINE_SEARCH'
         self.line_search_alpha = 1.0
@@ -591,7 +718,8 @@ class LBFGSBJob(Job):
     def _calculate_line_search_task(self):
         """Next task for the backtracking line search."""
         alpha = self.line_search_alpha
-        x_new = self.current_params + alpha * self.search_direction
+        x_new = self._trial_point(self.current_params + alpha * self.search_direction)
+        self._ls_trial = x_new
         full_params_new = self._construct_full_params_for_task(x_new)
 
         # Piggyback grad_func on every attempt; rejected steps waste a
@@ -616,17 +744,28 @@ class LBFGSBJob(Job):
         d = self.search_direction
         c1 = 1e-4
 
-        x_new = x_old + alpha * d
+        if self._ls_trial is not None:
+            x_new_bounded = self._ls_trial
+        else:
+            x_new_bounded = self._trial_point(x_old + alpha * d)
 
-        opt_indices = self.sampler.profiled_dims if self.grid_idx is not None else self.opt_dims
+        # Armijo condition, on the merit function when the step was
+        # constrained to the cell (derived mode) and on the objective otherwise.
+        if self._sqp is not None:
+            viol0, D = self._sqp
+            mu = self._merit_mu
+            phi_old = f_old + mu * viol0
+            phi_new = f_new + mu * self._merit_violation(result)
+            accepted = phi_new <= phi_old + c1 * alpha * D
+            decrease = abs(phi_old - phi_new)
+        else:
+            accepted = f_new <= f_old + c1 * alpha * np.dot(g_old, x_new_bounded - x_old)
+            decrease = abs(f_old - f_new)
 
-        x_new_bounded = self.sampler._ensure_bounds(x_new, opt_indices)
-
-        # Armijo condition
-        if f_new <= f_old + c1 * alpha * np.dot(g_old, x_new_bounded - x_old):
+        if accepted:
             self.iteration += 1
 
-            reached_ftol = np.abs(f_old - f_new) < self.lbfgsb_ftol
+            reached_ftol = decrease < self.lbfgsb_ftol
             if self.iteration >= self.lbfgsb_max_iter or reached_ftol:
                 self.status = 'FINISHED'
                 self._is_finished = True
@@ -662,8 +801,11 @@ class LBFGSBJob(Job):
         # curvature, so halving must be allowed to get there. A rejected
         # step with f_new == f_old but a large predicted decrease (an
         # overshoot to a mirror point) is not caught here either.
-        x_full_bounded = self.sampler._ensure_bounds(x_old + d, opt_indices)
-        predicted = abs(c1 * np.dot(g_old, x_full_bounded - x_old))
+        if self._sqp is not None:
+            predicted = abs(c1 * self._sqp[1])
+        else:
+            x_full_bounded = self._trial_point(x_old + d)
+            predicted = abs(c1 * np.dot(g_old, x_full_bounded - x_old))
         if predicted < self.lbfgsb_ftol:
             self.status = 'FINISHED'
             self._is_finished = True
@@ -741,11 +883,27 @@ class LBFGSBJob(Job):
                     full_params = self.sampler._construct_params(self.grid_idx, self.current_params)
                     self.sampler._update_global_pool(full_params, self.current_fitness, self.grid_idx)
 
-            if self.sampler.derived_mode and self.sampler.derived_snap:
-                snap = self._derived_snap_point()
-                if snap is not None:
-                    from .derived_snap_job import DerivedSnapJob
-                    return DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap), next_job_id + 1
+            if self.sampler.derived_mode:
+                jac = self._derived_jacobian()
+                if jac is not None and grid_idx in self.sampler.population:
+                    J, q, x_full = jac
+                    # kept for the patching and recheck seeds of the neighbours
+                    self.sampler.population[grid_idx]['derived_jacobian'] = J
+                    if self.sampler.derived_snap:
+                        from .derived_snap_job import DerivedSnapJob
+                        margin = self.sampler.derived_project_margin
+                        snap = self.sampler._project_into_cell(x_full, q, J, grid_idx, margin=margin)
+                        if snap is not None:
+                            return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, snap, stage=self.derived_stage),
+                                    next_job_id + 1)
+                        # Converged on a face of the shrunk cell: one evaluation
+                        # just inside the true face recovers most of the margin.
+                        edge = self.sampler.derived_edge_margin
+                        if self.converged and edge is not None:
+                            pt = self.sampler._edge_point(x_full, q, J, grid_idx, margin, edge)
+                            if pt is not None:
+                                return (DerivedSnapJob(next_job_id, self.sampler, grid_idx, pt, stage=2),
+                                        next_job_id + 1)
 
         elif self.type == 'REFINEMENT_LBFGSB':
             # Refinement cells skip DE and get a minimal population state here.

@@ -121,7 +121,7 @@ Common constructor arguments:
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
-- `samples_output_file` — path to log every evaluation as `[params…, logL, phase]`; the `phase` column tags which algorithm stage produced each point (see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
+- `samples_output_file` — path to log every evaluation as `[params…, logL, phase]` (plus the derived values as trailing columns when `derived_names` is given); the `phase` column tags which algorithm stage produced each point (see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
 - `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
 
@@ -262,6 +262,64 @@ See the `ProfileProjector` docstring for the full structure. Several DE knobs th
 ### Projection options
 
 Each projection is a dict. Required: `dims` (parameter indices) and `grid_points` (resolution per dimension). Optional: `optimization_method` (`'de'` or `'lbfgsb'`, default `'de'`), `patch_coarse_grid` (default `True`), `patch_refined_grid` (default `False`), `grid_refinement_factor` (integer > 1 to enable refinement), and `refinement_method` (default `'linear'`).
+
+## Projections over derived quantities
+
+A profile can be laid over quantities the user code computes from the inputs (masses,
+cross sections, any function of the parameters) instead of over input parameters. The target
+then returns the derived values with the log-likelihood, and a projection names them:
+
+```python
+def target(p):
+    logL = ...                                   # as before
+    return logL, {'m_gluino': m_gl(p), 'm_lsp': m_lsp(p)}   # or an array in derived_names order
+
+sampler = ProfileProjector(
+    target_func=target, bounds=bounds, derived_names=['m_gluino', 'm_lsp'],
+    projections=[
+        {'dims': [0, 1], 'grid_points': [50, 50]},                     # an input-space projection
+        {'derived': ['m_gluino', 'm_lsp'], 'ranges': [[500, 3000], [0, 1500]],
+         'grid_points': [50, 50]},                                     # a derived-plane projection
+    ])
+```
+
+In a derived-plane projection every input parameter is profiled and a cell is the node-centred
+box in the derived quantities. The stages run as in input space, with these differences:
+
+- A cell cannot fix the derived values directly, so the population step and the polish of a
+  cell see `logL - penalty_scale * roi_threshold * d^2`, with `d` the distance of the point's
+  derived values outside the cell in cell widths (zero inside). The penalty only steers the
+  search; the value reported for a cell is the best evaluation that actually landed in it.
+- The polish treats the cell as a constraint. Each quasi-Newton step is bent so that the
+  derived quantities stay in the cell to first order, using the finite-difference Jacobian
+  of the derived quantities that the gradient evaluations give for free: the faces the free
+  step would cross become linear equality constraints on the step, aimed a small margin
+  inside the face. The line search runs on the merit function `-logL + mu * (distance outside
+  the shrunk cell)`, so a start outside the cell is pulled in. A run that converged on a
+  face ends with one evaluation just inside the true face. A run that still ends outside
+  (no Jacobian, as with a user-supplied gradient) gets one evaluation at the point
+  projected back into the cell.
+- Neighbour seeds for patching and the suspect recheck are projected into the target cell
+  with the Jacobian stored by the source cell's polish; the pool seeds of a cell's starting
+  population are the pool points nearest to the cell in the derived plane, on distinct
+  branches. The early DE exit is off.
+- Cells that no evaluation entered are left out of the output: a cell with no preimage in
+  the box (the derived quantities cannot take those values) is unattainable, and the output
+  does not distinguish it from a cell the search never reached.
+- The sample file carries the derived values of every evaluation as extra trailing columns
+  (`[params..., logL, phase, derived...]`), and a warm start from such a file works in
+  derived mode.
+
+Knobs in `advanced_config['derived']`: `penalty_scale` (0.3), `snap` (True), `project_margin`
+(0.005 cell widths), `edge_margin` (0.002; `None` turns the finishing evaluation off),
+`second_stage_factor` (0; a positive value adds a second polish with the penalty multiplied by
+it after a polish that ended outside its cell) and `second_stage_max_iter` (100). On the 4-D
+Himmelblau function profiled over linear, product and nonlinear maps of its inputs, the derived
+mode gets 99% of the cells of the region of interest within 0.1 of the constrained maximum at a
+few times the cost of an input-space scan; binning the evaluations of an input-space run onto
+the same planes gets 8-12%. Projections over derived quantities cost more than input-space ones
+because the search per cell runs over all parameters with a soft constraint instead of over the
+profiled ones with the rest fixed.
 
 ## Visualization
 

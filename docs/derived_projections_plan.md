@@ -1,8 +1,14 @@
 # Implementation plan: profile likelihood projections in derived-parameter planes
 
-Status: deferred — kept for future work. The volume-sampling feature
-(`volume_sampling_plan.md`) is being pursued first; it shares none of this
-plan's plumbing (anchors and constraints live in input space there).
+Status: implemented in a reduced form (branch `claude/derived-projections`): the target
+returns `(logL, derived)`, a projection names derived quantities and ranges, cell-anchored
+jobs use the penalised fitness with hard membership for reporting, the polish constrains its
+quasi-Newton steps to the cell through the finite-difference Jacobian of the derived
+quantities with a merit-function line search and a finishing evaluation at the cell's edge,
+patching and recheck project their seeds, pool seeds are taken by proximity in the derived
+plane, the sample file carries the derived values and a warm start reads them. Not done from
+this plan: the kappa ramp per individual, the unattainable-cell classification in the output,
+and the anchored top-up mode. The rest of this document is the original plan.
 
 ## Goal
 

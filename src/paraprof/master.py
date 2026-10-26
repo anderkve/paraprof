@@ -195,14 +195,23 @@ def run_scan(comm, sampler, projections,
     if broadcast_target_func:
         comm.bcast((sampler.target_func, sampler.grad_func), root=myrank)
 
-    results = run_all_projections(
-        comm=comm,
-        sampler=sampler,
-        projections=projections,
-        save_plots=save_plots,
-        plot_settings=plot_settings,
-        myrank=myrank,
-    )
+    try:
+        results = run_all_projections(
+            comm=comm,
+            sampler=sampler,
+            projections=projections,
+            save_plots=save_plots,
+            plot_settings=plot_settings,
+            myrank=myrank,
+        )
+    except BaseException:
+        # A master that dies with an exception would leave the workers blocked
+        # in their receive loop and the MPI job hanging; release them first.
+        try:
+            terminate_workers(comm, myrank=myrank)
+        except Exception:
+            pass
+        raise
 
     terminate_workers(comm, myrank=myrank)
     return results

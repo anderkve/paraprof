@@ -153,7 +153,11 @@ class ProfileProjector:
         bounds : array-like, shape (n_dims, 2)
             Parameter bounds for each dimension
         projections : list of dict
-            List of projection configurations, each with 'dims' and 'grid_points'
+            List of projection configurations, each with 'dims' and
+            'grid_points'. A projection over derived quantities instead has
+            ``'derived'`` (a list of names from ``derived_names``), ``'ranges'``
+            (one ``[lo, hi]`` per name, the plane the grid covers) and
+            'grid_points'; every input parameter is profiled in it.
         grad_func : callable, optional
             User-supplied gradient of ``target_func`` (default: None). Only
             used in the L-BFGS-B paths; ignored by Differential Evolution.
@@ -232,7 +236,10 @@ class ProfileProjector:
             during the scan. Each row is ``[params..., logL, phase]``, where
             ``phase`` is an integer tagging the algorithm stage that produced
             the point (see :mod:`paraprof.phases`); filtering on it recovers
-            any subset (e.g. the volume-sampling probes). Format follows the
+            any subset (e.g. the volume-sampling probes). With
+            ``derived_names`` the derived values follow as trailing columns,
+            ``[params..., logL, phase, derived...]`` (NaN where a call
+            returned none). Format follows the
             extension: ``.csv`` (text) or ``.h5``/``.hdf5`` (HDF5 binary,
             needs ``h5py``); anything else is treated as CSV.
         warm_start_file : str, optional
@@ -243,7 +250,8 @@ class ProfileProjector:
             starts that would normally seed activation. Default: None (no
             warm start). To round-trip the current run's samples into the
             next one, point ``warm_start_file`` at the same path as
-            ``samples_output_file``.
+            ``samples_output_file``. A projection over derived quantities
+            needs the derived columns in the file to place its rows.
         volume_sampling : dict, optional
             Configuration for the post-projection volume-sampling stage,
             which collects a stratified, well-spread sample set inside the
@@ -262,6 +270,16 @@ class ProfileProjector:
             names (strings) and will be translated to integer indices. The list
             must have length equal to the number of parameters. Mixing names
             and indices within a single projection's ``dims`` is allowed.
+
+        Derived Quantities
+        ------------------
+        derived_names : list of str, optional
+            Names of the derived quantities the target returns with the
+            log-likelihood (default: None). When set, ``target_func`` returns
+            ``(logL, derived)`` with ``derived`` an array in this order or a
+            ``{name: value}`` dict; the values are cached per evaluated point,
+            logged to the sample file, and a projection may be laid over them
+            (see ``projections``). Required for such projections.
 
         Advanced Configuration
         ----------------------
@@ -314,6 +332,15 @@ class ProfileProjector:
                     'batch_size': int,              # Default: None (FD-aware auto)
                     'undiscovered_threshold': float,# Default: 0.5 (0 disables early stop)
                     'min_starts': int,              # Default: None (auto)
+                },
+
+                'derived': {                        # projections over derived quantities
+                    'penalty_scale': float,         # Default: 0.3 (anchoring penalty per squared cell width, in units of roi_threshold)
+                    'snap': bool,                   # Default: True (the polish constrains its steps to the cell with the Jacobian of the derived quantities)
+                    'project_margin': float,        # Default: 0.005 (how far inside the cell's faces the polish keeps its steps, in cell widths)
+                    'edge_margin': float,           # Default: 0.002 (a polish that converged on a face ends with one evaluation this far inside the true face; None = off)
+                    'second_stage_factor': float,   # Default: 0 (penalty multiplier of a second polish after a polish that ended outside its cell; 0 = none)
+                    'second_stage_max_iter': int,   # Default: 100 (iteration cap of that polish)
                 },
             }
 
@@ -543,13 +570,22 @@ class ProfileProjector:
 
             # Projections over derived quantities: the anchoring penalty is
             # penalty_scale * roi_threshold per squared cell width outside the
-            # cell (0.3 beat 0.1, 1.0 and 3 on every benchmark set); snap adds
-            # one evaluation after each polish that ends outside its cell, at
-            # the point projected back into it (without it half the cells end
-            # more than 0.1 short).
+            # cell (0.3 beat 0.1, 1.0 and 3 on every benchmark set). With snap
+            # the polish constrains its steps to the cell through the
+            # finite-difference Jacobian of the derived quantities, keeping
+            # them project_margin cell widths inside its faces, and ends with
+            # one evaluation edge_margin inside the true face when it converged
+            # on one; a polish that still ends outside gets one evaluation at
+            # the point projected back in, and then a second polish with the
+            # penalty times second_stage_factor (0 = none; the constrained
+            # steps made it unnecessary on the benchmark sets).
             'derived': {
                 'penalty_scale': 0.3,
                 'snap': True,
+                'project_margin': 0.005,
+                'edge_margin': 0.002,          # None = off
+                'second_stage_factor': 0.0,
+                'second_stage_max_iter': 100,
             },
 
             'activation': {
@@ -658,6 +694,10 @@ class ProfileProjector:
         self.derived_ranges = None
         self.derived_penalty_scale = config['derived']['penalty_scale']
         self.derived_snap = config['derived']['snap']
+        self.derived_second_stage_factor = config['derived']['second_stage_factor']
+        self.derived_second_stage_max_iter = config['derived']['second_stage_max_iter']
+        self.derived_project_margin = config['derived']['project_margin']
+        self.derived_edge_margin = config['derived']['edge_margin']
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
@@ -865,11 +905,11 @@ class ProfileProjector:
             self.derived_ranges = np.asarray(projection_config['ranges'], dtype=float).reshape(len(names), 2)
             projection_config['dims'] = []
             self.derived_cell_best = {}
-        # Stages that rebuild a cell's vector from a neighbour's profiled vector
-        # (patching, recheck) and the one-generation DE exit have no meaning
-        # when the cell is defined through q(x): off in derived mode.
+        # The one-generation DE exit tests neighbour agreement in input space
+        # and stays off in derived mode; patching and the recheck run with the
+        # neighbours' vectors projected into the cell (_seed_for_cell).
         self.de_allow_early_DE_exit = False if self.derived_mode else self._cfg_allow_early_DE_exit
-        self.suspect_recheck_enabled = False if self.derived_mode else self._cfg_suspect_recheck_enabled
+        self.suspect_recheck_enabled = self._cfg_suspect_recheck_enabled
 
         self.logger.info("=" * 80)
         if self.derived_mode:
@@ -904,8 +944,8 @@ class ProfileProjector:
             )
 
         # Read patching configuration
-        self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True) and not self.derived_mode
-        self.patch_refined_grid = projection_config.get('patch_refined_grid', False) and not self.derived_mode
+        self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True)
+        self.patch_refined_grid = projection_config.get('patch_refined_grid', False)
 
         # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
@@ -1238,9 +1278,16 @@ class ProfileProjector:
             return
 
         try:
-            data = np.array([list(params) + [target_val, float(phase)]
-                             for params, target_val, phase in self.samples_buffer])
-            self._sample_writer.write_batch(data)
+            # Row layout: [params..., logL, phase] plus one column per derived
+            # quantity when derived_names is set (NaN where a call returned none).
+            m = len(self.derived_names) if self.derived_names else 0
+            rows = []
+            for params, target_val, phase, derived in self.samples_buffer:
+                row = list(params) + [target_val, float(phase)]
+                if m:
+                    row += (list(derived) if derived is not None else [np.nan] * m)
+                rows.append(row)
+            self._sample_writer.write_batch(np.array(rows, dtype=float))
             self.samples_buffer = []
 
         except (OSError, ValueError) as e:
@@ -1254,6 +1301,7 @@ class ProfileProjector:
         array of derived quantities the target returned with this evaluation,
         cached by point; in derived mode it also updates the in-cell record."""
         self.target_calls += 1
+        d = None
         if derived is not None and self.derived_names:
             d = self._as_derived_array(derived)
             if d is not None:
@@ -1261,7 +1309,7 @@ class ProfileProjector:
                 if self.derived_mode:
                     self._note_derived_sample(params, target_val, d)
         if self.samples_output_file:
-            self.samples_buffer.append((params, target_val, phase))
+            self.samples_buffer.append((params, target_val, phase, d))
             if len(self.samples_buffer) >= self.sample_buffer_size:
                 self._flush_samples_buffer()
 
@@ -1342,9 +1390,10 @@ class ProfileProjector:
                 d2 += out * out
         return d2
 
-    def fitness_for_cell(self, result, grid_idx):
+    def fitness_for_cell(self, result, grid_idx, penalty_scale=None):
         """The fitness a cell-anchored job sees for an evaluation: the target
-        value, minus the anchoring penalty in derived mode."""
+        value, minus the anchoring penalty in derived mode (``penalty_scale``
+        overrides the configured scale, as the second-stage polish does)."""
         v = result['target_val']
         if not self.derived_mode or grid_idx is None:
             return v
@@ -1355,7 +1404,120 @@ class ProfileProjector:
         q = d[self.derived_idx]
         if not np.all(np.isfinite(q)):
             return -np.inf
-        return v - self.derived_penalty_scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+        scale = self.derived_penalty_scale if penalty_scale is None else penalty_scale
+        return v - scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+
+    def derived_penalised_value(self, value, q, grid_idx, penalty_scale=None):
+        """The penalised value of a known (value, q) pair for a cell."""
+        scale = self.derived_penalty_scale if penalty_scale is None else penalty_scale
+        return value - scale * self.roi_threshold * self._derived_cell_distance(q, grid_idx)
+
+    def _cell_box(self, grid_idx):
+        """Lower and upper corners of the node-centred cell in derived coordinates."""
+        lo, hi = [], []
+        for ax, k in zip(self.grid_axes, grid_idx):
+            w = (ax[-1] - ax[0]) / max(len(ax) - 1, 1)
+            lo.append(ax[k] - 0.5 * w)
+            hi.append(ax[k] + 0.5 * w)
+        return np.array(lo), np.array(hi)
+
+    def _derived_margin_violation(self, q, grid_idx, margin):
+        """Sum over the axes of how far q lies outside the cell of grid_idx
+        shrunk by ``margin`` of its width, in cell widths (zero inside)."""
+        lo, hi = self._cell_box(grid_idx)
+        w = hi - lo
+        q = np.asarray(q, dtype=float)
+        out = np.maximum(lo + margin * w - q, q - (hi - margin * w))
+        return float(np.sum(np.maximum(out, 0.0) / w))
+
+    def _project_into_cell(self, x_full, q, J, grid_idx, margin=0.02):
+        """x moved so that q(x) lands inside the cell of grid_idx to first order,
+        with the Jacobian J (m x n) of q at x: the minimum-norm step to the
+        nearest point of the cell shrunk by ``margin`` of its width. None when
+        q is inside already or J is unusable."""
+        lo, hi = self._cell_box(grid_idx)
+        w = hi - lo
+        q = np.asarray(q, dtype=float)
+        t = np.clip(q, lo + margin * w, hi - margin * w)
+        if np.allclose(t, q):
+            return None
+        J = np.asarray(J, dtype=float)
+        if J.shape != (len(q), len(x_full)) or not np.all(np.isfinite(J)):
+            return None
+        try:
+            delta = J.T @ np.linalg.solve(J @ J.T, t - q)
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(delta)):
+            return None
+        return np.clip(np.asarray(x_full, dtype=float) + delta, self.bounds[:, 0], self.bounds[:, 1])
+
+    def _edge_point(self, x_full, q, J, grid_idx, margin, edge):
+        """For a point inside the cell that sits on a face of the cell shrunk
+        by ``margin`` (where the constrained polish converges), the point moved
+        to first order onto the face shrunk by ``edge`` instead: the
+        minimum-norm step for the rows of J of those faces. None when the
+        point is not on such a face or J is unusable."""
+        lo, hi = self._cell_box(grid_idx)
+        w = hi - lo
+        q = np.asarray(q, dtype=float)
+        tol = 1e-6
+        rows, target = [], []
+        for j in range(len(q)):
+            if q[j] < lo[j] or q[j] > hi[j]:
+                return None
+            if q[j] <= lo[j] + (margin + tol) * w[j]:
+                rows.append(j)
+                target.append(lo[j] + edge * w[j])
+            elif q[j] >= hi[j] - (margin + tol) * w[j]:
+                rows.append(j)
+                target.append(hi[j] - edge * w[j])
+        if not rows:
+            return None
+        J = np.asarray(J, dtype=float)
+        if J.shape != (len(q), len(x_full)) or not np.all(np.isfinite(J)):
+            return None
+        Ja = J[rows]
+        try:
+            delta = Ja.T @ np.linalg.solve(Ja @ Ja.T, np.array(target) - q[rows])
+        except np.linalg.LinAlgError:
+            return None
+        if not np.all(np.isfinite(delta)):
+            return None
+        return np.clip(np.asarray(x_full, dtype=float) + delta, self.bounds[:, 0], self.bounds[:, 1])
+
+    def _seed_for_cell(self, src_idx, vec, grid_idx):
+        """A seed vector taken from cell ``src_idx`` for cell ``grid_idx``. In
+        derived mode the vector is projected into the target cell with the
+        Jacobian stored by the source cell's polish (the raw vector when none
+        is stored); in input mode it is returned as is."""
+        if not self.derived_mode or src_idx == grid_idx:
+            return vec
+        st = self.population.get(src_idx)
+        jac = st.get('derived_jacobian') if st else None
+        q = self._cached_derived_coords(vec)
+        if jac is None or q is None:
+            return vec
+        x = self._project_into_cell(vec, q, jac, grid_idx)
+        return vec if x is None else x
+
+    def _branch_seeds_from_pool(self, grid_idx, n):
+        """Derived mode: ``n`` pool points nearest to the cell in derived
+        coordinates, chosen to be distinct in input space (different preimage
+        branches of the cell rather than copies of one)."""
+        if n <= 0:
+            return None
+        cand = self._sample_proximity_from_global_pool(4 * n + 4, self._get_grid_coords_from_indices(grid_idx))
+        if cand is None or len(cand) == 0:
+            return None
+        ext = self._profiled_extent()
+        chosen = []
+        for c in cand:
+            if all(np.linalg.norm((c - s) / ext) > 0.05 for s in chosen):
+                chosen.append(c)
+            if len(chosen) == n:
+                break
+        return np.array(chosen) if chosen else None
 
     def _note_derived_sample(self, params, target_val, derived):
         """Derived mode: record an evaluation as the best value seen inside
@@ -1602,9 +1764,6 @@ class ProfileProjector:
             self.logger.info("  No warm-start file found or provided. Skipping warm start.")
             return
 
-        if self.derived_mode:
-            self.logger.info("  Warm start from a sample file is not available for projections over derived quantities. Skipping.")
-            return
         self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
             samples = read_samples(warm_start_file)
@@ -1614,22 +1773,42 @@ class ProfileProjector:
         if samples.size == 0:
             self.logger.info("  Warm-start file contained no samples. Skipping.")
             return
-        if samples.shape[1] != self.dims + 2:
+        # Rows are [params..., logL, phase] or, from a run with derived_names,
+        # [params..., logL, phase, derived...]; params and logL are read by
+        # position and the phase column is ignored, so a run's own sample log
+        # round-trips.
+        m = len(self.derived_names) if self.derived_names else 0
+        widths = {self.dims + 2}
+        if m:
+            widths.add(self.dims + 2 + m)
+        if samples.shape[1] not in widths:
             self.logger.info(
                 f"  Warm-start file rows have width {samples.shape[1]}, expected "
-                f"n_dims + 2 = {self.dims + 2} ([params..., logL, phase]). Skipping."
+                f"{sorted(widths)} ([params..., logL, phase] with the derived values as "
+                f"trailing columns when derived_names is set). Skipping."
             )
             return
+        has_derived = m and samples.shape[1] == self.dims + 2 + m
+        if self.derived_mode and not has_derived:
+            self.logger.info("  The warm-start file carries no derived values; a projection over "
+                             "derived quantities needs them to place the rows. Skipping.")
+            return
 
-        # params and logL are read by position; the trailing phase column is
-        # ignored, so a run's own sample log round-trips.
         best_candidates = {}
         for sample_row in samples:
             params = sample_row[:self.dims]
             target_val = sample_row[self.dims]
             if not np.all((params >= self.bounds[:, 0]) & (params <= self.bounds[:, 1])):
                 continue
+            if has_derived:
+                d = sample_row[self.dims + 2:]
+                if np.all(np.isfinite(d)):
+                    self._derived_cache[np.ascontiguousarray(params, dtype=float).tobytes()] = np.array(d, dtype=float)
+                elif self.derived_mode:
+                    continue
             grid_idx = self._get_grid_indices_from_point(params)
+            if grid_idx is None:
+                continue
             if grid_idx not in best_candidates or target_val > best_candidates[grid_idx]['target_val']:
                 best_candidates[grid_idx] = {'params': params, 'target_val': target_val}
 
@@ -2529,7 +2708,7 @@ class ProfileProjector:
 
             # Get best profiled params from neighbor
             best_idx = np.argmax(neighbor_state['fitnesses'])
-            profiled_params = neighbor_state['profiled_params'][best_idx]
+            profiled_params = self._seed_for_cell(neighbor_idx, neighbor_state['profiled_params'][best_idx], grid_idx)
 
             neighbor_info.append((neighbor_idx, profiled_params, neighbor_fitness))
 
@@ -2740,7 +2919,7 @@ class ProfileProjector:
                        if n in self.population and n not in suspect_set]
             entries.sort(reverse=True)
             for _f, n in entries[:k]:
-                _add(self._best_profiled_params(n))
+                _add(self._seed_for_cell(n, self._best_profiled_params(n), grid_idx))
 
         _top_non_suspect(self._get_valid_neighbors(grid_idx), 3)
         _top_non_suspect(self._get_k_ring(grid_idx, self.suspect_seeds_k_ring), 3)

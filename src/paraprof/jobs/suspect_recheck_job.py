@@ -36,7 +36,7 @@ class SuspectRecheckJob(Job):
         return tasks
 
     def process_result(self, result):
-        f = result['target_val']
+        f = self.sampler.fitness_for_cell(result, self.grid_idx)   # the target value; penalised in derived mode
         if np.isfinite(f) and f > self.best_seed_fitness:
             self.best_seed_fitness = f
             self.best_seed = self.candidate_seeds[result['context']['seed_idx']]
