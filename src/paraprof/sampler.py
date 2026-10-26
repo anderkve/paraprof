@@ -3005,7 +3005,10 @@ class ProfileProjector:
         if not candidates:
             return [], next_job_id
 
-        suspect_set = set(candidates)
+        # Seeds are not taken from cells that are themselves suspect. In
+        # derived mode every ROI cell is rechecked, so that exclusion would
+        # leave no neighbour seeds at all; there the neighbours seed each other.
+        suspect_set = set() if self.derived_mode else set(candidates)
         jobs = []
         for grid_idx in candidates:
             seeds = self._gather_suspect_seeds(grid_idx, suspect_set)

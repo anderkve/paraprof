@@ -260,6 +260,12 @@ class TestRecheckSelection:
             s.population[idx] = dict(base, best_fitness=f, fitnesses=np.array([f]))
         assert s._find_suspect_cells(0, []) == [(6, 6), (7, 6), (8, 6)]          # within roi_threshold = 4, best first
         assert set(s._find_suspect_cells(1, [(7, 6)])) == {(6, 6), (8, 6)}      # later waves: neighbours of the winners
+        # the rechecked cells seed each other: cell (7, 6) gets its neighbours' points although they are rechecked too
+        s.population[(6, 6)]['profiled_params'] = np.array([[1.0, 1.0, 1.0, 1.0]])
+        s.population[(8, 6)]['profiled_params'] = np.array([[-1.0, 1.0, -1.0, 1.0]])
+        jobs, _ = s.create_suspect_recheck_jobs(0, [], 0)
+        job = [j for j in jobs if j.grid_idx == (7, 6)][0]
+        assert len(job.candidate_seeds) >= 3
 
 
 class TestRecheckPolishesOtherBasins:
