@@ -30,6 +30,7 @@ PLUGIN_DIR = REPO_ROOT / "GAMBIT_plugin"
 
 RUNNER = textwrap.dedent("""
     import json
+    import os
     import sys
     import types
     import numpy as np
@@ -123,9 +124,17 @@ RUNNER = textwrap.dedent("""
     def _version(pkg):
         return getattr(pkg, '__version__', 'n/a') if pkg is not None else 'n/a'
 
+    def _get_directory(path, default_output_path=".", **kwargs):
+        # Mirrors ScannerBit's utils.get_directory: create and return the
+        # scanner's output folder under default_output_path.
+        defpath = os.path.abspath(os.path.join(default_output_path, path))
+        os.makedirs(defpath, exist_ok=True)
+        return defpath + "/"
+
     utils_mod = types.ModuleType('utils')
     utils_mod.copydoc = _copydoc
     utils_mod.version = _version
+    utils_mod.get_directory = _get_directory
     utils_mod.with_mpi = True
     sys.modules['utils'] = utils_mod
 
