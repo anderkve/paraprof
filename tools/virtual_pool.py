@@ -191,11 +191,12 @@ def busy_profile(start, end, n_workers):
 
 def run_virtual_scan(target_func, bounds, projections, n_workers, grad_func=None,
                      eval_time=1.0, jitter=0.0, seed=0, log_level='WARNING',
-                     **projector_kwargs):
+                     sampler_hook=None, **projector_kwargs):
     """One paraprof scan on `n_workers` virtual workers.
 
     Returns a dict with the sampler state after the last projection and the
-    simulated timeline. `projections` is deep-copied.
+    simulated timeline. `projections` is deep-copied. `sampler_hook(sampler)`
+    is called before the scan starts, for tests that instrument the sampler.
     """
     import copy
 
@@ -210,6 +211,8 @@ def run_virtual_scan(target_func, bounds, projections, n_workers, grad_func=None
         with paraprof.ProfileProjector(target_func=target_func, bounds=bounds,
                                        projections=projections, grad_func=grad_func,
                                        **projector_kwargs) as sampler:
+            if sampler_hook is not None:
+                sampler_hook(sampler)
             results = paraprof.run_scan(comm=comm, sampler=sampler, projections=projections,
                                         save_plots=False, broadcast_target_func=False, myrank=0)
             population = {idx: {'status': st['status'], 'best_fitness': float(st['best_fitness'])}

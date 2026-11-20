@@ -76,8 +76,13 @@ YAML options:
     lbfgsb_polish:           Apply L-BFGS-B polish after DE (default true).
     use_clustering:          Detect modes during refinement (default true).
     refinement_direct_eval:  Skip optimisation in refinement runs (default false).
-    initial_points:          Optional list of starting points in physical
-                             coordinates to activate explicitly.
+    initial_points:          Optional list of starting points to activate
+                             explicitly. A point given as a mapping
+                             {parameter name: value} is in physical
+                             coordinates (every scanned parameter must be
+                             named, with or without its model prefix). A
+                             point given as a list is in unit-hypercube
+                             coordinates, in ScannerBit's parameter order.
     samples_output_file:     Optional CSV path; written by rank 0 only. Note that
                              GAMBIT's printers already record every evaluation,
                              so this is purely a paraprof-side diagnostic file.
@@ -118,6 +123,10 @@ YAML options:
                              (multi-projection knowledge transfer),
                              'suspect_recheck' (wrong-optimum strip recheck).
                              See the paraprof README for the full key list.
+                             For a likelihood that costs seconds per call,
+                             'lbfgsb': {'ftol': 1e-4} is the setting that
+                             matters most: the default of 1e-9 polishes each
+                             cell far beyond what a contour shows.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
                              the working directory after each projection. When
@@ -234,6 +243,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
         # from the YAML Parameters node.
         bounds = [(0.0, 1.0)] * self.dim
 
+        if "initial_points" in self.projector_kwargs:
+            self.projector_kwargs["initial_points"] = self._initial_points_to_unit(
+                self.projector_kwargs["initial_points"])
+
         if self.mpi_rank == 0:
             print(f"{self.print_prefix} Starting paraprof scan with "
                   f"{len(self.projections)} projection(s) on {self.mpi_size - 1} "
@@ -261,6 +274,45 @@ only the loglike value, so L-BFGS-B uses finite differences.
             self._handle_volume_stage(sampler, results)
 
         return 0
+
+
+    def _initial_points_to_unit(self, points):
+        """Unit-hypercube coordinates of the user's initial points.
+
+        A mapping {parameter name: value} is a point in physical coordinates
+        and goes through ScannerBit's inverse prior transform. Names may be
+        given with or without the model prefix. A list is taken as
+        unit-hypercube coordinates already.
+        """
+        names = list(self.parameter_names)
+        short = {}
+        for full in names:
+            short.setdefault(full.split("::")[-1], []).append(full)
+        unit_points = []
+        for i, point in enumerate(points):
+            if not isinstance(point, dict):
+                unit_points.append([float(v) for v in point])
+                continue
+            physical = {}
+            for key, value in point.items():
+                if key in names:
+                    physical[key] = float(value)
+                elif len(short.get(key, [])) == 1:
+                    physical[short[key][0]] = float(value)
+                else:
+                    raise RuntimeError(
+                        f"{self.print_prefix} initial_points[{i}]: '{key}' is not a scanned "
+                        f"parameter (or is ambiguous without its model prefix). "
+                        f"Scanned parameters: {names}")
+            missing = [n for n in names if n not in physical]
+            if missing:
+                raise RuntimeError(
+                    f"{self.print_prefix} initial_points[{i}] gives no value for {missing}.")
+            unit = [float(u) for u in self.inverse_transform(physical)]
+            print(f"{self.print_prefix} initial point {i} in the unit hypercube: "
+                  + ", ".join(f"{u:.6f}" for u in unit), flush=True)
+            unit_points.append(unit)
+        return unit_points
 
 
     def _handle_volume_stage(self, sampler, results):
