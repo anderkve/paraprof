@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   11 % fewer evaluations. Eight planes on 1000 workers: 139 and 70. Three DE
   planes on 1000 workers: about 320 and 140. On 100 workers the first
   projection ends 5 % later than it would alone; on 1000 it is not held back.
+  The result of every projection is collected when the projection ends, and
+  with `save_plots` its plots are written then.
 - `lbfgsb.activation_depth` (default 1, the behaviour so far): how many cells
   ahead a cell inside the region of interest activates while workers are idle.
   With a depth above 1 the cells further out than a neighbour start from the

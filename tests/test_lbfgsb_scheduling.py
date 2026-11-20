@@ -357,6 +357,41 @@ def test_eager_start_changes_little_on_a_busy_pool():
     assert eag['target_calls'] < 1.05 * seq['target_calls']
 
 
+def test_eager_start_writes_each_projection_when_it_ends(monkeypatch, capsys):
+    import paraprof.visualization
+    plots = []
+
+    def record(sampler, filename, plot_settings=None):
+        plots.append((filename, sorted(int(d) for d in sampler.projection_dims),
+                      sampler.target_calls))
+
+    monkeypatch.setattr(paraprof.visualization, 'plot_profiles', record)
+    np.random.seed(3)
+    projections = [{'dims': list(d), 'grid_points': [12, 12], 'optimization_method': 'lbfgsb'}
+                   for d in PLANES]
+    out = run_virtual_scan(
+        gauss4, [(0.0, 1.0)] * 4, projections, 200, jitter=0.05, seed=3, log_level='INFO',
+        save_plots=True, roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2,
+        lbfgsb_max_iter=20, advanced_config={'cross_projection': {'eager_start': True}})
+    log = capsys.readouterr().err
+
+    # One plot per projection, made with the state of that projection in the sampler.
+    names = [f"profile_plot_rank_0_dims_{'_'.join(map(str, d))}_coarse" for d in PLANES]
+    assert sorted(name for name, _, _ in plots) == sorted(names)
+    for name, dims, _ in plots:
+        assert dims == sorted(PLANES[names.index(name)])
+
+    # The first projection is written when it ends: before the last one, and with
+    # evaluations of the scan still to come.
+    order = [names.index(name) for name, _, _ in plots]
+    calls_at_plot = {names.index(name): calls for name, _, calls in plots}
+    assert order.index(0) < order.index(len(PLANES) - 1)
+    assert calls_at_plot[0] < out['target_calls']
+    assert out['results'][0]['metrics']['total_target_calls'] == calls_at_plot[0]
+    for k in range(len(PLANES)):
+        assert log.count(f"=== Completed Projection {k + 1}/{len(PLANES)} ===") == 1
+
+
 def test_projections_with_refinement_are_not_started_early():
     np.random.seed(3)
     projections = [

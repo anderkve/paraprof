@@ -110,7 +110,12 @@ def _collect_coarse_result(sampler, projection_config, save_plots, plot_settings
 
 
 class _EagerProjections:
-    """Projections that master_main may start while it runs another one."""
+    """Projections that master_main may start while it runs another one.
+
+    master_main calls ``finish`` for every projection of the group when it
+    ends, the one it was started for (the host) included, so that the plots
+    of a projection are written then and not when the whole group is done.
+    """
 
     def __init__(self, host_index, indices, projections, save_plots, plot_settings, myrank):
         self.host_index = host_index
@@ -119,7 +124,8 @@ class _EagerProjections:
         self.save_plots = save_plots
         self.plot_settings = plot_settings
         self.myrank = myrank
-        self.results = {}       # projection index -> result dict
+        self.host_result = None  # result dict of the host projection
+        self.results = {}       # projection index -> result dict, the others
         self.states = {}        # projection index -> sampler state at the end
 
     def has_next(self):
@@ -140,7 +146,7 @@ class _EagerProjections:
         config = self.projections[index]
         solution = _collect_coarse_result(sampler, config, self.save_plots,
                                           self.plot_settings, self.myrank)
-        self.results[index] = {
+        result = {
             'coarse_solution': solution,
             'refined_solution': None,
             'metrics': {'coarse_target_calls': sampler.target_calls,
@@ -148,7 +154,11 @@ class _EagerProjections:
                         'global_max': sampler.global_max_target_val},
             'projection_config': config,
         }
-        self.states[index] = sampler.capture_projection_state()
+        if index == self.host_index:
+            self.host_result = result
+        else:
+            self.results[index] = result
+            self.states[index] = sampler.capture_projection_state()
         logger.info("=" * 80)
         logger.info(f"=== Completed Projection {index + 1}/{len(self.projections)} ===")
         logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
@@ -201,6 +211,11 @@ def run_projection(comm, sampler, projection_config,
         myrank=myrank,
         eager=eager,
     )
+
+    # With eager start master_main has collected the result (flush, plots,
+    # export) when the projection ended. Such a projection has no refinement.
+    if eager is not None and eager.host_result is not None:
+        return eager.host_result
 
     # Flush samples buffer after coarse grid
     sampler._flush_samples_buffer()
@@ -368,9 +383,11 @@ def run_all_projections(comm, sampler, projections,
         results['projection_config'] = projection_config
         all_results.append(results)
 
-        logger.info("=" * 80)
-        logger.info(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
-        logger.info("=" * 80)
+        # With eager start the line was logged when the projection ended.
+        if eager is None or eager.host_result is None:
+            logger.info("=" * 80)
+            logger.info(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
+            logger.info("=" * 80)
 
     # Optional post-projection volume-sampling stage (see volume.py and
     # docs/volume_sampling_plan.md). Result is stashed on
@@ -1177,7 +1194,7 @@ def master_main(comm, sampler,
                     # All stages of this projection are complete.
                     runs.remove(R)
                     sampler._flush_samples_buffer()
-                    if R is not host:
+                    if eager is not None:
                         eager.finish(R.index, sampler, logger)
                     R.state.update(sampler.capture_projection_state())
                     break
