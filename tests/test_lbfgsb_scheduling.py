@@ -254,3 +254,25 @@ def test_noise_stage_sets_the_step():
     assert amp / 5 < sampler.lbfgsb_noise < amp * 5
     # near sqrt(noise / curvature): well above the 1e-8 that suits double precision
     assert 1e-5 < sampler.lbfgsb_fd_step_value < 1e-3
+
+
+# ---- initial points ------------------------------------------------------------------------
+def seeded_scan(refine):
+    np.random.seed(3)
+    seed = CENTRE + np.array([0.03, -0.02, 0.01, 0.04])     # near the maximum, on no grid node
+    return run_virtual_scan(
+        gauss4, [(0.0, 1.0)] * 4,
+        [{'dims': [0, 1], 'grid_points': [12, 12], 'optimization_method': 'lbfgsb'}],
+        3, jitter=0.05, seed=3, roi_threshold=4.0, max_patching_waves=2, lbfgsb_max_iter=20,
+        initial_points=[seed], refine_initial_points=refine)
+
+
+def test_initial_points_are_not_optimised_unless_asked():
+    plain = seeded_scan(False)
+    refined = seeded_scan(True)
+    # Without refinement the maximum is the best point evaluated: the seed or a grid node.
+    assert plain['global_max'] < -10.0 - 1e-3
+    assert abs(refined['global_max'] + 10.0) < 1e-6
+    assert 0 < refined['target_calls'] - plain['target_calls'] < 100
+    for out in (plain, refined):
+        assert roi_errors(out).min() > -1e-5

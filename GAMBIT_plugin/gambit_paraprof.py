@@ -83,6 +83,9 @@ YAML options:
                              named, with or without its model prefix). A
                              point given as a list is in unit-hypercube
                              coordinates, in ScannerBit's parameter order.
+    refine_initial_points:   Optimise all parameters from every initial point
+                             before grid points are activated (default false).
+                             Without it the points are evaluated only.
     samples_output_file:     Optional CSV path; written by rank 0 only. Note that
                              GAMBIT's printers already record every evaluation,
                              so this is purely a paraprof-side diagnostic file.
@@ -193,7 +196,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
         for key in (
             "roi_threshold", "pop_per_grid_point", "max_patching_waves",
             "lbfgsb_max_iter", "lbfgsb_polish", "n_initial_optimizations",
-            "n_optima", "initial_points", "use_clustering",
+            "n_optima", "initial_points", "refine_initial_points", "use_clustering",
             "refinement_direct_eval", "samples_output_file", "warm_start_file",
             "volume_sampling", "advanced_config",
         ):

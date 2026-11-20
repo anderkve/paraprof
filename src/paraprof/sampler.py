@@ -150,6 +150,7 @@ class ProfileProjector:
                  n_initial_optimizations=None,
                  n_optima=None,
                  initial_points=None,
+                 refine_initial_points=False,
                  # Optional user-supplied gradient
                  grad_func=None,
                  # Feature toggles
@@ -240,6 +241,15 @@ class ProfileProjector:
             Each point will activate its nearest grid point, independent of optimization
             Useful when you already know good regions of parameter space
             Example: [[3.0, 0.0, -3.0, 0.0]] for a 4D problem
+            The points replace the global L-BFGS-B starts. They are evaluated,
+            not optimised: unless a grid point later exceeds it, the best of
+            them is the maximum the region of interest is measured from.
+        refine_initial_points : bool, optional
+            Run one L-BFGS-B optimisation over all parameters from every
+            entry of ``initial_points`` before the grid points are activated
+            (default: False). The endpoints join the initial maxima. Use it
+            when the points are near the maximum but not known to be at it,
+            e.g. the best fit of an earlier run with a different target.
 
         Feature Toggles
         ---------------
@@ -653,6 +663,7 @@ class ProfileProjector:
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations
         self.initial_points = initial_points
+        self.refine_initial_points = bool(refine_initial_points)
         self.refinement_direct_eval = refinement_direct_eval
         self.use_clustering = use_clustering
 
@@ -838,6 +849,9 @@ class ProfileProjector:
 
         # --- Initial points tracking ---
         self._initial_points_evaluated = False
+        self._initial_points_refined = False
+        self._initial_point_values = None     # target at each initial point
+        self._refine_best_before = None
 
         # --- Refinement State ---
         self.is_refinement_run = False
@@ -1636,6 +1650,23 @@ class ProfileProjector:
             self.bounds[:, 0] + unit_samples * (self.bounds[:, 1] - self.bounds[:, 0])
         )
         self._initial_opt_lhs_idx = 0
+
+    def start_initial_point_refinement(self):
+        """Queue the evaluated ``initial_points`` as the start points of the
+        global L-BFGS-B stage, best first. Returns their number, or 0 if there
+        is nothing to refine (option off, done already, no finite point)."""
+        if (not self.refine_initial_points or self._initial_points_refined
+                or not self._initial_points_evaluated or self.initial_points is None):
+            return 0
+        self._initial_points_refined = True
+        values = np.asarray(self._initial_point_values, dtype=float)
+        order = [i for i in np.argsort(-values) if np.isfinite(values[i])]
+        if not order:
+            return 0
+        self._initial_opt_start_points = np.asarray(self.initial_points, dtype=float)[order]
+        self._initial_opt_lhs_idx = 0
+        self._refine_best_before = float(values[order[0]])
+        return len(order)
 
     def create_one_initial_optimization_job(self, next_job_id):
         """Single global L-BFGS-B job from the next pooled LHS start point."""

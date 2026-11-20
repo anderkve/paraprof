@@ -65,6 +65,7 @@ class InitialPointEvalJob(Job):
                 )
 
         sampler._initial_points_evaluated = True
+        sampler._initial_point_values = np.array(self.target_vals, dtype=float)
 
         if len(self.points) > 0:
             best = float(np.max(self.target_vals))

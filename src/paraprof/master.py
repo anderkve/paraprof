@@ -676,6 +676,7 @@ def master_main(comm, sampler,
     initial_opt_batch_size = 0
     initial_opt_cap = 0
     initial_opt_stopped = False    # rule tripped or cap reached: stop refilling
+    initial_opt_refining = False   # the starts are the user's initial_points
 
     # --- Main Event Loop ---
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
@@ -722,9 +723,15 @@ def master_main(comm, sampler,
                         and len(sampler.global_solution_pool) > 0):
                     sampler._initialize_from_global_pool()
 
+                # refine_initial_points: one global L-BFGS-B run from every
+                # user-supplied point, through the same rolling stage. All of
+                # them run to the end; the basin stopping rule is not applied.
+                n_refine = sampler.start_initial_point_refinement()
+                initial_opt_refining = n_refine > 0
+
                 # If maxima already came from warm start / pool seeding, skip the
                 # global optimization stage entirely.
-                if sampler.initial_maxima:
+                if sampler.initial_maxima and not initial_opt_refining:
                     logger.info("Skipping initial optimization - using provided initial points or warm start.")
                     current_stage = stages.pop(0) if stages else None
                     continue
@@ -732,19 +739,26 @@ def master_main(comm, sampler,
                 # Rolling multistart with online basin detection. Launch a
                 # first batch and hand control to WAITING_FOR_INITIAL_OPT,
                 # which refills and applies the stopping rule as jobs return.
-                initial_opt_cap = sampler.n_initial_optimizations
-                initial_opt_batch_size = sampler.resolve_initial_opt_batch_size(n_workers)
                 initial_opt_started = 0
                 initial_opt_completed = 0
                 initial_opt_stopped = False
                 initial_opt_inflight = set()
-                sampler.init_initial_opt_lhs(initial_opt_cap)
-
-                logger.info(
-                    f"--- Basin detection: rolling multistart "
-                    f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
-                    f"min_starts={sampler.basin_min_starts}) ---"
-                )
+                if initial_opt_refining:
+                    initial_opt_cap = n_refine
+                    initial_opt_batch_size = max(1, min(n_refine, n_workers))
+                    logger.info(
+                        f"--- Refining {n_refine} user-provided initial point(s) "
+                        f"with L-BFGS-B over all parameters ---"
+                    )
+                else:
+                    initial_opt_cap = sampler.n_initial_optimizations
+                    initial_opt_batch_size = sampler.resolve_initial_opt_batch_size(n_workers)
+                    sampler.init_initial_opt_lhs(initial_opt_cap)
+                    logger.info(
+                        f"--- Basin detection: rolling multistart "
+                        f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
+                        f"min_starts={sampler.basin_min_starts}) ---"
+                    )
                 new_jobs = []
                 for _ in range(min(initial_opt_batch_size, initial_opt_cap)):
                     job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
@@ -1106,11 +1120,13 @@ def master_main(comm, sampler,
                     if not initial_opt_stopped:
                         if initial_opt_started >= initial_opt_cap:
                             initial_opt_stopped = True
-                            logger.info(
-                                f"--- Basin detection: reached cap of "
-                                f"{initial_opt_cap} starts; stopping ---"
-                            )
-                        elif sampler.basin_detection_should_stop(initial_opt_completed):
+                            if not initial_opt_refining:
+                                logger.info(
+                                    f"--- Basin detection: reached cap of "
+                                    f"{initial_opt_cap} starts; stopping ---"
+                                )
+                        elif (not initial_opt_refining
+                              and sampler.basin_detection_should_stop(initial_opt_completed)):
                             W, n_roi = sampler.basin_detection_roi_stats()
                             n_distinct = len(sampler.initial_optima_registry)
                             initial_opt_stopped = True
@@ -1150,12 +1166,20 @@ def master_main(comm, sampler,
 
                     # Stage done once the in-flight batch has fully drained.
                     if not initial_opt_inflight:
-                        W, n_roi = sampler.basin_detection_roi_stats()
-                        logger.info(
-                            f"--- Basin detection complete: {initial_opt_completed} "
-                            f"optimizations, {W} distinct ROI optima "
-                            f"({len(sampler.initial_optima_registry)} optima total) ---"
-                        )
+                        if initial_opt_refining:
+                            logger.info(
+                                f"--- Initial points refined: best target "
+                                f"{sampler._refine_best_before:.6f} -> "
+                                f"{sampler.global_max_target_val:.6f} ---"
+                            )
+                            initial_opt_refining = False
+                        else:
+                            W, n_roi = sampler.basin_detection_roi_stats()
+                            logger.info(
+                                f"--- Basin detection complete: {initial_opt_completed} "
+                                f"optimizations, {W} distinct ROI optima "
+                                f"({len(sampler.initial_optima_registry)} optima total) ---"
+                            )
                         current_stage = stages.pop(0) if stages else None
 
         # --- End of Iprobe receive loop ---

@@ -63,6 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   L-BFGS recursion, and stops when the decrease its quadratic model predicts is
   below the function tolerance. A cell takes the Hessian of a finished
   neighbour. Parameters held by a bound are left out of the Newton step.
+- `refine_initial_points` (default `False`): one L-BFGS-B run over all
+  parameters from every entry of `initial_points`, before grid points are
+  activated. `initial_points` are evaluated and not optimised, so a point
+  slightly off the maximum leaves the reported maximum, and the level the
+  region of interest is measured from, below the true one unless a grid point
+  exceeds it. The GAMBIT plugin forwards the option.
 - `tools/virtual_pool.py` runs the master against any number of virtual
   workers in one process, with a simulated clock, and
   `tools/bench_scheduling.py` uses it to report evaluations, wall time in
