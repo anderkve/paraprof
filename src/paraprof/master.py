@@ -21,6 +21,11 @@ except ImportError:
 TASK_TERMINATE = -1
 # Length of the list of non-blocking sends at which completed ones are dropped.
 PENDING_SENDS_PRUNE = 1024
+
+# Fraction of the workers that cells activated ahead (lbfgsb activation_depth
+# > 1) leave free. Their evaluations cannot be interrupted, so without a
+# reserve ordinary work would wait behind them.
+AHEAD_RESERVE_FRACTION = 0.25
 # Seconds between progress lines of the L-BFGS-B loop. With rolling activation
 # the loop has no waves to report.
 PROGRESS_LOG_INTERVAL = 60.0
@@ -583,11 +588,19 @@ def master_main(comm, sampler,
     # Create priority task queues
     high_prio_tasks = collections.deque()
     low_prio_tasks = collections.deque()
+    # Tasks of cells activated ahead (lbfgsb activation_depth > 1). They are
+    # served last, after the evaluations sent ahead of time for other jobs.
+    ahead_tasks = collections.deque()
+
+    def _is_ahead(job):
+        return bool(sampler.ahead_cells) and getattr(job, 'grid_idx', None) in sampler.ahead_cells
 
     # Helper function to queue tasks
-    def _queue_tasks(tasks, job_type):
+    def _queue_tasks(tasks, job_type, job=None):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        if job is not None and _is_ahead(job):
+            ahead_tasks.extend(tasks)
+        elif job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -597,7 +610,7 @@ def master_main(comm, sampler,
         """Drop not-yet-dispatched tasks belonging to the given jobs from both
         priority queues (used to abort optimizations). Tasks already running on
         workers return normally and are ignored via the unknown-job path."""
-        for q in (high_prio_tasks, low_prio_tasks):
+        for q in (high_prio_tasks, low_prio_tasks, ahead_tasks):
             kept = [t for t in q if t.get('context', {}).get('job_id') not in job_ids]
             q.clear()
             q.extend(kept)
@@ -607,20 +620,29 @@ def master_main(comm, sampler,
     spec_ring = collections.deque()
     spec_members = set()
 
-    def _offer_speculation(job):
-        if getattr(job, 'wants_speculation', False) and job.id not in spec_members:
-            spec_ring.append(job.id)
-            spec_members.add(job.id)
+    # The same for the jobs of cells activated ahead, served after everything
+    # else.
+    ahead_spec_ring = collections.deque()
+    ahead_spec_members = set()
 
-    def _next_speculative_task():
-        for _ in range(len(spec_ring)):
-            jid = spec_ring.popleft()
+    def _offer_speculation(job):
+        if not getattr(job, 'wants_speculation', False):
+            return
+        ring, members = ((ahead_spec_ring, ahead_spec_members) if _is_ahead(job)
+                         else (spec_ring, spec_members))
+        if job.id not in members:
+            ring.append(job.id)
+            members.add(job.id)
+
+    def _next_speculative_task(ring=spec_ring, members=spec_members):
+        for _ in range(len(ring)):
+            jid = ring.popleft()
             job = active_jobs.get(jid)
             task = job.speculate() if (job is not None and job.wants_speculation) else None
             if task is None:
-                spec_members.discard(jid)
+                members.discard(jid)
                 continue
-            spec_ring.append(jid)
+            ring.append(jid)
             return task
         return None
 
@@ -629,7 +651,7 @@ def master_main(comm, sampler,
         for job in jobs:
             active_jobs[job.id] = job
             initial_tasks = job.start()
-            _queue_tasks(initial_tasks, job.type)
+            _queue_tasks(initial_tasks, job.type, job)
             _offer_speculation(job)
             # A job may finish during start() without dispatching any tasks
             # (e.g. an LBFGSBJob with zero dims to optimize). Without this
@@ -644,7 +666,9 @@ def master_main(comm, sampler,
     tasks_sent = 0
     tasks_completed = 0
     speculative_sent = 0
-    idle_after_dispatch = 0
+    idle_after_dispatch = 0     # workers not needed by ordinary work after a dispatch pass
+    free_after_dispatch = 0     # workers with nothing at all to do after a dispatch pass
+    ahead_inflight = 0          # evaluations in flight for cells activated ahead
     last_progress_log = time.time()
 
     # DE stage state
@@ -679,11 +703,17 @@ def master_main(comm, sampler,
     initial_opt_refining = False   # the starts are the user's initial_points
 
     # --- Main Event Loop ---
+    # Cells activated ahead leave this many workers to ordinary work.
+    ahead_reserve = int(AHEAD_RESERVE_FRACTION * n_workers)
+
     while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
 
         # --- 1. Generate new jobs if a stage is starting or continuing ---
         # This block only runs when no jobs are active and no tasks are queued.
-        if not active_jobs and not high_prio_tasks and not low_prio_tasks and (tasks_sent == tasks_completed):
+        # Evaluations still in flight for dropped cells activated ahead do
+        # not hold a stage back: their results are ignored when they return.
+        if (not active_jobs and not high_prio_tasks and not low_prio_tasks
+                and (tasks_sent - tasks_completed == ahead_inflight)):
 
             if not current_stage:
                 break # All stages and jobs are complete
@@ -831,6 +861,13 @@ def master_main(comm, sampler,
                 # Iterative L-BFGS-B optimization with dynamic activation
                 # Similar to DE_LOOP but using gradient-based optimization
 
+                # Cells activated ahead that were never confirmed are not part
+                # of the result.
+                if sampler.ahead_cells:
+                    n_dropped = sampler.drop_ahead_cells()
+                    logger.info(f"--- Dropped {n_dropped} cells activated ahead "
+                                f"that stayed outside the border ---")
+
                 # Create L-BFGS-B jobs for all active (non-converged) grid points
                 new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
 
@@ -975,6 +1012,8 @@ def master_main(comm, sampler,
             worker_rank = result['context']['worker_rank']
             free_workers.append(worker_rank)
             tasks_completed += 1
+            if result['context'].get('ahead_task'):
+                ahead_inflight -= 1
 
             _log_worker_error(result, sampler, logger)
             _log_user_gradient_error(result, sampler, logger)
@@ -993,7 +1032,7 @@ def master_main(comm, sampler,
             new_tasks = job.process_result(result)
 
             # Add to correct priority queue
-            _queue_tasks(new_tasks, job.type)
+            _queue_tasks(new_tasks, job.type, job)
             _offer_speculation(job)
 
             if job.is_finished():
@@ -1053,14 +1092,53 @@ def master_main(comm, sampler,
                         # its own optimisation. Its optimised value can only be
                         # higher, so no cell is activated that would not have
                         # been; the neighbours start from a less refined point.
+                        # With activation_depth > 1 it also activates cells
+                        # further out, which may lie outside the border.
                         if sampler.lbfgsb_eager_activation and idle_after_dispatch > 0:
                             more, next_job_id = sampler.create_dynamic_activation_jobs(
-                                next_job_id, around=[job.grid_idx])
+                                next_job_id, around=[job.grid_idx],
+                                depth=(sampler.lbfgsb_activation_depth
+                                       if idle_after_dispatch > ahead_reserve else 1))
                             rolling += more
                     elif job.type == 'LBFGSB_LOOP':
+                        ahead = (sampler.lbfgsb_activation_depth
+                                 if (sampler.lbfgsb_eager_activation
+                                     and idle_after_dispatch > ahead_reserve)
+                                 else 1)
                         rolling, next_job_id = sampler.create_dynamic_activation_jobs(
-                            next_job_id, around=[job.grid_idx])
+                            next_job_id, around=[job.grid_idx], depth=ahead)
                     _start_jobs(rolling)
+
+                    if sampler.ahead_cells and job.type in ('ACTIVATE_GRID_POINT', 'LBFGSB_LOOP'):
+                        # A cell found inside the region of interest makes
+                        # itself and its neighbours ordinary cells: their
+                        # queued tasks move up.
+                        confirmed = set(sampler.confirm_ahead_cells(job.grid_idx))
+                        if confirmed:
+                            moved = {j.id: j for j in active_jobs.values()
+                                     if getattr(j, 'grid_idx', None) in confirmed}
+                            kept = []
+                            for t in ahead_tasks:
+                                owner = moved.get(t.get('context', {}).get('job_id'))
+                                if owner is None:
+                                    kept.append(t)
+                                else:
+                                    _queue_tasks([t], owner.type)
+                            ahead_tasks.clear()
+                            ahead_tasks.extend(kept)
+                            for j in moved.values():
+                                _offer_speculation(j)
+                        # Only cells activated ahead are still being worked
+                        # on: every cell the result needs is done. Drop them.
+                        if (sampler.ahead_cells and not high_prio_tasks and not low_prio_tasks
+                                and all(_is_ahead(j) for j in active_jobs.values())):
+                            active_jobs.clear()
+                            ahead_tasks.clear()
+                            ahead_spec_ring.clear()
+                            ahead_spec_members.clear()
+                            n_dropped = sampler.drop_ahead_cells()
+                            logger.info(f"--- Dropped {n_dropped} cells activated ahead "
+                                        f"that stayed outside the border ---")
 
                 # Check if the patching wave is now complete
                 if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
@@ -1194,11 +1272,23 @@ def master_main(comm, sampler,
                 task = low_prio_tasks.popleft()
             else:
                 # Nothing is queued: let a job use the worker for an
-                # evaluation it may need next.
+                # evaluation it may need next, or else for a cell activated
+                # ahead.
                 task = _next_speculative_task()
-                if task is None:
+                if task is not None:
+                    speculative_sent += 1
+                elif len(free_workers) <= ahead_reserve:
                     break
-                speculative_sent += 1
+                else:
+                    if ahead_tasks:
+                        task = ahead_tasks.popleft()
+                    else:
+                        task = _next_speculative_task(ahead_spec_ring, ahead_spec_members)
+                        if task is None:
+                            break
+                        speculative_sent += 1
+                    task['context']['ahead_task'] = True
+                    ahead_inflight += 1
             worker_rank = free_workers.pop(0)
 
             # Use non-blocking send to overlap communication
@@ -1206,8 +1296,11 @@ def master_main(comm, sampler,
             pending_sends.append(req)
             tasks_sent += 1
 
-        # Workers left without anything to do after this pass.
-        idle_after_dispatch = len(free_workers)
+        # Workers left without anything to do after this pass, and workers
+        # that ordinary work left over (idle, or busy with a cell activated
+        # ahead).
+        free_after_dispatch = len(free_workers)
+        idle_after_dispatch = free_after_dispatch + ahead_inflight
 
         if current_stage == 'LBFGSB_LOOP' and time.time() - last_progress_log > PROGRESS_LOG_INTERVAL:
             last_progress_log = time.time()

@@ -63,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   L-BFGS recursion, and stops when the decrease its quadratic model predicts is
   below the function tolerance. A cell takes the Hessian of a finished
   neighbour. Parameters held by a bound are left out of the Newton step.
+- `lbfgsb.activation_depth` (default 1, the behaviour so far): how many cells
+  ahead a cell inside the region of interest activates while workers are idle.
+  With a depth above 1 the cells further out than a neighbour start from the
+  profiled parameters of the cell that activates them, get workers only when
+  nothing else is queued (a quarter of the pool is kept free for other work),
+  and become ordinary cells when they or a neighbour turn out to lie inside
+  the region of interest. The rest are dropped when the ordinary cells are
+  done, so the result holds the same cells as with depth 1; evaluations still
+  in flight for them no longer hold the next stage back. Measured on virtual
+  workers (6-parameter Gaussian, 25 x 25 grid, six seeds), depth 2 against
+  depth 1: wall time -12 % and evaluations +46 % on 1000 workers, -5 % and
+  +17 % on 300, +5 % and +9 % on 100. Depth 3 gains nothing over depth 2.
 - `refine_initial_points` (default `False`): one L-BFGS-B run over all
   parameters from every entry of `initial_points`, before grid points are
   activated. `initial_points` are evaluated and not optimised, so a point

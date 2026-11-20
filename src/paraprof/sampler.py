@@ -327,6 +327,7 @@ class ProfileProjector:
                     'hessian_max_dims': int,       # Default: 12
                     'rolling_activation': bool,    # Default: True
                     'eager_activation': bool,      # Default: True
+                    'activation_depth': int,       # Default: 1
                 },
 
                 'clustering': {
@@ -398,7 +399,18 @@ class ProfileProjector:
         instead of waiting for the other cells of its wave. With the second,
         and only while workers are idle, a cell whose activation samples
         already put it inside the region of interest activates its neighbours
-        before its own optimisation has finished.
+        before its own optimisation has finished. ``activation_depth`` is how
+        many cells ahead a cell inside the region of interest activates while
+        workers are idle: 1 is its neighbours, 2 adds the cells behind them,
+        and so on. A cell activated further out than a neighbour starts from
+        the profiled parameters of the cell that activated it and is worked
+        on only by workers that have nothing else to do. It becomes an
+        ordinary cell when it or one of its neighbours turns out to lie
+        inside the region of interest. Those for which that never happens
+        are dropped when the other cells are done, so the result holds the
+        same cells as with depth 1. Their evaluations are spent: a depth
+        above 1 trades evaluations for wall time on a pool with idle
+        workers, and gains nothing on a pool that is busy anyway.
 
         The ``basin_detection`` sub-dict controls the initial-optimization
         stage, where ``n_initial_optimizations`` is treated as a *maximum*:
@@ -597,6 +609,7 @@ class ProfileProjector:
                 'lookahead': DEFAULT_LBFGSB_LOOKAHEAD,
                 'rolling_activation': True,
                 'eager_activation': True,
+                'activation_depth': 1,
                 'hessian': True,
                 'hessian_max_dims': DEFAULT_LBFGSB_HESSIAN_MAX_DIMS,
             },
@@ -724,6 +737,13 @@ class ProfileProjector:
         self.lbfgsb_lookahead = max(0, int(lb['lookahead']))
         self.lbfgsb_rolling_activation = bool(lb['rolling_activation'])
         self.lbfgsb_eager_activation = bool(lb['eager_activation'])
+        depth = lb['activation_depth']
+        if isinstance(depth, bool) or not isinstance(depth, (int, np.integer)) or depth < 1:
+            raise ConfigurationError(
+                "lbfgsb activation_depth must be an integer >= 1",
+                parameter="advanced_config['lbfgsb']['activation_depth']", value=depth)
+        self.lbfgsb_activation_depth = int(depth)
+        self._offsets_within_cache = {}
         self.lbfgsb_hessian = bool(lb['hessian'])
         self.lbfgsb_hessian_max_dims = int(lb['hessian_max_dims'])
         # Latest Hessian measured by a cell run of the current projection.
@@ -874,6 +894,7 @@ class ProfileProjector:
         self.population = {}  # {grid_idx: state_dict}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
+        self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
@@ -1008,6 +1029,7 @@ class ProfileProjector:
         self.population = {}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
+        self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
@@ -2441,11 +2463,65 @@ class ProfileProjector:
         )
         return (job, next_job_id + 1)
 
-    def create_dynamic_activation_jobs(self, next_job_id, around=None):
+    def _has_roi_neighbor(self, grid_idx, roi_cutoff):
+        for nb in self._get_valid_neighbors(grid_idx):
+            state = self.population.get(nb)
+            if state is not None and state['best_fitness'] > roi_cutoff:
+                return True
+        return False
+
+    def confirm_ahead_cells(self, grid_idx):
+        """Called when ``grid_idx`` has a new value. If it lies inside the
+        region of interest, it and its neighbours stop being cells activated
+        ahead. Returns the cells this changed."""
+        if not self.ahead_cells:
+            return []
+        state = self.population.get(grid_idx)
+        if state is None or state['best_fitness'] <= self.global_max_target_val - self.roi_threshold:
+            return []
+        confirmed = [c for c in self._get_valid_neighbors(grid_idx, include_center=True)
+                     if c in self.ahead_cells]
+        self.ahead_cells.difference_update(confirmed)
+        return confirmed
+
+    def drop_ahead_cells(self):
+        """Remove the cells activated ahead that were never confirmed.
+        Returns how many there were."""
+        n = len(self.ahead_cells)
+        for idx in self.ahead_cells:
+            self.population.pop(idx, None)
+            self.profile_likelihood_grid.pop(idx, None)
+            self.activated_grid_indices.discard(idx)
+            self.pending_activation_indices.discard(idx)
+        self.ahead_cells = set()
+        return n
+
+    def _cells_within(self, grid_idx, depth):
+        """In-bounds cells at Chebyshev distance 1..depth from ``grid_idx``,
+        nearest first."""
+        key = (self.n_proj_dims, depth)
+        offsets = self._offsets_within_cache.get(key)
+        if offsets is None:
+            offsets = [o for o in itertools.product(range(-depth, depth + 1),
+                                                    repeat=self.n_proj_dims) if any(o)]
+            offsets.sort(key=lambda o: max(abs(v) for v in o))
+            self._offsets_within_cache[key] = offsets
+        cells = []
+        for offset in offsets:
+            idx = tuple(int(i + o) for i, o in zip(grid_idx, offset))
+            if all(0 <= i < s for i, s in zip(idx, self.grid_shape)):
+                cells.append(idx)
+        return cells
+
+    def create_dynamic_activation_jobs(self, next_job_id, around=None, depth=1):
         """ActivationJobs for un-activated neighbors of high-likelihood grid points.
 
         `around` limits the search to the given grid points (used when a
         single cell has just finished); by default every cell is considered.
+        `depth` is the Chebyshev distance up to which cells are activated: 1
+        is the neighbours. A cell further out has no activated neighbour to
+        start from and takes the profiled parameters of the cell that
+        activates it.
         """
         new_jobs = []
         roi_cutoff = self.global_max_target_val - self.roi_threshold
@@ -2459,7 +2535,9 @@ class ProfileProjector:
         ]
 
         for grid_idx in active_points_in_roi:
-            for neighbor_idx in self._get_valid_neighbors(grid_idx):
+            targets = (self._get_valid_neighbors(grid_idx) if depth <= 1
+                       else self._cells_within(grid_idx, depth))
+            for neighbor_idx in targets:
                 if neighbor_idx not in self.population and neighbor_idx not in self.pending_activation_indices:
 
                     # Find best warm_start_params from neighbor's neighbors (incl. self)
@@ -2473,6 +2551,15 @@ class ProfileProjector:
                                 best_warm_start_fitness = source_state['best_fitness']
                                 source_best_idx = np.argmax(source_state['fitnesses'])
                                 best_warm_start_params = source_state['profiled_params'][source_best_idx]
+
+                    if best_warm_start_params is None:
+                        origin = self.population[grid_idx]
+                        best_warm_start_params = origin['profiled_params'][np.argmax(origin['fitnesses'])]
+
+                    # Further out than a neighbour of any cell known to be
+                    # inside the region of interest: activated ahead.
+                    if depth > 1 and not self._has_roi_neighbor(neighbor_idx, roi_cutoff):
+                        self.ahead_cells.add(neighbor_idx)
 
                     job = ActivationJob(
                         job_id=next_job_id,

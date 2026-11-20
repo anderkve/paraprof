@@ -276,3 +276,33 @@ def test_initial_points_are_not_optimised_unless_asked():
     assert 0 < refined['target_calls'] - plain['target_calls'] < 100
     for out in (plain, refined):
         assert roi_errors(out).min() > -1e-5
+
+
+# ---- activation depth ----------------------------------------------------------------------
+def depth_scan(depth, n_workers):
+    return scan(gauss4, n_workers, activation_depth=depth)
+
+
+def test_activation_depth_keeps_the_cells_and_their_values():
+    base = depth_scan(1, 200)
+    deep = depth_scan(3, 200)
+    # Cells activated ahead that stay outside the border are dropped: same cells, same profile.
+    assert set(deep['population']) == set(base['population'])
+    assert roi_errors(deep).min() > -1e-5
+    assert abs(deep['global_max'] + 10.0) < 1e-6
+    assert all(st['status'] in ('converged', 'optimized') for st in deep['population'].values())
+    # The cells ahead cost evaluations.
+    assert deep['target_calls'] > base['target_calls']
+
+
+def test_activation_depth_does_nothing_without_idle_workers():
+    base = depth_scan(1, 3)
+    deep = depth_scan(3, 3)
+    assert set(deep['population']) == set(base['population'])
+    assert deep['target_calls'] < 1.05 * base['target_calls']
+
+
+def test_activation_depth_validation():
+    for bad in (0, -1, 1.5, True, 'two'):
+        with pytest.raises(Exception, match='activation_depth'):
+            make_sampler(activation_depth=bad)

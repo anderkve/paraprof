@@ -248,6 +248,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `lbfgsb.speculative`, `lbfgsb.lookahead` | `True`, `8`              | Use idle workers for evaluations a run may need next             |
 | `lbfgsb.hessian`, `lbfgsb.hessian_max_dims` | `True`, `12`          | Measure a finite-difference Hessian and take Newton steps, for runs over at most this many parameters |
 | `lbfgsb.rolling_activation`, `lbfgsb.eager_activation` | `True`, `True` | In `'lbfgsb'` projections, optimise and activate cells as results arrive instead of in waves |
+| `lbfgsb.activation_depth` | `1` | How many cells ahead a cell inside the region of interest activates while workers are idle. Above 1 the extra cells get only idle workers and are dropped if they stay outside the border: the result holds the same cells. On a simulated 25 × 25 plane depth 2 cut the wall time by 12 % on 1000 workers for 46 % more evaluations, by 5 % on 300, and added 5 % on 100 |
 | `clustering.*`                     | auto-DBSCAN                    | Mode detection during refinement                                 |
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
