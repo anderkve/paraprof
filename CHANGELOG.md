@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one whose run finished first.
 - `roi_threshold` docstring: a depth in the units of the target (log L), not
   in chi-squared.
+- GAMBIT plugin: an `initial_points` entry written as a mapping
+  `{parameter name: value}` is in physical coordinates and is mapped to the
+  unit hypercube with ScannerBit's inverse prior transform. An entry written as
+  a list is in unit-hypercube coordinates, as before; the plugin's docstring
+  had said physical coordinates for those.
 
 ### Fixed
 - `grid_points` were paired with the wrong parameters when `dims` was not given
