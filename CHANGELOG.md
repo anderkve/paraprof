@@ -8,6 +8,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **L-BFGS-B runs work in bound-normalised coordinates and choose their
+  finite-difference step from the noise of the target.** The step was
+  `max(|x| * 1e-8, 1e-10)` in parameter units, which suits a target accurate to
+  double precision. On a target with numerical noise of `1e-7` the gradient was
+  noise, the line search ran its full ladder of 34 trial steps one evaluation
+  at a time, and the run ended as a failure. The step is now a fraction of each
+  parameter's bound extent, `advanced_config['lbfgsb']['fd_step']`: `'auto'`
+  (default) sets it from a noise estimate made once before the first
+  optimisation (new `NOISE_ESTIMATE` stage, about 60 evaluations, logged), a
+  number fixes it. Probes step into the box at a bound instead of being
+  clipped onto the point they start from.
+- **A run that ends because no trial step improves keeps its result.** Such a
+  run used to write nothing back: its best accepted point was dropped, the
+  global maximum could stay below a point the scan had evaluated, and a cell of
+  an `'lbfgsb'` projection stayed in status `LBFGSB_queued`, outside
+  `export_grid_solution`. The best accepted point is now written back however
+  the run ends, and the run counts as converged.
+- **Line search.** The first trial step is scaled: from curvature pairs or the
+  Hessian of a finished neighbour, from the curvature scale of earlier runs, or
+  else capped at a tenth of the bound extent. It used to be the raw
+  gradient, thousands of box widths long in a unit hypercube. The ladder starts
+  where the clipped trial point starts to move and ends when the displacement
+  drops below the finite-difference step, so no point is evaluated twice. A run
+  remembers the step length its last line search accepted. The value at the
+  start point of a cell run is known and is no longer evaluated again.
+- **`'lbfgsb'` projections activate and optimise cells as results arrive**
+  instead of wave by wave. While workers are idle, a cell whose activation
+  samples put it inside the region of interest activates its neighbours
+  before its own optimisation ends.
+- Cells near several initial maxima are seeded from the highest one, not from
+  the one whose run finished first.
+- `roi_threshold` docstring: a depth in the units of the target (log L), not
+  in chi-squared.
+- GAMBIT plugin: an `initial_points` entry written as a mapping
+  `{parameter name: value}` is in physical coordinates and is mapped to the
+  unit hypercube with ScannerBit's inverse prior transform. An entry written as
+  a list is in unit-hypercube coordinates, as before; the plugin's docstring
+  had said physical coordinates for those.
+
+### Fixed
+- A projection over all parameters (no profiled parameters) raised
+  `AttributeError` in `ActivationJob.on_finish`, for both optimisation methods.
+- `grid_points` were paired with the wrong parameters when `dims` was not given
+  in ascending order: the dims were sorted, the grid sizes were not.
+- The list of non-blocking sends in the master grew by one entry per
+  evaluation for the whole scan. Completed sends are now dropped as it goes.
+
+### Added
+- **Evaluations ahead of time on idle workers.** The trial steps of a line
+  search form a fixed ladder and the step accepted is the first that passes
+  the Armijo test, so later rungs can be evaluated before earlier ones return;
+  so can the gradient at the first rung. The master offers idle workers to
+  running jobs for this (`LBFGSBJob.speculate`). The accepted step does not
+  depend on it.
+- **Finite-difference Hessian.** A run over at most 12 parameters and without
+  a user gradient measures its Hessian together with its gradient, uses the
+  inverse as the initial matrix of the L-BFGS recursion, and stops when the
+  decrease its quadratic model predicts is below the function tolerance. A
+  cell takes the Hessian of a finished neighbour. Parameters held by a bound
+  are left out of the Newton step.
+- **Projections started on idle workers** (`cross_projection.eager_start`,
+  default `False`). The next projection starts while the current one runs,
+  when a tenth of the workers is idle and the projection started before it has
+  finished its first cell optimisation or DE generation. It takes its initial
+  maxima from the pool. Work is handed out in the order the projections were
+  started, so a later one only gets workers the earlier ones have no use for.
+  `'lbfgsb'` and `'de'` projections can overlap; projections with
+  `grid_refinement_factor` and those without profiled parameters are not
+  overlapped. The master keeps one stage machine and one set of queues per
+  projection and swaps the projection state of the sampler
+  (`ProfileProjector.PROJECTION_STATE_ATTRS`). Measured on virtual workers
+  (6-parameter Gaussian, three 25 x 25 planes, one seed), wall time in
+  evaluation-times, sequential against eager: 3 818 and 3 815 on 3 workers,
+  148 and 134 on 100, 75 and 59 on 300, 55 and 31 on 1000, with the same cells
+  in every projection. On 100 workers the first projection ends 5 % later
+  than it would alone; on 1000 it is not held back.
+- `lbfgsb.activation_depth` (default 1): how many cells ahead a cell inside
+  the region of interest activates while workers are idle. Cells further out
+  than a neighbour get workers only when nothing else is queued (a quarter of
+  the pool is kept free for other work) and become ordinary cells when they
+  or a neighbour turn out to lie inside the region of interest. The rest are
+  dropped, so the result holds the same cells as with depth 1. Measured on
+  virtual workers (6-parameter Gaussian, 25 x 25 grid, six seeds), depth 2
+  against depth 1: wall time -12 % and evaluations +46 % on 1000 workers,
+  -5 % and +17 % on 300, +5 % and +9 % on 100.
+- `refine_initial_points` (default `False`): one L-BFGS-B run over all
+  parameters from every entry of `initial_points`, before grid points are
+  activated. `initial_points` are evaluated and not optimised, so a point
+  slightly off the maximum leaves the reported maximum, and the level the
+  region of interest is measured from, below the true one unless a grid point
+  exceeds it. The GAMBIT plugin forwards the option.
+- `tools/virtual_pool.py` runs the master against any number of virtual
+  workers in one process, with a simulated clock, and
+  `tools/bench_scheduling.py` uses it to report evaluations, wall time in
+  units of one evaluation, busy workers and accuracy for a given worker count.
 - **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
   `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
   stage that produced the point (`paraprof.PHASE_*`, described in

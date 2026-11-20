@@ -9,6 +9,7 @@ import pytest
 
 from paraprof import ProfileProjector
 from paraprof.exceptions import ConfigurationError
+from paraprof.jobs import lbfgsb_job
 from paraprof.jobs.lbfgsb_job import LBFGSBJob
 from paraprof.worker import _normalize_user_gradient
 
@@ -105,8 +106,12 @@ def _sphere_grad(params):
 
 
 @pytest.fixture
-def sphere_sampler():
+def sphere_sampler(monkeypatch):
     """Factory for a fresh 4-D sphere sampler per test."""
+    # No finite-difference Hessian: a run with a user gradient does not
+    # measure one, and these tests compare it call for call with a run without.
+    monkeypatch.setattr(lbfgsb_job, 'HESSIAN_MAX_DIMS', 0)
+
     def make(grad_func=None, gradient_method='forward'):
         return ProfileProjector(
             target_func=_sphere,

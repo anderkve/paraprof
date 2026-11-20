@@ -123,9 +123,14 @@ RUNNER = textwrap.dedent("""
     def _version(pkg):
         return getattr(pkg, '__version__', 'n/a') if pkg is not None else 'n/a'
 
+    def _get_directory(plugin_name, **kwargs):
+        import tempfile
+        return tempfile.mkdtemp(prefix=plugin_name + '_')
+
     utils_mod = types.ModuleType('utils')
     utils_mod.copydoc = _copydoc
     utils_mod.version = _version
+    utils_mod.get_directory = _get_directory
     utils_mod.with_mpi = True
     sys.modules['utils'] = utils_mod
 

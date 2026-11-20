@@ -50,6 +50,57 @@ def _normalize_user_gradient(raw, n_dims):
     return np.where(np.isfinite(arr), arr, np.nan), None
 
 
+def evaluate_task(task, target_func, grad_func, rank, logger):
+    """Evaluate one task and return the result message for the master."""
+    params = task['params']
+    context = task['context']
+
+    error_message = None
+    try:
+        target_val = target_func(params)
+    except Exception as e:
+        logger.error(f"Error evaluating target function at params {params}: {e}")
+        target_val = -np.inf
+        error_message = f"{type(e).__name__}: {e}"
+
+    if target_val is None or not np.isfinite(target_val):
+        # Non-finite results (NaN, +inf) are coerced to -inf so the master
+        # never feeds NaN into comparisons. Report them as errors so the
+        # master can warn the user.
+        if not (target_val == -np.inf):
+            error_message = error_message or (
+                f"Non-finite target value {target_val!r}"
+            )
+            target_val = -np.inf
+
+    # Skip grad_func if the target eval failed — gradient at a bad point
+    # is meaningless.
+    user_gradient = None
+    user_gradient_error = None
+    if (context.get('compute_gradient') and grad_func is not None
+            and error_message is None):
+        try:
+            user_gradient, user_gradient_error = _normalize_user_gradient(
+                grad_func(params), len(params)
+            )
+        except Exception as e:
+            user_gradient_error = f"{type(e).__name__}: {e}"
+        if user_gradient_error:
+            logger.warning(
+                f"grad_func at params {params}: {user_gradient_error}"
+            )
+
+    context['worker_rank'] = rank
+    return {
+        'target_val': target_val,
+        'params': params,
+        'context': context,
+        'error': error_message,
+        'user_gradient': user_gradient,
+        'user_gradient_error': user_gradient_error,
+    }
+
+
 def worker_main(comm, myrank, target_func=None, grad_func=None):
     """Main loop for a worker process.
 
@@ -87,51 +138,4 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
             logger.info("Received terminate signal. Exiting.")
             break
 
-        params = task['params']
-        context = task['context']
-
-        error_message = None
-        try:
-            target_val = target_func(params)
-        except Exception as e:
-            logger.error(f"Error evaluating target function at params {params}: {e}")
-            target_val = -np.inf
-            error_message = f"{type(e).__name__}: {e}"
-
-        if target_val is None or not np.isfinite(target_val):
-            # Non-finite results (NaN, +inf) are coerced to -inf so the master
-            # never feeds NaN into comparisons. Report them as errors so the
-            # master can warn the user.
-            if not (target_val == -np.inf):
-                error_message = error_message or (
-                    f"Non-finite target value {target_val!r}"
-                )
-                target_val = -np.inf
-
-        # Skip grad_func if the target eval failed — gradient at a bad point
-        # is meaningless.
-        user_gradient = None
-        user_gradient_error = None
-        if (context.get('compute_gradient') and grad_func is not None
-                and error_message is None):
-            try:
-                user_gradient, user_gradient_error = _normalize_user_gradient(
-                    grad_func(params), len(params)
-                )
-            except Exception as e:
-                user_gradient_error = f"{type(e).__name__}: {e}"
-            if user_gradient_error:
-                logger.warning(
-                    f"grad_func at params {params}: {user_gradient_error}"
-                )
-
-        context['worker_rank'] = myrank
-        result = {
-            'target_val': target_val,
-            'params': params,
-            'context': context,
-            'error': error_message,
-            'user_gradient': user_gradient,
-            'user_gradient_error': user_gradient_error,
-        }
-        comm.send(result, dest=0)
+        comm.send(evaluate_task(task, target_func, grad_func, myrank, logger), dest=0)

@@ -1,6 +1,8 @@
 """Profile Likelihood Projector with Grid-Based Optimization."""
 import os
 import math
+import collections
+import functools
 import numpy as np
 import itertools
 from scipy.stats.qmc import LatinHypercube as LHS
@@ -77,6 +79,21 @@ SKIP_DE_WINDOW = 1
 SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
+# Finite-difference step of the L-BFGS-B gradient: a fraction of each
+# parameter's bound extent, or 'auto' (from a noise estimate of the target,
+# see jobs/noise_job.py).
+DEFAULT_LBFGSB_FD_STEP = 'auto'
+# Bounds on the automatic step, and the step used when the estimate fails.
+LBFGSB_FD_STEP_MIN = 1e-8
+LBFGSB_FD_STEP_MAX = 1e-3
+LBFGSB_FD_STEP_FALLBACK = 1e-6
+# Accepted curvature scales remembered per kind of run (global start / cell).
+LBFGSB_SCALE_MEMORY = 64
+# Base points of the noise estimate.
+NOISE_BASE_POINTS = 3
+# Bounds on the step of the second differences (fraction of the bound extent).
+LBFGSB_HESSIAN_STEP_MIN = 1e-4
+LBFGSB_HESSIAN_STEP_MAX = 0.05
 
 DEFAULT_PATCHING_N_NEIGHBORS = 1
 
@@ -101,6 +118,13 @@ DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
 DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
 
 
+@functools.lru_cache(maxsize=None)
+def _offsets_within(ndim, depth):
+    """Non-zero grid offsets up to Chebyshev distance ``depth``, nearest first."""
+    offsets = [o for o in itertools.product(range(-depth, depth + 1), repeat=ndim) if any(o)]
+    return sorted(offsets, key=lambda o: max(abs(v) for v in o))
+
+
 class ProfileProjector:
     """
     Profile Likelihood Projector for computing profile likelihood projections.
@@ -122,6 +146,7 @@ class ProfileProjector:
                  n_initial_optimizations=None,
                  n_optima=None,
                  initial_points=None,
+                 refine_initial_points=False,
                  # Optional user-supplied gradient
                  grad_func=None,
                  # Feature toggles
@@ -168,8 +193,9 @@ class ProfileProjector:
         Core Tuning Parameters
         ----------------------
         roi_threshold : float, optional
-            Region of interest threshold in chi-squared units (default: 4.0)
-            Points with likelihood > global_max - roi_threshold are in the ROI
+            Depth of the region of interest below the global maximum, in units
+            of the target (default: 4.0). For a log-likelihood this is half a
+            chi-squared difference: 3 sigma for two degrees of freedom is 5.92.
         pop_per_grid_point : int, optional
             Population size per grid point for DE (default: 3)
             Typical values: 1-5. Lower = fewer evaluations per cell but
@@ -208,6 +234,15 @@ class ProfileProjector:
             Each point will activate its nearest grid point, independent of optimization
             Useful when you already know good regions of parameter space
             Example: [[3.0, 0.0, -3.0, 0.0]] for a 4D problem
+            The points replace the global L-BFGS-B starts. They are evaluated,
+            not optimised: unless a grid point later exceeds it, the best of
+            them is the maximum the region of interest is measured from.
+        refine_initial_points : bool, optional
+            Run one L-BFGS-B optimisation over all parameters from every
+            entry of ``initial_points`` before the grid points are activated
+            (default: False). The endpoints join the initial maxima. Use it
+            when the points are near the maximum but not known to be at it,
+            e.g. the best fit of an earlier run with a different target.
 
         Feature Toggles
         ---------------
@@ -274,6 +309,8 @@ class ProfileProjector:
                 'lbfgsb': {
                     'ftol': float,                 # Default: 1e-9
                     'gradient_method': str,        # Default: 'forward'
+                    'fd_step': 'auto'|float,       # Default: 'auto'
+                    'activation_depth': int,       # Default: 1
                 },
 
                 'clustering': {
@@ -287,6 +324,7 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
+                    'eager_start': bool,                 # Default: False
                 },
 
                 'suspect_recheck': {
@@ -305,6 +343,27 @@ class ProfileProjector:
                     'min_starts': int,              # Default: None (auto)
                 },
             }
+
+        The ``lbfgsb`` sub-dict controls the L-BFGS-B runs (global starts,
+        cell optimisations, polish).
+
+        ``fd_step`` is the finite-difference step of the gradient, as a
+        fraction of each parameter's bound extent. ``'auto'`` estimates the
+        numerical noise of the target before the first optimisation (about
+        60 evaluations, logged) and sets the step to about
+        ``sqrt(noise / curvature)``. A run stops once an accepted step
+        changes the target by less than ``max(ftol, 4 * noise)``.
+
+        In an ``optimization_method='lbfgsb'`` projection a cell is optimised
+        as soon as its activation returns and activates its neighbours as
+        soon as it finishes inside the region of interest. While workers are
+        idle, a cell whose activation samples put it inside the region of
+        interest activates its neighbours before its own optimisation.
+        ``activation_depth`` is how many cells ahead it then activates (1:
+        its neighbours). Cells further out get only idle workers and are
+        dropped unless they or a neighbour turn out to lie inside the region
+        of interest, so the result holds the same cells as with depth 1;
+        their evaluations are lost.
 
         The ``basin_detection`` sub-dict controls the initial-optimization
         stage, where ``n_initial_optimizations`` is treated as a *maximum*:
@@ -325,6 +384,15 @@ class ProfileProjector:
         knowledge-transfer hooks. Both default to enabled; set either to
         ``False`` to disable that hook (useful for A/B benchmarking or as a
         safety valve if a target pathology surfaces).
+
+        ``eager_start`` (default ``False``) starts the next projection on
+        workers the current one leaves idle, once a tenth of the workers is
+        idle and the projection started before it has finished its first
+        cell optimisation (or DE generation). It needs
+        ``pool_seeded_initial_maxima``. Earlier projections are served
+        first. Projections with ``grid_refinement_factor`` or without
+        profiled parameters are not overlapped. The results hold the same
+        cells as a sequential run.
 
         Several DE knobs that did not show measurable effect on grid quality
         in benchmarking (mutation_strategy, pbest_fraction,
@@ -494,6 +562,8 @@ class ProfileProjector:
             'lbfgsb': {
                 'ftol': DEFAULT_LBFGSB_FTOL,
                 'gradient_method': 'forward',
+                'fd_step': DEFAULT_LBFGSB_FD_STEP,
+                'activation_depth': 1,
             },
 
             'clustering': {
@@ -507,6 +577,7 @@ class ProfileProjector:
             'cross_projection': {
                 'proximity_warm_start': True,
                 'pool_seeded_initial_maxima': True,
+                'eager_start': False,
             },
 
             'suspect_recheck': {
@@ -558,6 +629,7 @@ class ProfileProjector:
         self.lbfgsb_max_iter = lbfgsb_max_iter
         self.n_initial_optimizations = n_initial_optimizations
         self.initial_points = initial_points
+        self.refine_initial_points = bool(refine_initial_points)
         self.refinement_direct_eval = refinement_direct_eval
         self.use_clustering = use_clustering
 
@@ -572,8 +644,35 @@ class ProfileProjector:
         self.de_allow_early_DE_exit = config['de']['allow_early_DE_exit']
 
         # L-BFGS-B configuration
-        self.lbfgsb_ftol = config['lbfgsb']['ftol']
-        self.lbfgsb_gradient_method = config['lbfgsb']['gradient_method']
+        lb = config['lbfgsb']
+        self.lbfgsb_ftol = lb['ftol']
+        self.lbfgsb_gradient_method = lb['gradient_method']
+        fd_step = lb['fd_step']
+        if not (fd_step == 'auto'
+                or (isinstance(fd_step, (int, float, np.floating)) and not isinstance(fd_step, bool)
+                    and 0.0 < float(fd_step) < 1.0)):
+            raise ConfigurationError(
+                "lbfgsb fd_step must be 'auto' or a fraction of the bound extent in (0, 1)",
+                parameter="advanced_config['lbfgsb']['fd_step']", value=fd_step,
+            )
+        self.lbfgsb_fd_step = fd_step
+        # The step the jobs use. With 'auto' it is the fallback until the
+        # noise-estimate stage sets it.
+        self.lbfgsb_fd_step_value = (LBFGSB_FD_STEP_FALLBACK if fd_step == 'auto'
+                                     else float(fd_step))
+        # Noise of the target (rms, same units as the target), from the
+        # noise-estimate stage; 0 means unknown.
+        self.lbfgsb_noise = 0.0
+        self._noise_estimated = False
+        depth = lb['activation_depth']
+        if isinstance(depth, bool) or not isinstance(depth, (int, np.integer)) or depth < 1:
+            raise ConfigurationError(
+                "lbfgsb activation_depth must be an integer >= 1",
+                parameter="advanced_config['lbfgsb']['activation_depth']", value=depth)
+        self.lbfgsb_activation_depth = int(depth)
+        # Curvature scales (gamma = s.y / y.y) of finished global starts (see
+        # lbfgsb_scale_hint). Those of cell runs are per projection.
+        self._lbfgsb_global_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
 
         # Hidden knobs (kept as instance attributes for read-site compatibility,
         # sourced from module-level constants — see sensitivity benchmarks for
@@ -647,6 +746,9 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
+        # 3. eager_start: the next projection starts on workers the current
+        #    one leaves idle (run_all_projections, master_main).
+        self.eager_projection_start = bool(config['cross_projection']['eager_start'])
 
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
@@ -690,6 +792,9 @@ class ProfileProjector:
 
         # --- Initial points tracking ---
         self._initial_points_evaluated = False
+        self._initial_points_refined = False
+        self._initial_point_values = None     # target at each initial point
+        self._refine_best_before = None
 
         # --- Refinement State ---
         self.is_refinement_run = False
@@ -712,6 +817,7 @@ class ProfileProjector:
         self.population = {}  # {grid_idx: state_dict}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
+        self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
@@ -767,6 +873,29 @@ class ProfileProjector:
             else:
                 base_dict[key] = value
 
+    # Everything _reset_for_new_projection sets. With eager_start the master
+    # swaps these in before it works on a projection.
+    PROJECTION_STATE_ATTRS = (
+        'projection_dims', 'grid_points_per_dim', 'optimization_method',
+        'patch_coarse_grid', 'patch_refined_grid', 'profiled_dims', 'n_proj_dims',
+        'n_prof_dims', 'direct_eval_mode', 'grid_shape', 'grid_axes',
+        'profile_likelihood_grid', 'initial_maxima', 'initial_optima_registry',
+        '_initial_opt_start_points', '_initial_opt_lhs_idx', 'population',
+        'activated_grid_indices', 'pending_activation_indices', 'ahead_cells',
+        'current_generation', 'memory_F', 'memory_CR', 'memory_idx',
+        '_lbfgsb_cell_scales', 'lbfgsb_hessian_hint', '_neighbor_cache',
+        '_proximity_pool_cache', '_profiled_bounds', '_projection_bounds',
+    )
+
+    def capture_projection_state(self):
+        """The state of the projection the sampler is working on, as a dict."""
+        return {name: getattr(self, name) for name in self.PROJECTION_STATE_ATTRS}
+
+    def restore_projection_state(self, state):
+        """Make ``state`` (from capture_projection_state) the current projection."""
+        for name in self.PROJECTION_STATE_ATTRS:
+            setattr(self, name, state[name])
+
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""
         # Defensive: resolve string dims if a caller passes a fresh projection
@@ -781,11 +910,13 @@ class ProfileProjector:
         self.logger.info(f"--- Configuring for projection on dims: {projection_config['dims']} ---")
         self.logger.info("=" * 80)
 
-        self.projection_dims = sorted(projection_config['dims'])
+        # The dims are kept in ascending order internally. Each grid size
+        # stays with the dim it was given for.
+        order = sorted(range(len(projection_config['dims'])),
+                       key=lambda i: projection_config['dims'][i])
+        self.projection_dims = [projection_config['dims'][i] for i in order]
         # Add +1 to grid points to include both endpoints in linspace
-        grid_points = list(projection_config['grid_points']) # Copy
-        for i in range(len(grid_points)):
-            grid_points[i] += 1
+        grid_points = [projection_config['grid_points'][i] + 1 for i in order]
         self.grid_points_per_dim = grid_points
 
         if len(self.projection_dims) != len(self.grid_points_per_dim):
@@ -844,10 +975,15 @@ class ProfileProjector:
         self.population = {}
         self.activated_grid_indices = set()
         self.pending_activation_indices = set()
+        self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
         self.current_generation = 0
         self.memory_F = np.full(self.memory_size, 0.5)
         self.memory_CR = np.full(self.memory_size, 0.5)
         self.memory_idx = 0
+        # Curvature scales of finished cell runs, and the latest inverse
+        # Hessian a cell run measured (for a cell without a finished neighbour).
+        self._lbfgsb_cell_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
+        self.lbfgsb_hessian_hint = None
 
         # Performance optimizations: caches
         self._neighbor_cache = {}
@@ -1483,6 +1619,23 @@ class ProfileProjector:
         )
         self._initial_opt_lhs_idx = 0
 
+    def start_initial_point_refinement(self):
+        """Queue the evaluated ``initial_points`` as the start points of the
+        global L-BFGS-B stage, best first. Returns their number, or 0 if there
+        is nothing to refine (option off, done already, no finite point)."""
+        if (not self.refine_initial_points or self._initial_points_refined
+                or not self._initial_points_evaluated):
+            return 0
+        self._initial_points_refined = True
+        values = self._initial_point_values
+        order = [i for i in np.argsort(-values) if np.isfinite(values[i])]
+        if not order:
+            return 0
+        self._initial_opt_start_points = np.asarray(self.initial_points, dtype=float)[order]
+        self._initial_opt_lhs_idx = 0
+        self._refine_best_before = float(values[order[0]])
+        return len(order)
+
     def create_one_initial_optimization_job(self, next_job_id):
         """Single global L-BFGS-B job from the next pooled LHS start point."""
         if (self._initial_opt_start_points is None
@@ -1615,7 +1768,10 @@ class ProfileProjector:
         jobs = []
         activation_job_created_for_grid_points = set()
 
-        for maximum in self.initial_maxima:
+        # Best maximum first: a cell near two maxima is warm-started from the
+        # higher one, not from whichever start finished first.
+        ordered = sorted(self.initial_maxima, key=lambda m: -m['target_val'])
+        for maximum in ordered:
             point = maximum['point']
             grid_idx = self._get_grid_indices_from_point(point)
 
@@ -1642,6 +1798,104 @@ class ProfileProjector:
         return jobs, next_job_id
 
 
+    def needs_noise_estimate(self):
+        """True if the automatic finite-difference step has not been set yet."""
+        return (self.lbfgsb_fd_step == 'auto' and not self._noise_estimated
+                and self.grad_func is None)
+
+    def create_noise_estimate_job(self, next_job_id):
+        """Job that measures the noise of the target and sets the
+        finite-difference step. Base points are the user's initial points if
+        there are any, otherwise Latin-hypercube points."""
+        from .jobs.noise_job import NoiseEstimateJob
+
+        if self.initial_points is not None and len(self.initial_points) > 0:
+            base = np.asarray(self.initial_points, dtype=float)[:NOISE_BASE_POINTS]
+        else:
+            lhs = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
+            unit = lhs.random(n=NOISE_BASE_POINTS)
+            base = self.bounds[:, 0] + unit * (self.bounds[:, 1] - self.bounds[:, 0])
+        job = NoiseEstimateJob(next_job_id, self, base, LBFGSB_FD_STEP_MIN,
+                               LBFGSB_FD_STEP_MAX, LBFGSB_FD_STEP_FALLBACK)
+        return [job], next_job_id + 1
+
+    def lbfgsb_hessian_step_value(self):
+        """Step of the second differences of a finite-difference Hessian, as a
+        fraction of the bound extent. A second difference divides the noise by
+        the step squared, so the step is the fourth root of the noise where
+        that is known, and tied to the gradient step otherwise."""
+        if self.lbfgsb_noise > 0.0:
+            step = self.lbfgsb_noise ** 0.25
+        else:
+            step = 4.0 * math.sqrt(self.lbfgsb_fd_step_value)
+        return min(max(step, LBFGSB_HESSIAN_STEP_MIN), LBFGSB_HESSIAN_STEP_MAX)
+
+    def _lbfgsb_scales(self, job_type):
+        return (self._lbfgsb_global_scales if job_type == 'INITIAL_OPTIMIZATION'
+                else self._lbfgsb_cell_scales)
+
+    def lbfgsb_scale_hint(self, job_type):
+        """Curvature scale for a run that has no curvature pairs of its own:
+        the median of the scales accepted by finished runs of the same kind
+        (global start or cell), or None if there are none yet."""
+        scales = self._lbfgsb_scales(job_type)
+        return float(np.median(scales)) if scales else None
+
+    def note_lbfgsb_scale(self, job_type, gamma):
+        """Record the last curvature scale of a finished run."""
+        self._lbfgsb_scales(job_type).append(gamma)
+
+    def _neighbor_history(self, grid_idx):
+        """Curvature pairs of the best finished neighbour, or None.
+
+        One grid step away the Hessian of the profiled block is nearly the
+        same, so the pairs let a new cell start with a scaled step.
+        """
+        best_state = None
+        best_fitness = -np.inf
+        for neighbor_idx in self._get_valid_neighbors(grid_idx):
+            st = self.population.get(neighbor_idx)
+            if (st is not None and st['status'] in ('optimized', 'converged')
+                    and st.get('optimizer_state')
+                    and (st['optimizer_state']['s']
+                         or st['optimizer_state'].get('Hinv') is not None)
+                    and st['best_fitness'] > best_fitness):
+                best_fitness = st['best_fitness']
+                best_state = st
+        return None if best_state is None else best_state['optimizer_state']
+
+    def create_lbfgsb_job_for_active_cell(self, grid_idx, next_job_id, job_type, terminal_status):
+        """L-BFGS-B job for one active grid point, or None if it needs none.
+
+        Returns ``(job_or_None, next_job_id)``.
+        """
+        state = self.population.get(grid_idx)
+        if state is None or state['status'] != 'active':
+            return None, next_job_id
+
+        if self.direct_eval_mode or self.n_prof_dims == 0:
+            state['status'] = terminal_status
+            return None, next_job_id
+
+        state['status'] = 'LBFGSB_queued'
+        best_ind_idx = np.argmax(state['fitnesses'])
+        start_params_partial = state['profiled_params'][best_ind_idx]
+        start_fitness = state['fitnesses'][best_ind_idx]
+        start_params_full = self._construct_params(grid_idx, start_params_partial)
+
+        job = LBFGSBJob(
+            job_id=next_job_id,
+            job_type=job_type,
+            sampler=self,
+            opt_dims=tuple(self.profiled_dims),
+            start_params=start_params_partial,
+            grid_idx=grid_idx,
+            start_params_full=start_params_full,
+            seed_history=self._neighbor_history(grid_idx),
+            start_fitness=start_fitness,
+        )
+        return job, next_job_id + 1
+
     def _create_lbfgsb_jobs_for_active(self, next_job_id, job_type, terminal_status):
         """Spawn one L-BFGS-B job per active grid point.
 
@@ -1650,32 +1904,11 @@ class ProfileProjector:
         stage, 'converged' for LBFGSB_LOOP (allows dynamic re-activation).
         """
         jobs = []
-        for grid_idx, state in self.population.items():
-            if state['status'] != 'active':
-                continue
-
-            if self.direct_eval_mode or self.n_prof_dims == 0:
-                state['status'] = terminal_status
-                continue
-
-            state['status'] = 'LBFGSB_queued'
-            best_ind_idx = np.argmax(state['fitnesses'])
-            start_params_partial = state['profiled_params'][best_ind_idx]
-            start_fitness = state['fitnesses'][best_ind_idx]
-            start_params_full = self._construct_params(grid_idx, start_params_partial)
-
-            jobs.append(LBFGSBJob(
-                job_id=next_job_id,
-                job_type=job_type,
-                sampler=self,
-                opt_dims=tuple(self.profiled_dims),
-                start_params=start_params_partial,
-                grid_idx=grid_idx,
-                start_params_full=start_params_full,
-                seed_history=None,
-                start_fitness=start_fitness,
-            ))
-            next_job_id += 1
+        for grid_idx in list(self.population):
+            job, next_job_id = self.create_lbfgsb_job_for_active_cell(
+                grid_idx, next_job_id, job_type, terminal_status)
+            if job is not None:
+                jobs.append(job)
         return jobs, next_job_id
 
     def create_post_activation_lbfgsb_jobs(self, next_job_id):
@@ -2160,19 +2393,65 @@ class ProfileProjector:
         )
         return (job, next_job_id + 1)
 
-    def create_dynamic_activation_jobs(self, next_job_id):
-        """ActivationJobs for un-activated neighbors of high-likelihood grid points."""
+    def confirm_ahead_cells(self, grid_idx):
+        """Called when ``grid_idx`` has a new value. If it lies inside the
+        region of interest, it and its neighbours stop being cells activated
+        ahead. Returns the cells this changed."""
+        state = self.population.get(grid_idx)
+        if state is None or state['best_fitness'] <= self.global_max_target_val - self.roi_threshold:
+            return []
+        confirmed = [c for c in self._get_valid_neighbors(grid_idx, include_center=True)
+                     if c in self.ahead_cells]
+        self.ahead_cells.difference_update(confirmed)
+        return confirmed
+
+    def drop_ahead_cells(self):
+        """Remove the cells activated ahead that were never confirmed.
+        Returns how many there were."""
+        n = len(self.ahead_cells)
+        for idx in self.ahead_cells:
+            self.population.pop(idx, None)
+            self.profile_likelihood_grid.pop(idx, None)
+            self.activated_grid_indices.discard(idx)
+            self.pending_activation_indices.discard(idx)
+        self.ahead_cells = set()
+        return n
+
+    def _cells_within(self, grid_idx, depth):
+        """In-bounds cells at Chebyshev distance 1..depth from ``grid_idx``,
+        nearest first."""
+        cells = []
+        for offset in _offsets_within(self.n_proj_dims, depth):
+            idx = tuple(int(i + o) for i, o in zip(grid_idx, offset))
+            if all(0 <= i < s for i, s in zip(idx, self.grid_shape)):
+                cells.append(idx)
+        return cells
+
+    def create_dynamic_activation_jobs(self, next_job_id, around=None, depth=1):
+        """ActivationJobs for un-activated neighbors of high-likelihood grid points.
+
+        `around` limits the search to the given grid points (used when a
+        single cell has just finished); by default every cell is considered.
+        `depth` is the Chebyshev distance up to which cells are activated: 1
+        is the neighbours. A cell further out has no activated neighbour to
+        start from and takes the profiled parameters of the cell that
+        activates it.
+        """
         new_jobs = []
         roi_cutoff = self.global_max_target_val - self.roi_threshold
 
         # Iterate over a copy as population might be modified
+        candidates = self.population.keys() if around is None else [
+            idx for idx in around if idx in self.population]
         active_points_in_roi = [
-            idx for idx, state in self.population.items()
-            if state['best_fitness'] > roi_cutoff
+            idx for idx in candidates
+            if self.population[idx]['best_fitness'] > roi_cutoff
         ]
 
         for grid_idx in active_points_in_roi:
-            for neighbor_idx in self._get_valid_neighbors(grid_idx):
+            targets = (self._get_valid_neighbors(grid_idx) if depth <= 1
+                       else self._cells_within(grid_idx, depth))
+            for neighbor_idx in targets:
                 if neighbor_idx not in self.population and neighbor_idx not in self.pending_activation_indices:
 
                     # Find best warm_start_params from neighbor's neighbors (incl. self)
@@ -2186,6 +2465,15 @@ class ProfileProjector:
                                 best_warm_start_fitness = source_state['best_fitness']
                                 source_best_idx = np.argmax(source_state['fitnesses'])
                                 best_warm_start_params = source_state['profiled_params'][source_best_idx]
+
+                    if best_warm_start_params is None:
+                        origin = self.population[grid_idx]
+                        best_warm_start_params = origin['profiled_params'][np.argmax(origin['fitnesses'])]
+
+                    # Not a neighbour of a cell known to be inside the region
+                    # of interest: activated ahead.
+                    if best_warm_start_fitness <= roi_cutoff:
+                        self.ahead_cells.add(neighbor_idx)
 
                     job = ActivationJob(
                         job_id=next_job_id,

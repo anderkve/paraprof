@@ -50,6 +50,16 @@ See `paraprof_example.yaml` for a complete worked example.
   (`grid`, `binminpy`, etc.).
 - Projection `dims` may be parameter **names** (matching the YAML
   `Parameters` block) or integer indices; names are resolved by paraprof.
+- `initial_points` entries written as a mapping `{parameter name: value}` are
+  in physical coordinates and go through ScannerBit's inverse prior transform
+  (every scanned parameter must be named, with or without its model prefix).
+  An entry written as a list is taken as unit-hypercube coordinates in
+  ScannerBit's parameter order. The plugin prints the unit-hypercube point
+  it derives from a mapping.
+- `refine_initial_points: true` makes paraprof optimise all parameters from
+  every initial point before it activates grid points. Without it the points
+  are evaluated only, and the best of them stands as the maximum unless a
+  grid point exceeds it.
 - `samples_output_file` is forwarded to paraprof and only written by rank 0.
   This is purely a paraprof-side diagnostic: GAMBIT's printers already
   capture every evaluation, so it defaults to off.

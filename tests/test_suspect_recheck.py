@@ -177,3 +177,63 @@ class TestConfigPlumbing:
         assert sampler.suspect_param_k == 5.0
         # Untouched keys retain defaults
         assert sampler.suspect_max_fraction == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# End to end, on virtual workers: a planted wrong-optimum strip is repaired.
+# ---------------------------------------------------------------------------
+def _two_mode_target(x):
+    """Two projection parameters (a, b) and two profiled ones (p, q). q has
+    two optima of unequal height, 0.8 apart in the target and far apart in q."""
+    a, b, p, q = np.asarray(x, dtype=float)
+    smooth = (-0.5 * ((a - 0.5) / 0.15) ** 2 - 0.5 * ((b - 0.5) / 0.15) ** 2
+              - 0.5 * ((p - 0.5 - 0.3 * (a - 0.5)) / 0.05) ** 2)
+    modes = np.logaddexp(-0.5 * ((q - 0.3) / 0.04) ** 2,
+                         -0.8 - 0.5 * ((q - 0.7) / 0.04) ** 2)
+    return float(smooth + modes)
+
+
+def test_planted_wrong_optimum_strip_is_repaired():
+    from virtual_pool import run_virtual_scan
+
+    record = {}
+
+    def hook(sampler):
+        orig = sampler.create_suspect_recheck_jobs
+
+        def patched(wave_number, updated_points_last_wave, next_job_id):
+            if wave_number == 0 and 'before' not in record:
+                # Move a row of cells near the maximum onto the lower optimum
+                # in q, with the true value of the target there.
+                best = max(sampler.population, key=lambda c: sampler.population[c]['best_fitness'])
+                strip = [(best[0], best[1] + k) for k in (-2, -1, 0, 1, 2)]
+                strip = [c for c in strip if c in sampler.population]
+                for idx in strip:
+                    st = sampler.population[idx]
+                    k = int(np.argmax(st['fitnesses']))
+                    moved = st['profiled_params'][k].copy()
+                    moved[1] = 0.7
+                    val = _two_mode_target(sampler._construct_params(idx, moved))
+                    st['profiled_params'][k] = moved
+                    st['fitnesses'][:] = val
+                    st['best_fitness'] = val
+                    sampler.profile_likelihood_grid[idx] = val
+                record['strip'] = strip
+                record['before'] = {c: st['best_fitness'] for c, st in sampler.population.items()}
+            return orig(wave_number, updated_points_last_wave, next_job_id)
+        sampler.create_suspect_recheck_jobs = patched
+
+    np.random.seed(11)
+    out = run_virtual_scan(
+        _two_mode_target, [(0.0, 1.0)] * 4,
+        [{'dims': [0, 1], 'grid_points': [16, 16], 'optimization_method': 'lbfgsb'}],
+        n_workers=5, seed=11, sampler_hook=hook,
+        roi_threshold=4.0, n_initial_optimizations=8, max_patching_waves=2)
+
+    assert len(record['strip']) >= 3
+    after = {c: st['best_fitness'] for c, st in out['population'].items()}
+    gains = [after[c] - record['before'][c] for c in record['strip']]
+    # every planted cell is back on the higher optimum, 0.8 above
+    assert min(gains) > 0.7
+    # and no cell was lowered
+    assert all(after[c] >= record['before'][c] - 1e-12 for c in record['before'])
