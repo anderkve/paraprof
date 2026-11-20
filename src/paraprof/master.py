@@ -18,6 +18,16 @@ except ImportError:
     sys.exit(1)
 
 TASK_TERMINATE = -1
+# Length of the list of non-blocking sends at which completed ones are dropped.
+PENDING_SENDS_PRUNE = 1024
+
+
+def _send_done(request):
+    """True if a non-blocking send has completed."""
+    try:
+        return bool(request.Test())
+    except Exception:
+        return False
 
 
 def _log_worker_error(result, sampler, logger):
@@ -532,6 +542,10 @@ def master_main(comm, sampler,
     else:
         # Normal mode: workflow depends on optimization method
         stages = []
+        # With an automatic finite-difference step, measure the noise of the
+        # target once, before anything is optimised with it.
+        if sampler.needs_noise_estimate():
+            stages.append('NOISE_ESTIMATE')
         # Evaluate user-supplied initial points first (if any). This stage is
         # only added on the first projection that sees them; the job sets
         # ``_initial_points_evaluated`` once complete.
@@ -569,7 +583,7 @@ def master_main(comm, sampler,
     # Helper function to queue tasks
     def _queue_tasks(tasks, job_type):
         """Add tasks to appropriate priority queue based on job type."""
-        if job_type in ['INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        if job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -584,9 +598,49 @@ def master_main(comm, sampler,
             q.clear()
             q.extend(kept)
 
+    # Jobs that can use a worker which would otherwise idle (see
+    # LBFGSBJob.speculate), served round-robin.
+    spec_ring = collections.deque()
+    spec_members = set()
+
+    def _offer_speculation(job):
+        if getattr(job, 'wants_speculation', False) and job.id not in spec_members:
+            spec_ring.append(job.id)
+            spec_members.add(job.id)
+
+    def _next_speculative_task():
+        for _ in range(len(spec_ring)):
+            jid = spec_ring.popleft()
+            job = active_jobs.get(jid)
+            task = job.speculate() if (job is not None and job.wants_speculation) else None
+            if task is None:
+                spec_members.discard(jid)
+                continue
+            spec_ring.append(jid)
+            return task
+        return None
+
+    def _start_jobs(jobs):
+        """Add jobs to the active pool and queue their first tasks."""
+        for job in jobs:
+            active_jobs[job.id] = job
+            initial_tasks = job.start()
+            _queue_tasks(initial_tasks, job.type)
+            _offer_speculation(job)
+            # A job may finish during start() without dispatching any tasks
+            # (e.g. an LBFGSBJob with zero dims to optimize). Without this
+            # cleanup it would stay in active_jobs forever and hang the
+            # main loop, since the finalization path below only runs when
+            # a result arrives.
+            if not initial_tasks and job.is_finished():
+                job.on_finish(next_job_id)
+                del active_jobs[job.id]
+
     next_job_id = 0
     tasks_sent = 0
     tasks_completed = 0
+    speculative_sent = 0
+    idle_after_dispatch = 0
 
     # DE stage state
     de_generation = 0 # Counter for DE stage
@@ -631,7 +685,13 @@ def master_main(comm, sampler,
             logger.info(f"--- Master: Entering stage: {current_stage} (all jobs complete, creating new jobs) ---")
             new_jobs = []
 
-            if current_stage == 'INITIAL_POINTS_EVAL':
+            if current_stage == 'NOISE_ESTIMATE':
+                new_jobs, next_job_id = sampler.create_noise_estimate_job(next_job_id)
+                if not new_jobs:
+                    current_stage = stages.pop(0) if stages else None
+                    continue
+
+            elif current_stage == 'INITIAL_POINTS_EVAL':
                 # Evaluate user-supplied initial_points via the standard Job
                 # path so the master result-handler does the bookkeeping
                 # (samples_output_file, global solution pool, etc.).
@@ -879,21 +939,7 @@ def master_main(comm, sampler,
 
 
             # --- Add new jobs to active pool and queue initial tasks ---
-            for job in new_jobs:
-                active_jobs[job.id] = job
-                initial_tasks = job.start()
-
-                # Add to correct priority queue
-                _queue_tasks(initial_tasks, job.type)
-
-                # A job may finish during start() without dispatching any tasks
-                # (e.g. an LBFGSBJob with zero dims to optimize). Without this
-                # cleanup it would stay in active_jobs forever and hang the
-                # main loop, since the finalization path below only runs when
-                # a result arrives.
-                if not initial_tasks and job.is_finished():
-                    job.on_finish(next_job_id)
-                    del active_jobs[job.id]
+            _start_jobs(new_jobs)
 
             # If we just finished a non-looping stage, advance to the next
             # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
@@ -919,7 +965,9 @@ def master_main(comm, sampler,
 
             job_id = result['context'].get('job_id', -1)
             if job_id not in active_jobs:
-                logger.warning(f"Received result for unknown/finished job {job_id}. Ignoring.")
+                # Expected for evaluations sent ahead of time for a job that
+                # has since finished, and for aborted multistart runs.
+                logger.debug(f"Received result for unknown/finished job {job_id}. Ignoring.")
                 continue
 
             job = active_jobs[job_id]
@@ -927,6 +975,7 @@ def master_main(comm, sampler,
 
             # Add to correct priority queue
             _queue_tasks(new_tasks, job.type)
+            _offer_speculation(job)
 
             if job.is_finished():
                 job_id_finished = job.id
@@ -964,6 +1013,35 @@ def master_main(comm, sampler,
 
                     # Add to correct priority queue
                     _queue_tasks(initial_tasks, new_job.type)
+                    _offer_speculation(new_job)
+
+                # Rolling activation: in the L-BFGS-B loop a cell does not
+                # wait for the other cells of its wave. An activated cell is
+                # optimised as soon as its activation returns, and a finished
+                # cell inside the region of interest activates its neighbours
+                # at once. The wave logic above still runs when everything is
+                # idle, and ends the stage.
+                if current_stage == 'LBFGSB_LOOP' and sampler.lbfgsb_rolling_activation:
+                    rolling = []
+                    if job.type == 'ACTIVATE_GRID_POINT':
+                        new_job, next_job_id = sampler.create_lbfgsb_job_for_active_cell(
+                            job.grid_idx, next_job_id, 'LBFGSB_LOOP', 'converged')
+                        if new_job is not None:
+                            rolling.append(new_job)
+                        # Eager activation: with workers left idle, a cell whose
+                        # activation samples already put it inside the region of
+                        # interest activates its neighbours without waiting for
+                        # its own optimisation. Its optimised value can only be
+                        # higher, so no cell is activated that would not have
+                        # been; the neighbours start from a less refined point.
+                        if sampler.lbfgsb_eager_activation and idle_after_dispatch > 0:
+                            more, next_job_id = sampler.create_dynamic_activation_jobs(
+                                next_job_id, around=[job.grid_idx])
+                            rolling += more
+                    elif job.type == 'LBFGSB_LOOP':
+                        rolling, next_job_id = sampler.create_dynamic_activation_jobs(
+                            next_job_id, around=[job.grid_idx])
+                    _start_jobs(rolling)
 
                 # Check if the patching wave is now complete
                 if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
@@ -1080,18 +1158,32 @@ def master_main(comm, sampler,
 
         # --- 3. Dispatch tasks to free workers ---
         # Prioritize high priority tasks
-        while free_workers and (high_prio_tasks or low_prio_tasks):
-            worker_rank = free_workers.pop(0)
-
+        while free_workers:
             if high_prio_tasks:
                 task = high_prio_tasks.popleft()
-            else:
+            elif low_prio_tasks:
                 task = low_prio_tasks.popleft()
+            else:
+                # Nothing is queued: let a job use the worker for an
+                # evaluation it may need next.
+                task = _next_speculative_task()
+                if task is None:
+                    break
+                speculative_sent += 1
+            worker_rank = free_workers.pop(0)
 
             # Use non-blocking send to overlap communication
             req = comm.isend(task, dest=worker_rank)
             pending_sends.append(req)
             tasks_sent += 1
+
+        # Workers left without anything to do after this pass.
+        idle_after_dispatch = len(free_workers)
+
+        # Completed sends are dropped as the scan goes, so the list does not
+        # grow with the number of evaluations.
+        if len(pending_sends) >= PENDING_SENDS_PRUNE:
+            pending_sends = [r for r in pending_sends if not _send_done(r)]
 
         # --- 4. No Sleep Needed ---
         # Iprobe() is non-blocking and very lightweight, so no sleep is needed.
@@ -1129,6 +1221,8 @@ def master_main(comm, sampler,
                 f"  User Gradient Errors: {sampler.user_gradient_errors} "
                 f"(fell back to finite differences for these)"
             )
+    if speculative_sent:
+        logger.info(f"  Evaluations sent ahead of time on idle workers: {speculative_sent}")
     logger.info(f"  Final Global Max logL: {sampler.global_max_target_val:.6e}")
     logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
     if sampler.de_allow_early_DE_exit and sampler.de_cells_skipped:

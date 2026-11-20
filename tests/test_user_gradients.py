@@ -113,7 +113,11 @@ def sphere_sampler():
             bounds=np.array([[-5.0, 5.0]] * 4),
             projections=[{'dims': [0, 1], 'grid_points': [3, 3]}],
             grad_func=grad_func,
-            advanced_config={'lbfgsb': {'gradient_method': gradient_method}},
+            # No finite-difference Hessian: a run with a user gradient does
+            # not measure one, and these tests compare it call for call with
+            # a run without.
+            advanced_config={'lbfgsb': {'gradient_method': gradient_method,
+                                        'hessian': False}},
         )
     return make
 
