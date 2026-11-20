@@ -206,7 +206,7 @@ class NoiseEstimateJob(Job):
         r = self.result
         s._noise_estimated = True
         s.lbfgsb_fd_step_value = r['fd_step']
-        if r['noise'] is not None and not s.lbfgsb_noise_given:
+        if r['noise'] is not None:
             s.lbfgsb_noise = r['noise']
         if r['noise'] is None:
             s.logger.warning(

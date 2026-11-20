@@ -80,28 +80,17 @@ SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
 # Finite-difference step of the L-BFGS-B gradient: a fraction of each
-# parameter's bound extent, 'auto' (from a noise estimate of the target, see
-# jobs/noise_job.py) or None (max(|x| * 1e-8, 1e-10) in parameter units).
+# parameter's bound extent, or 'auto' (from a noise estimate of the target,
+# see jobs/noise_job.py).
 DEFAULT_LBFGSB_FD_STEP = 'auto'
 # Bounds on the automatic step, and the step used when the estimate fails.
 LBFGSB_FD_STEP_MIN = 1e-8
 LBFGSB_FD_STEP_MAX = 1e-3
 LBFGSB_FD_STEP_FALLBACK = 1e-6
-# First trial displacement of a line search without curvature information and
-# longest trial displacement, as fractions of the bound extent.
-DEFAULT_LBFGSB_FIRST_STEP = 0.1
-DEFAULT_LBFGSB_MAX_STEP = 0.5
-# Ratio between consecutive trial steps of the backtracking ladder.
-DEFAULT_LBFGSB_LADDER_FACTOR = 0.5
-# Rungs beyond the one being decided that idle workers may evaluate early.
-DEFAULT_LBFGSB_LOOKAHEAD = 8
 # Accepted curvature scales remembered per kind of run (global start / cell).
 LBFGSB_SCALE_MEMORY = 64
 # Base points of the noise estimate.
 NOISE_BASE_POINTS = 3
-# A finite-difference Hessian costs n(n+3)/2 evaluations; it is measured for
-# runs over at most this many parameters.
-DEFAULT_LBFGSB_HESSIAN_MAX_DIMS = 12
 # Bounds on the step of the second differences (fraction of the bound extent).
 LBFGSB_HESSIAN_STEP_MIN = 1e-4
 LBFGSB_HESSIAN_STEP_MAX = 0.05
@@ -320,17 +309,7 @@ class ProfileProjector:
                 'lbfgsb': {
                     'ftol': float,                 # Default: 1e-9
                     'gradient_method': str,        # Default: 'forward'
-                    'fd_step': 'auto'|float|None,  # Default: 'auto'
-                    'noise': float,                # Default: None (estimated with fd_step 'auto')
-                    'first_step': float,           # Default: 0.1
-                    'max_step': float,             # Default: 0.5
-                    'ladder_factor': float,        # Default: 0.5
-                    'speculative': bool,           # Default: True
-                    'lookahead': int,              # Default: 8
-                    'hessian': bool,               # Default: True
-                    'hessian_max_dims': int,       # Default: 12
-                    'rolling_activation': bool,    # Default: True
-                    'eager_activation': bool,      # Default: True
+                    'fd_step': 'auto'|float,       # Default: 'auto'
                     'activation_depth': int,       # Default: 1
                 },
 
@@ -366,43 +345,25 @@ class ProfileProjector:
             }
 
         The ``lbfgsb`` sub-dict controls the L-BFGS-B runs (global starts,
-        cell optimisations, polish). Lengths are fractions of each
-        parameter's bound extent.
+        cell optimisations, polish).
 
-        ``fd_step`` is the finite-difference step of the gradient. ``'auto'``
-        estimates the numerical noise of the target before the first
-        optimisation (about 60 evaluations, logged) and sets the step to
-        about ``sqrt(noise / curvature)``. ``None`` selects
-        ``max(|x| * 1e-8, 1e-10)`` in parameter units, which suits only a
-        target accurate to double precision. ``noise`` gives the noise level
-        directly; a run stops once an accepted step changes the target by
-        less than ``max(ftol, 4 * noise)``.
+        ``fd_step`` is the finite-difference step of the gradient, as a
+        fraction of each parameter's bound extent. ``'auto'`` estimates the
+        numerical noise of the target before the first optimisation (about
+        60 evaluations, logged) and sets the step to about
+        ``sqrt(noise / curvature)``. A run stops once an accepted step
+        changes the target by less than ``max(ftol, 4 * noise)``.
 
-        ``first_step`` is the first trial displacement of a line search
-        without curvature information, ``max_step`` the longest trial
-        displacement, ``ladder_factor`` the ratio between consecutive trial
-        steps.
-
-        ``speculative`` lets idle workers evaluate what a run may need next:
-        up to ``lookahead`` later trial steps and the gradient at the first
-        trial point. The accepted step is the same with or without them.
-
-        ``hessian`` measures a finite-difference Hessian
-        (``n (n + 3) / 2`` evaluations) for runs over at most
-        ``hessian_max_dims`` parameters and takes Newton steps. A cell takes
-        the Hessian of a finished neighbour instead of measuring one.
-
-        ``rolling_activation`` and ``eager_activation`` apply to
-        ``optimization_method='lbfgsb'``. With the first, a cell is optimised
+        In an ``optimization_method='lbfgsb'`` projection a cell is optimised
         as soon as its activation returns and activates its neighbours as
-        soon as it finishes inside the region of interest. With the second,
-        while workers are idle, a cell whose activation samples put it
-        inside the region of interest activates its neighbours before its
-        own optimisation. ``activation_depth`` is how many cells ahead it
-        then activates (1: its neighbours). Cells further out get only idle
-        workers and are dropped unless they or a neighbour turn out to lie
-        inside the region of interest, so the result holds the same cells
-        as with depth 1; their evaluations are lost.
+        soon as it finishes inside the region of interest. While workers are
+        idle, a cell whose activation samples put it inside the region of
+        interest activates its neighbours before its own optimisation.
+        ``activation_depth`` is how many cells ahead it then activates (1:
+        its neighbours). Cells further out get only idle workers and are
+        dropped unless they or a neighbour turn out to lie inside the region
+        of interest, so the result holds the same cells as with depth 1;
+        their evaluations are lost.
 
         The ``basin_detection`` sub-dict controls the initial-optimization
         stage, where ``n_initial_optimizations`` is treated as a *maximum*:
@@ -602,17 +563,7 @@ class ProfileProjector:
                 'ftol': DEFAULT_LBFGSB_FTOL,
                 'gradient_method': 'forward',
                 'fd_step': DEFAULT_LBFGSB_FD_STEP,
-                'noise': None,
-                'first_step': DEFAULT_LBFGSB_FIRST_STEP,
-                'max_step': DEFAULT_LBFGSB_MAX_STEP,
-                'ladder_factor': DEFAULT_LBFGSB_LADDER_FACTOR,
-                'speculative': True,
-                'lookahead': DEFAULT_LBFGSB_LOOKAHEAD,
-                'rolling_activation': True,
-                'eager_activation': True,
                 'activation_depth': 1,
-                'hessian': True,
-                'hessian_max_dims': DEFAULT_LBFGSB_HESSIAN_MAX_DIMS,
             },
 
             'clustering': {
@@ -697,54 +648,28 @@ class ProfileProjector:
         self.lbfgsb_ftol = lb['ftol']
         self.lbfgsb_gradient_method = lb['gradient_method']
         fd_step = lb['fd_step']
-        if not (fd_step is None or fd_step == 'auto'
+        if not (fd_step == 'auto'
                 or (isinstance(fd_step, (int, float, np.floating)) and not isinstance(fd_step, bool)
                     and 0.0 < float(fd_step) < 1.0)):
             raise ConfigurationError(
-                "lbfgsb fd_step must be 'auto', None or a fraction of the bound extent in (0, 1)",
+                "lbfgsb fd_step must be 'auto' or a fraction of the bound extent in (0, 1)",
                 parameter="advanced_config['lbfgsb']['fd_step']", value=fd_step,
             )
         self.lbfgsb_fd_step = fd_step
         # The step the jobs use. With 'auto' it is the fallback until the
         # noise-estimate stage sets it.
-        if fd_step is None:
-            self.lbfgsb_fd_step_value = None
-        elif fd_step == 'auto':
-            self.lbfgsb_fd_step_value = LBFGSB_FD_STEP_FALLBACK
-        else:
-            self.lbfgsb_fd_step_value = float(fd_step)
-        # Noise of the target (rms, same units as the target). Given by the
-        # user, or estimated when fd_step is 'auto'; 0 means unknown.
-        if lb['noise'] is not None and not (isinstance(lb['noise'], (int, float, np.floating))
-                                           and float(lb['noise']) >= 0.0):
-            raise ConfigurationError(
-                "lbfgsb noise must be None or a non-negative number",
-                parameter="advanced_config['lbfgsb']['noise']", value=lb['noise'],
-            )
-        self.lbfgsb_noise = float(lb['noise']) if lb['noise'] is not None else 0.0
-        self.lbfgsb_noise_given = lb['noise'] is not None
+        self.lbfgsb_fd_step_value = (LBFGSB_FD_STEP_FALLBACK if fd_step == 'auto'
+                                     else float(fd_step))
+        # Noise of the target (rms, same units as the target), from the
+        # noise-estimate stage; 0 means unknown.
+        self.lbfgsb_noise = 0.0
         self._noise_estimated = False
-        for key in ('first_step', 'max_step', 'ladder_factor'):
-            if not (isinstance(lb[key], (int, float, np.floating)) and 0.0 < float(lb[key]) < 1.0):
-                raise ConfigurationError(
-                    f"lbfgsb {key} must be a number in (0, 1)",
-                    parameter=f"advanced_config['lbfgsb']['{key}']", value=lb[key],
-                )
-        self.lbfgsb_first_step = float(lb['first_step'])
-        self.lbfgsb_max_step = float(lb['max_step'])
-        self.lbfgsb_ladder_factor = float(lb['ladder_factor'])
-        self.lbfgsb_speculative = bool(lb['speculative'])
-        self.lbfgsb_lookahead = max(0, int(lb['lookahead']))
-        self.lbfgsb_rolling_activation = bool(lb['rolling_activation'])
-        self.lbfgsb_eager_activation = bool(lb['eager_activation'])
         depth = lb['activation_depth']
         if isinstance(depth, bool) or not isinstance(depth, (int, np.integer)) or depth < 1:
             raise ConfigurationError(
                 "lbfgsb activation_depth must be an integer >= 1",
                 parameter="advanced_config['lbfgsb']['activation_depth']", value=depth)
         self.lbfgsb_activation_depth = int(depth)
-        self.lbfgsb_hessian = bool(lb['hessian'])
-        self.lbfgsb_hessian_max_dims = int(lb['hessian_max_dims'])
         # Curvature scales (gamma = s.y / y.y) of finished global starts (see
         # lbfgsb_scale_hint). Those of cell runs are per projection.
         self._lbfgsb_global_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
@@ -1901,10 +1826,8 @@ class ProfileProjector:
         that is known, and tied to the gradient step otherwise."""
         if self.lbfgsb_noise > 0.0:
             step = self.lbfgsb_noise ** 0.25
-        elif self.lbfgsb_fd_step_value is not None:
-            step = 4.0 * math.sqrt(self.lbfgsb_fd_step_value)
         else:
-            step = 1e-3
+            step = 4.0 * math.sqrt(self.lbfgsb_fd_step_value)
         return min(max(step, LBFGSB_HESSIAN_STEP_MIN), LBFGSB_HESSIAN_STEP_MAX)
 
     def _lbfgsb_scales(self, job_type):

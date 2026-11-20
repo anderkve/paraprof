@@ -1228,9 +1228,9 @@ def master_main(comm, sampler,
                 # activation returns, and a finished cell inside the region
                 # of interest activates its neighbours at once. _advance
                 # still ends the stage when everything is idle.
-                if R.current_stage == 'LBFGSB_LOOP' and sampler.lbfgsb_rolling_activation:
+                if R.current_stage == 'LBFGSB_LOOP':
                     rolling = []
-                    idle = R.idle_after_dispatch if sampler.lbfgsb_eager_activation else 0
+                    idle = R.idle_after_dispatch
                     if job.type == 'ACTIVATE_GRID_POINT':
                         new_job, next_job_id = sampler.create_lbfgsb_job_for_active_cell(
                             job.grid_idx, next_job_id, 'LBFGSB_LOOP', 'converged')

@@ -4,6 +4,7 @@ import pytest
 
 from bench_scheduling import with_noise as noisy
 from paraprof import ProfileProjector, get_logger
+from paraprof.jobs import lbfgsb_job
 from paraprof.jobs.lbfgsb_job import LBFGSBJob
 from paraprof.jobs.noise_job import ecnoise
 from paraprof.worker import evaluate_task
@@ -92,11 +93,18 @@ def test_more_workers_shorten_the_scan():
     assert many['mean_busy_workers'] > 10.0
 
 
-def test_legacy_options_still_converge():
-    out = scan(gauss4, 3, fd_step=None, hessian=False, speculative=False,
-               rolling_activation=False, eager_activation=False)
-    err = roi_errors(out)
-    assert err.min() > -1e-5
+@pytest.mark.parametrize('method', ['lbfgsb', 'de'])
+def test_projection_without_profiled_parameters(method):
+    # Every parameter is projected: each cell is one evaluation at its node.
+    out = virtual_scan([{'dims': [0, 1, 2, 3], 'grid_points': [4] * 4,
+                         'optimization_method': method}], 30)
+    sol = out['results'][0]['coarse_solution']
+    assert len(sol['solutions']) > 20
+    for cell, entry in sol['solutions'].items():
+        node = [axis[i] for axis, i in zip(sol['grid_axes'], cell)]
+        assert entry['likelihood'] == gauss4(node)
+    # The reported maximum is that of the multistart, which is not on a node.
+    assert out['global_max'] >= max(e['likelihood'] for e in sol['solutions'].values())
 
 
 # ---- one job, driven by hand ---------------------------------------------------------------
@@ -128,20 +136,28 @@ def global_job(sampler, start):
                      start_params_full=start)
 
 
+@pytest.fixture
+def no_hessian(monkeypatch):
+    """Runs measure no Hessian, as runs over more than HESSIAN_MAX_DIMS parameters."""
+    monkeypatch.setattr(lbfgsb_job, 'HESSIAN_MAX_DIMS', 0)
+
+
 @pytest.mark.parametrize('hessian', [True, False])
-def test_evaluations_sent_ahead_do_not_change_the_path(hessian):
+def test_evaluations_sent_ahead_do_not_change_the_path(hessian, monkeypatch):
+    if not hessian:
+        monkeypatch.setattr(lbfgsb_job, 'HESSIAN_MAX_DIMS', 0)
     start = [0.9, 0.1, 0.8, 0.9]
-    a = global_job(make_sampler(hessian=hessian), start)
+    a = global_job(make_sampler(), start)
     drive(a, gauss4)
-    b = global_job(make_sampler(hessian=hessian), start)
+    b = global_job(make_sampler(), start)
     drive(b, gauss4, rng=np.random.default_rng(0))
     assert a.iteration == b.iteration
     np.testing.assert_allclose(a.current_params, b.current_params, rtol=0, atol=1e-12)
     np.testing.assert_allclose(a.current_params, CENTRE, atol=1e-4)
 
 
-def test_first_trial_step_stays_inside_the_box():
-    sampler = make_sampler(hessian=False)
+def test_first_trial_step_stays_inside_the_box(no_hessian):
+    sampler = make_sampler()
     job = global_job(sampler, [0.9, 0.1, 0.8, 0.9])
     seen = []
 
@@ -155,12 +171,12 @@ def test_first_trial_step_stays_inside_the_box():
     assert not np.any(np.all((pts == 0.0) | (pts == 1.0), axis=1))
 
 
-def test_probes_step_into_the_box_at_a_bound():
+def test_probes_step_into_the_box_at_a_bound(no_hessian):
     # optimum outside the box in the last parameter: the run ends on the upper bound
     def target(x):
         d = np.asarray(x, dtype=float) - np.array([0.5, 0.5, 0.5, 1.3])
         return -float(d @ d) / 0.02
-    sampler = make_sampler(target=target, hessian=False)
+    sampler = make_sampler(target=target)
     job = global_job(sampler, [0.4, 0.6, 0.5, 0.7])
     seen = []
 
@@ -174,11 +190,11 @@ def test_probes_step_into_the_box_at_a_bound():
     assert np.all((np.array(seen) >= 0.0) & (np.array(seen) <= 1.0))
 
 
-def test_endpoint_is_kept_when_no_step_improves():
+def test_endpoint_is_kept_when_no_step_improves(no_hessian):
     """On a target whose noise hides the slope, the run stops at its start
     point and reports it, instead of ending as a failure with nothing."""
     target = noisy(gauss4, 1e-3)
-    sampler = make_sampler(target=target, hessian=False, fd_step=1e-8)
+    sampler = make_sampler(target=target, fd_step=1e-8)
     start = CENTRE + 1e-4
     job = global_job(sampler, start)
     drive(job, target)
@@ -198,11 +214,9 @@ def test_grid_sizes_follow_their_dims_when_sorted():
 
 def test_fd_step_validation():
     from paraprof.exceptions import ConfigurationError
-    with pytest.raises(ConfigurationError):
-        make_sampler(fd_step=2.0)
-    with pytest.raises(ConfigurationError):
-        make_sampler(fd_step='large')
-    assert make_sampler(fd_step=None).lbfgsb_fd_step_value is None
+    for bad in (2.0, 'large', None):
+        with pytest.raises(ConfigurationError):
+            make_sampler(fd_step=bad)
 
 
 # ---- noise estimate --------------------------------------------------------------------------

@@ -27,6 +27,7 @@ class ActivationJob(Job):
             self.all_full_params = [grid_coords]
             self.fitnesses = np.full(1, -np.inf)
             self.evals_remaining = 1
+            self._n_warm_start_slots = 0
             return
 
         self.pop_size = self.sampler.pop_per_grid_point

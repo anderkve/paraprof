@@ -6,12 +6,20 @@ import numpy as np
 from .base import Job
 
 ARMIJO_C1 = 1e-4
-# Cap on the rungs of a backtracking ladder (see _start_line_search).
+# First trial displacement of a line search without curvature information and
+# longest trial displacement, as fractions of the bound extent.
+FIRST_STEP = 0.1
+MAX_STEP = 0.5
+# Ratio between consecutive trial steps of the backtracking ladder, and the
+# cap on its rungs (see _start_line_search).
+LADDER_FACTOR = 0.5
 MAX_LADDER_RUNGS = 60
-# The rule for fd_step=None: max(|x| * base, floor), in parameter units.
-LEGACY_FD_BASE = 1e-8
-LEGACY_FD_FLOOR = 1e-10
+# Rungs beyond the one being decided that idle workers may evaluate early.
+LOOKAHEAD = 8
 
+# A finite-difference Hessian costs n(n+3)/2 evaluations; it is measured for
+# runs over at most this many parameters.
+HESSIAN_MAX_DIMS = 12
 # A Hessian is measured again, at most HESSIAN_MAX_REFRESH times per run, when
 # the line search cut the step HESSIAN_REFRESH_RUNG times, the run is further
 # than HESSIAN_REFRESH_DISTANCE (fraction of the bound extent) from where the
@@ -58,13 +66,9 @@ class LBFGSBJob(Job):
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
         if self.lbfgsb_gradient_method not in ("central", "forward"):
             raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
-        # Fraction of each parameter's bound extent, or None (see _fd_steps).
+        # Finite-difference step, as a fraction of each parameter's bound
+        # extent. A trial step shorter than this cannot be told from its start.
         self.fd_step = sampler.lbfgsb_fd_step_value
-        self.ladder_factor = sampler.lbfgsb_ladder_factor
-        self.first_step = sampler.lbfgsb_first_step
-        self.max_step = sampler.lbfgsb_max_step
-        self.speculative = sampler.lbfgsb_speculative
-        self.lookahead = sampler.lbfgsb_lookahead
         # An accepted step that changes f by less than a few times the noise
         # of the target (0 if unknown) is as converged as the run can get.
         self.ftol_eff = max(self.lbfgsb_ftol, 4.0 * sampler.lbfgsb_noise)
@@ -101,8 +105,7 @@ class LBFGSBJob(Job):
         # Curvature pairs, in normalised coordinates.
         self.s_hist = collections.deque(maxlen=10)
         self.y_hist = collections.deque(maxlen=10)
-        self.use_hessian = sampler.lbfgsb_hessian and \
-            0 < self.n_opt_dims <= sampler.lbfgsb_hessian_max_dims and not self.has_user_grad
+        self.use_hessian = 0 < self.n_opt_dims <= HESSIAN_MAX_DIMS and not self.has_user_grad
         self.hessian_step = sampler.lbfgsb_hessian_step_value()
         # Inverse Hessian of the objective in z, from a neighbour, from the
         # sampler's hint, or measured by the run. None: not known. The array
@@ -278,19 +281,6 @@ class LBFGSBJob(Job):
         self._next_gid += 1
         return gid
 
-    def _fd_steps(self, x):
-        """Finite-difference step per dimension, in parameter units."""
-        if self.fd_step is None:
-            return np.maximum(np.abs(x) * LEGACY_FD_BASE, LEGACY_FD_FLOOR)
-        return self.fd_step * self._scale
-
-    def _resolution(self):
-        """Displacement (normalised) below which a trial step cannot be told
-        from the point it starts from: the finite-difference step."""
-        if self.fd_step is None:
-            return LEGACY_FD_FLOOR
-        return self.fd_step
-
     def _user_grad_opt(self, user_grad_full):
         """Slice the user gradient (of target_func) to opt_dims and flip the
         sign for the objective. NaN entries stay NaN (need FD)."""
@@ -306,7 +296,7 @@ class LBFGSBJob(Job):
         replaced by a backward one, so a parameter on its upper bound still
         gets a derivative and no probe coincides with x.
         """
-        h = self._fd_steps(x)
+        h = self.fd_step * self._scale
         ug = self._user_grad_opt(user_grad_full)
         probes = {}
         per_dim_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
@@ -589,8 +579,8 @@ class LBFGSBJob(Job):
             # step. Below the function tolerance there is nothing left to gain.
             return self._finish(converged=True)
 
-        alpha0 = 1.0 if scaled else self.first_step / dmax
-        alpha0 = min(alpha0, self.max_step / dmax)
+        alpha0 = 1.0 if scaled else FIRST_STEP / dmax
+        alpha0 = min(alpha0, MAX_STEP / dmax)
         # A line search that had to cut its step says how far the model can be
         # trusted here; the next one starts from that length, not from the top.
         if self._trust is not None:
@@ -605,13 +595,12 @@ class LBFGSBJob(Job):
 
         # The ladder ends when the trial displacement falls below what a
         # finite difference resolves.
-        floor = self._resolution()
         alphas = []
         alpha = alpha0
         while len(alphas) < MAX_LADDER_RUNGS:
             alphas.append(alpha)
-            alpha *= self.ladder_factor
-            if alpha * dmax < floor:
+            alpha *= LADDER_FACTOR
+            if alpha * dmax < self.fd_step:
                 break
 
         self._ls = {
@@ -693,7 +682,7 @@ class LBFGSBJob(Job):
         self.pending_s_k = dz
         self.pending_g_old = g_old
 
-        self._trust = max(2.0 * float(np.max(np.abs(dz))), 4.0 * self._resolution())
+        self._trust = max(2.0 * float(np.max(np.abs(dz))), 4.0 * self.fd_step)
 
         # The Hessian in use is poor here (see HESSIAN_REFRESH_*): measure it again.
         measure_hessian = False
@@ -716,7 +705,7 @@ class LBFGSBJob(Job):
 
     @property
     def wants_speculation(self):
-        return self.speculative and self._ls is not None
+        return self._ls is not None
 
     def speculate(self):
         """One task for a worker that would otherwise idle, or None.
@@ -736,7 +725,7 @@ class LBFGSBJob(Job):
                 # A step from curvature information rarely needs more than one
                 # or two cuts; the whole ladder is only worth sending ahead
                 # for a step of unknown length.
-                ahead = min(self.lookahead, 2) if ls['scaled'] else self.lookahead
+                ahead = min(LOOKAHEAD, 2) if ls['scaled'] else LOOKAHEAD
                 stop = min(len(ls['alphas']), ls['decided'] + 1 + ahead)
                 for j in range(ls['decided'], stop):
                     if j not in ls['sent']:
