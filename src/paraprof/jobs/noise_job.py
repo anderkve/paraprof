@@ -1,13 +1,8 @@
 """Estimate the numerical noise of the target and a finite-difference step that suits it.
 
-A target that contains an iterative solver, a tabulated input or an
-ill-conditioned linear solve is not smooth at the scale of a finite-difference
-step chosen for double-precision arithmetic: neighbouring points return values
-that scatter by some noise level eps_f. A forward difference with step h then
-has an error of about eps_f / h + |f''| h / 2, which is smallest for
-h ~ sqrt(eps_f / |f''|).
-
-The job measures both quantities at a few base points:
+A forward difference with step h has an error of about eps_f / h + |f''| h / 2,
+smallest for h ~ sqrt(eps_f / |f''|), where eps_f is the scatter of the target
+between neighbouring points. The job measures both at a few base points:
 
 1. eps_f from the difference table of the target on equally spaced points
    along a random line (the ECNoise procedure of Moré and Wild, SIAM J. Sci.
@@ -16,8 +11,7 @@ The job measures both quantities at a few base points:
    enough for the second difference to stand above the noise (Moré and Wild,
    ACM Trans. Math. Softw. 38 (2012) 19).
 
-All evaluations of a phase are independent, so the job takes two or three
-wall steps whatever the number of workers.
+The evaluations of a phase are independent: the job takes two or three wall steps.
 """
 import numpy as np
 
@@ -67,7 +61,7 @@ class NoiseEstimateJob(Job):
         super().__init__(job_id, 'NOISE_ESTIMATE', sampler)
         b = np.asarray(sampler.bounds, dtype=float)
         self.lo, self.hi = b[:, 0], b[:, 1]
-        self.extent = np.where(self.hi > self.lo, self.hi - self.lo, 1.0)
+        self.extent = self.hi - self.lo
         self.n_dims = len(self.lo)
         self.step_min, self.step_max, self.step_fallback = step_min, step_max, step_fallback
         # keep the base points away from the bounds: the probes need room on both sides
@@ -100,7 +94,7 @@ class NoiseEstimateJob(Job):
             z = self.base_z[b] + (i - N_LINE // 2) * self.spacing[b] * self.directions[b]
             tasks.append({'params': self._point(z),
                           'context': {'type': self.type, 'job_id': self.id, 'sub_type': 'LINE',
-                                      'base': b, 'i': i, 'attempt': self.attempt[b]}})
+                                      'base': b, 'i': i}})
         self.pending += len(tasks)
         return tasks
 
@@ -116,10 +110,9 @@ class NoiseEstimateJob(Job):
         new_tasks = []
         if ctx['sub_type'] == 'LINE':
             b = ctx['base']
-            if ctx['attempt'] == self.attempt[b]:
-                self.line_vals[b][ctx['i']] = result['target_val']
-                if len(self.line_vals[b]) == N_LINE:
-                    new_tasks += self._close_line(b)
+            self.line_vals[b][ctx['i']] = result['target_val']
+            if len(self.line_vals[b]) == N_LINE:
+                new_tasks += self._close_line(b)
         else:
             self.curv_vals[(ctx['base'], ctx['dim'], ctx['sign'])] = result['target_val']
 
@@ -154,11 +147,11 @@ class NoiseEstimateJob(Job):
     def _begin_curvature(self):
         self.phase = 'CURVATURE'
         est = [n for n in self.noise if n is not None]
+        self.eps_f = float(np.median(est)) if est else None
         if not est:
             return []
-        eps_f = float(np.median(est))
         # Step of the second difference: large enough to stand above the noise.
-        self.curv_step = float(np.clip(eps_f ** 0.25, 1e-4, 0.05))
+        self.curv_step = float(np.clip(self.eps_f ** 0.25, 1e-4, 0.05))
         tasks = []
         for b in range(len(self.base_z)):
             if self.noise[b] is None:
@@ -176,21 +169,20 @@ class NoiseEstimateJob(Job):
 
     # --- conclusion -------------------------------------------------------------
     def _conclude(self):
-        est = [n for n in self.noise if n is not None]
-        if not est:
+        eps_f = self.eps_f
+        if eps_f is None:
             self.result = {'noise': None, 'fd_step': self.step_fallback, 'curvature': None,
                            'reason': 'no base point gave a noise estimate'}
         else:
-            eps_f = float(np.median(est))
             curv = []
             for b in range(len(self.base_z)):
                 if self.noise[b] is None:
                     continue
                 f0 = self.base_val[b]
                 for i in range(self.n_dims):
-                    fp = self.curv_vals.get((b, i, 1))
-                    fm = self.curv_vals.get((b, i, -1))
-                    if fp is None or fm is None or not (np.isfinite(fp) and np.isfinite(fm)):
+                    fp = self.curv_vals[(b, i, 1)]
+                    fm = self.curv_vals[(b, i, -1)]
+                    if not (np.isfinite(fp) and np.isfinite(fm)):
                         continue
                     second = abs(fp - 2.0 * f0 + fm)
                     if second > 100.0 * eps_f:        # a difference that is above the noise
@@ -212,7 +204,6 @@ class NoiseEstimateJob(Job):
     def on_finish(self, next_job_id):
         s = self.sampler
         r = self.result
-        s.noise_estimate = r
         s._noise_estimated = True
         s.lbfgsb_fd_step_value = r['fd_step']
         if r['noise'] is not None and not s.lbfgsb_noise_given:

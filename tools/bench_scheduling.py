@@ -1,8 +1,7 @@
 """Scheduling benchmark on virtual workers (see virtual_pool.py).
 
-Runs one 2-D projection of a 6-parameter target in the unit cube, with the
-scanner settings used for the GAMBIT neutrino fits, for several worker counts
-and noise levels, and reports for each run
+Runs one 2-D projection of a 6-parameter target in the unit cube for several
+worker counts and noise levels, and reports for each run
 
   evaluations   target calls
   wall          simulated wall time in units of one evaluation
@@ -21,13 +20,12 @@ Targets
   table6  fit6 with part of the dependence taken from coarse bilinear tables:
           continuous, kinked at the table nodes, no curvature inside a cell
 
-`--noise a` adds a deterministic pseudo-random term of rms `a` to the target
-(the same point always returns the same value), as a likelihood with an
-internal solver or an ill-conditioned linear solve does.
+`--noise a` adds a deterministic pseudo-random term of rms `a` to the target.
 
     python tools/bench_scheduling.py --workers 3,100,1000 --noise 0,5e-7
 """
 import argparse
+import collections
 import json
 import sys
 import zlib
@@ -35,7 +33,7 @@ import zlib
 import numpy as np
 from scipy.optimize import minimize
 
-from virtual_pool import by_job_type, run_virtual_scan
+from virtual_pool import run_virtual_scan
 
 PROJ = [3, 1]          # as a user writes it; paraprof sorts the dims internally
 
@@ -87,9 +85,7 @@ def _bilinear(tab, xa, xb, a, b):
 
 
 def table6(x):
-    """fit6 with part of the dependence on (m32, t23) and on (phase, t23) replaced by
-    bilinear interpolation in coarse tables, as likelihoods released as chi-squared maps
-    are: continuous, with kinks at the table nodes and no curvature inside a table cell."""
+    """fit6 with the dependence on (m32, t23) and (phase, t23) read from coarse bilinear tables."""
     x = np.asarray(x, dtype=float)
     ph, m21, m32, t12, t13, t23 = x
     core = np.array([(m21 - 0.45) / 0.07, (m32 - 0.50 - 0.15 * (t23 - 0.5)) / 0.09,
@@ -201,7 +197,6 @@ def run(name, noise, n_workers, grid, method, roi, extra, seed):
     status = [out['population'][c]['status'] for c in cells]
     in_roi = exact > tmax - roi
     err = (stored - exact)[in_roi]
-    types = by_job_type(out)
     return {
         'target': name, 'noise': noise, 'workers': n_workers, 'method': method,
         'evaluations': out['evaluations'], 'wall': out['wall'],
@@ -213,7 +208,7 @@ def run(name, noise, n_workers, grid, method, roi, extra, seed):
         'roi_err_median': float(np.median(err)) if len(err) else float('nan'),
         'roi_err_worst': float(err.min()) if len(err) else float('nan'),
         'roi_cells_low_0p01': int((err < -0.01).sum()),
-        'evaluations_by_job_type': {k: v['evaluations'] for k, v in types.items()},
+        'evaluations_by_job_type': dict(collections.Counter(out['timeline'][3])),
         'master_us_per_result': 1e6 * out['master_seconds_per_result'],
     }
 

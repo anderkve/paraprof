@@ -74,32 +74,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   maxima from the pool. Work is handed out in the order the projections were
   started, so a later one only gets workers the earlier ones have no use for.
   `'lbfgsb'` and `'de'` projections can overlap; projections with
-  `grid_refinement_factor` and those without profiled parameters run in turn
-  as before. For this the state of a projection can be captured and restored
-  (`ProfileProjector.PROJECTION_STATE_ATTRS`, `capture_projection_state`,
-  `restore_projection_state`), and `master_main` keeps one stage machine and
-  one set of queues per projection (`_ProjectionRun`). With the option off the
-  master behaves as before. Measured on virtual workers (6-parameter Gaussian,
-  three 25 x 25 planes, one seed), wall time in evaluation-times, sequential
-  against eager: 3 818 and 3 815 on 3 workers, 148 and 134 on 100, 75 and 59
-  on 300, 55 and 31 on 1000, with the same cells in every projection and 0 to
-  11 % fewer evaluations. Eight planes on 1000 workers: 139 and 70. Three DE
-  planes on 1000 workers: about 320 and 140. On 100 workers the first
-  projection ends 5 % later than it would alone; on 1000 it is not held back.
-  The result of every projection is collected when the projection ends, and
-  with `save_plots` its plots are written then.
-- `lbfgsb.activation_depth` (default 1, the behaviour so far): how many cells
-  ahead a cell inside the region of interest activates while workers are idle.
-  With a depth above 1 the cells further out than a neighbour start from the
-  profiled parameters of the cell that activates them, get workers only when
-  nothing else is queued (a quarter of the pool is kept free for other work),
-  and become ordinary cells when they or a neighbour turn out to lie inside
-  the region of interest. The rest are dropped when the ordinary cells are
-  done, so the result holds the same cells as with depth 1; evaluations still
-  in flight for them no longer hold the next stage back. Measured on virtual
-  workers (6-parameter Gaussian, 25 x 25 grid, six seeds), depth 2 against
-  depth 1: wall time -12 % and evaluations +46 % on 1000 workers, -5 % and
-  +17 % on 300, +5 % and +9 % on 100. Depth 3 gains nothing over depth 2.
+  `grid_refinement_factor` and those without profiled parameters are not
+  overlapped. The master keeps one stage machine and one set of queues per
+  projection and swaps the projection state of the sampler
+  (`ProfileProjector.PROJECTION_STATE_ATTRS`). Measured on virtual workers
+  (6-parameter Gaussian, three 25 x 25 planes, one seed), wall time in
+  evaluation-times, sequential against eager: 3 818 and 3 815 on 3 workers,
+  148 and 134 on 100, 75 and 59 on 300, 55 and 31 on 1000, with the same cells
+  in every projection. On 100 workers the first projection ends 5 % later
+  than it would alone; on 1000 it is not held back.
+- `lbfgsb.activation_depth` (default 1): how many cells ahead a cell inside
+  the region of interest activates while workers are idle. Cells further out
+  than a neighbour get workers only when nothing else is queued (a quarter of
+  the pool is kept free for other work) and become ordinary cells when they
+  or a neighbour turn out to lie inside the region of interest. The rest are
+  dropped, so the result holds the same cells as with depth 1. Measured on
+  virtual workers (6-parameter Gaussian, 25 x 25 grid, six seeds), depth 2
+  against depth 1: wall time -12 % and evaluations +46 % on 1000 workers,
+  -5 % and +17 % on 300, +5 % and +9 % on 100.
 - `refine_initial_points` (default `False`): one L-BFGS-B run over all
   parameters from every entry of `initial_points`, before grid points are
   activated. `initial_points` are evaluated and not optimised, so a point

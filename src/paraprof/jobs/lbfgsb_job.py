@@ -6,22 +6,18 @@ import numpy as np
 from .base import Job
 
 ARMIJO_C1 = 1e-4
-# Longest backtracking ladder. The ladder normally ends earlier, when the trial
-# displacement drops below the finite-difference step.
+# Cap on the rungs of a backtracking ladder (see _start_line_search).
 MAX_LADDER_RUNGS = 60
-# Step of the legacy finite-difference rule (fd_step=None): max(|x| * base, floor).
+# The rule for fd_step=None: max(|x| * base, floor), in parameter units.
 LEGACY_FD_BASE = 1e-8
 LEGACY_FD_FLOOR = 1e-10
 
-# A Hessian is measured again when the line search had to shrink the step this
-# many times (the quadratic model was poor), the run has moved at least
-# HESSIAN_REFRESH_DISTANCE (fraction of the bound extent) away from where the
-# one in use was measured, and the accepted step still gained more than
-# HESSIAN_REFRESH_GAIN times the function tolerance; at most
-# HESSIAN_MAX_REFRESH times per run. A model that fails where it was measured
-# is not improved by measuring it again (the target is not quadratic there),
-# and a run that is within a few tolerances of its end does not repay the
-# n(n+3)/2 evaluations.
+# A Hessian is measured again, at most HESSIAN_MAX_REFRESH times per run, when
+# the line search cut the step HESSIAN_REFRESH_RUNG times, the run is further
+# than HESSIAN_REFRESH_DISTANCE (fraction of the bound extent) from where the
+# Hessian was measured, and the step gained more than HESSIAN_REFRESH_GAIN
+# tolerances. Measuring again in place does not fix a model that failed there,
+# and the n(n+3)/2 evaluations are not repaid near the end of a run.
 HESSIAN_REFRESH_RUNG = 2
 HESSIAN_REFRESH_DISTANCE = 0.05
 HESSIAN_REFRESH_GAIN = 100.0
@@ -37,24 +33,16 @@ GRID_JOB_TYPES = ('LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB',
 class LBFGSBJob(Job):
     """Self-contained async L-BFGS-B run (initial eval, gradient, line search, history).
 
-    The run works in bound-normalised coordinates z = (x - lower) / (upper - lower):
-    gradients, curvature pairs and step lengths refer to z, so a step length means
-    the same thing for every parameter.
+    Works in bound-normalised coordinates z = (x - lower) / (upper - lower):
+    gradients, curvature pairs and step lengths refer to z.
 
-    One iteration is a finite-difference gradient (one task per dimension, all
-    dispatched together) followed by a backtracking line search. The trial steps
-    of the line search form a fixed ladder alpha_0 * factor**j, and the step
-    accepted is the first rung that passes the Armijo test. Because the ladder
-    is fixed, the master may evaluate later rungs before the earlier ones have
-    returned (see `speculate`); the accepted rung is the same either way.
+    The line search tries a fixed ladder of steps alpha_0 * factor**j and
+    accepts the first rung that passes the Armijo test, so the master may
+    evaluate later rungs early (see `speculate`) without changing the result.
 
-    With `hessian` enabled the run also measures the Hessian of the objective by
-    finite differences, n(n+3)/2 evaluations dispatched together with the
-    gradient, and uses its inverse as the initial matrix of the L-BFGS
-    recursion. The first step is then a Newton step, and the run stops as soon
-    as the decrease that the quadratic model predicts falls below the function
-    tolerance. A cell takes the Hessian of a finished neighbour instead of
-    measuring its own.
+    With `hessian` the run also measures a finite-difference Hessian with the
+    gradient (n(n+3)/2 evaluations) and starts the L-BFGS recursion from its
+    inverse. A cell takes the Hessian of a finished neighbour instead.
 
     For grid-anchored LBFGSB jobs the run starts with a neighbor-test
     step: if a converged neighbor has better fitness at our cell, we
@@ -70,18 +58,16 @@ class LBFGSBJob(Job):
         self.lbfgsb_gradient_method = sampler.lbfgsb_gradient_method
         if self.lbfgsb_gradient_method not in ("central", "forward"):
             raise Exception(f"Gradient method {self.lbfgsb_gradient_method} not implemented.")
-        # Finite-difference step as a fraction of each parameter's bound
-        # extent; None selects the legacy rule max(|x| * 1e-8, 1e-10).
+        # Fraction of each parameter's bound extent, or None (see _fd_steps).
         self.fd_step = sampler.lbfgsb_fd_step_value
         self.ladder_factor = sampler.lbfgsb_ladder_factor
         self.first_step = sampler.lbfgsb_first_step
         self.max_step = sampler.lbfgsb_max_step
         self.speculative = sampler.lbfgsb_speculative
         self.lookahead = sampler.lbfgsb_lookahead
-        # Noise of the target (0 if unknown): an accepted step that changes f
-        # by less than a few times this is as converged as the run can get.
-        self.noise = sampler.lbfgsb_noise
-        self.ftol_eff = max(self.lbfgsb_ftol, 4.0 * self.noise)
+        # An accepted step that changes f by less than a few times the noise
+        # of the target (0 if unknown) is as converged as the run can get.
+        self.ftol_eff = max(self.lbfgsb_ftol, 4.0 * sampler.lbfgsb_noise)
         # When True we piggyback compute_gradient=True on value-evaluating tasks.
         self.has_user_grad = sampler.grad_func is not None
 
@@ -89,13 +75,10 @@ class LBFGSBJob(Job):
         self.opt_dims = opt_dims
         self.n_opt_dims = len(opt_dims)
 
-        if self.n_opt_dims:
-            b = np.asarray(sampler.bounds, dtype=float)[list(opt_dims)]
-        else:
-            b = np.zeros((0, 2))
+        b = np.asarray(sampler.bounds, dtype=float)[list(opt_dims)]
         self._lo = b[:, 0]
         self._hi = b[:, 1]
-        self._scale = np.where(self._hi > self._lo, self._hi - self._lo, 1.0)
+        self._scale = self._hi - self._lo
 
         # start_params are the partial parameters corresponding to opt_dims;
         # start_params_full is the full vector for the initial eval.
@@ -118,32 +101,23 @@ class LBFGSBJob(Job):
         # Curvature pairs, in normalised coordinates.
         self.s_hist = collections.deque(maxlen=10)
         self.y_hist = collections.deque(maxlen=10)
-        # Inverse Hessian of the objective in normalised coordinates (None:
-        # not known). Taken from a neighbour or from the sampler's latest one
-        # for a cell; measured by the run otherwise.
-        self.use_hessian = bool(sampler.lbfgsb_hessian) and \
+        self.use_hessian = sampler.lbfgsb_hessian and \
             0 < self.n_opt_dims <= sampler.lbfgsb_hessian_max_dims and not self.has_user_grad
         self.hessian_step = sampler.lbfgsb_hessian_step_value()
+        # Inverse Hessian of the objective in z, from a neighbour, from the
+        # sampler's hint, or measured by the run. None: not known. The array
+        # is shared between jobs and never modified in place.
         self.Hinv = None
-        self.hessian_own = False
-        self._hessian_z = None           # where the Hessian in use was measured
+        self._hessian_z = None           # where this run measured its Hessian
         self._hessian_refreshes = 0
-        self._want_hessian = False
-        # Longest trial displacement of the next line search (normalised):
-        # twice the displacement the last one accepted. None before the first.
+        # Cap on the trial displacement of the next line search (set in _accept).
         self._trust = None
         if seed_history:
-            if self.use_hessian and seed_history.get('Hinv') is not None:
-                # The Hessian carries the curvature; the neighbour's pairs
-                # were built on its own start and are not reused with it.
-                self.Hinv = np.array(seed_history['Hinv'], dtype=float)
-            else:
-                self.s_hist.extend(seed_history['s'])
-                self.y_hist.extend(seed_history['y'])
+            self._seed_curvature(seed_history)
         if self.use_hessian and self.Hinv is None and self.type != 'INITIAL_OPTIMIZATION':
-            hint = sampler.lbfgsb_hessian_hint()
+            hint = sampler.lbfgsb_hessian_hint
             if hint is not None and hint.shape == (self.n_opt_dims, self.n_opt_dims):
-                self.Hinv = hint.copy()
+                self.Hinv = hint
         self.last_gamma = None
 
         self.iteration = 0
@@ -163,11 +137,7 @@ class LBFGSBJob(Job):
         self._next_gid = 0
         self._gid = None       # gradient the run is waiting for
         self._ls = None        # state of the current line search
-        self._next_lid = 0
 
-    # ------------------------------------------------------------------
-    # parameter helpers
-    # ------------------------------------------------------------------
     def _get_full_params(self, partial_params):
         """Build full params from the opt-dim slice (passthrough for global opt)."""
         if self.grid_idx is None:
@@ -186,13 +156,19 @@ class LBFGSBJob(Job):
         return self.sampler._construct_params(self.grid_idx, bounded)
 
     def _ctx(self, sub_type, **extra):
-        ctx = {'type': self.type, 'job_id': self.id, 'sub_type': sub_type}
-        ctx.update(extra)
-        return ctx
+        return {'type': self.type, 'job_id': self.id, 'sub_type': sub_type, **extra}
 
-    # ------------------------------------------------------------------
-    # start
-    # ------------------------------------------------------------------
+    def _seed_curvature(self, state):
+        """Take the curvature of another run's ``optimizer_state``."""
+        hinv = state.get('Hinv')
+        if self.use_hessian and hinv is not None:
+            # The Hessian carries the curvature; the pairs were built on the
+            # other run's start and are not reused with it.
+            self.Hinv = hinv
+        else:
+            self.s_hist.extend(state['s'])
+            self.y_hist.extend(state['y'])
+
     def start(self):
         """Return the first task(s) for this job."""
         # The master loop also defensively cleans up zero-opt-dim jobs, but
@@ -227,12 +203,7 @@ class LBFGSBJob(Job):
                 # 1. Seed the history
                 self.s_hist.clear()
                 self.y_hist.clear()
-                neighbor_hinv = best_neighbor_state['optimizer_state'].get('Hinv')
-                if self.use_hessian and neighbor_hinv is not None:
-                    self.Hinv = np.array(neighbor_hinv, dtype=float)
-                else:
-                    self.s_hist.extend(best_neighbor_state['optimizer_state']['s'])
-                    self.y_hist.extend(best_neighbor_state['optimizer_state']['y'])
+                self._seed_curvature(best_neighbor_state['optimizer_state'])
 
                 # 2. Get neighbor's best params to test
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
@@ -249,10 +220,8 @@ class LBFGSBJob(Job):
             self.status = 'NEEDS_INITIAL_F'
 
         if self.status == 'NEEDS_INITIAL_F':
-            # The value at the start point is known for cell jobs (it is the
-            # best activation sample, or the point a test job just evaluated).
-            # Evaluating it again would only repeat that call, unless a user
-            # gradient has to be collected there.
+            # A cell job knows the value at its start point. Evaluate it again
+            # only to collect a user gradient there.
             if np.isfinite(self.start_fitness) and not self.has_user_grad:
                 self._set_current(self.start_params_partial, self.start_fitness)
                 return self._begin_gradient(self._new_gid())
@@ -264,23 +233,16 @@ class LBFGSBJob(Job):
         return []
 
     def _set_current(self, params_partial, fitness):
-        self.current_params = np.clip(np.asarray(params_partial, dtype=float), self._lo, self._hi)
+        self.current_params = np.clip(params_partial, self._lo, self._hi)
         self.current_fitness = fitness
         self.current_objective = -fitness
 
-    # ------------------------------------------------------------------
-    # result dispatch
-    # ------------------------------------------------------------------
     def process_result(self, result):
         """Main dispatcher for L-BFGS-B state machine."""
-        if self._is_finished:
-            return []
         context = result['context']
         sub_type = context.get('sub_type', 'NONE')
 
         if sub_type == 'LBFGS_NEIGHBOR_TEST':
-            if self.status != 'NEEDS_NEIGHBOR_TEST':
-                return []
             neighbor_fitness = result['target_val']
             if neighbor_fitness > self.start_fitness:
                 self._set_current(self.neighbor_params_to_test, neighbor_fitness)
@@ -295,8 +257,6 @@ class LBFGSBJob(Job):
             return self._begin_gradient(self._new_gid(), user_grad_full=user_grad)
 
         if sub_type == 'LBFGS_INITIAL_F':
-            if self.status != 'NEEDS_INITIAL_F':
-                return []
             self._set_current(self._get_partial_params_from_full(result['params']),
                               result['target_val'])
             if not np.isfinite(self.current_fitness):
@@ -313,9 +273,6 @@ class LBFGSBJob(Job):
 
         return []
 
-    # ------------------------------------------------------------------
-    # gradient
-    # ------------------------------------------------------------------
     def _new_gid(self):
         gid = self._next_gid
         self._next_gid += 1
@@ -349,7 +306,6 @@ class LBFGSBJob(Job):
         replaced by a backward one, so a parameter on its upper bound still
         gets a derivative and no probe coincides with x.
         """
-        x = np.asarray(x, dtype=float)
         h = self._fd_steps(x)
         ug = self._user_grad_opt(user_grad_full)
         probes = {}
@@ -370,16 +326,13 @@ class LBFGSBJob(Job):
                 probes[(i, sign)] = None
         self._grads[gid] = {'x': x, 'h': h, 'user': ug, 'probes': probes,
                             'sent': set(), 'f': None, 'hess': None}
-        return self._grads[gid]
 
     def _add_hessian_probes(self, gid):
         """Plan the second-difference probes of the Hessian at the point of gradient gid.
 
         Per dimension two points, x + s h e_i and x - s h e_i (or x + 2 s h e_i
         where x - s h e_i would leave the box), and per pair one point,
-        x + s_i h e_i + s_j h e_j. The sign s_i points into the box. The step
-        is larger than the gradient step: a second difference divides the
-        noise by h squared.
+        x + s_i h e_i + s_j h e_j. The sign s_i points into the box.
         """
         g = self._grads[gid]
         x = g['x']
@@ -400,12 +353,10 @@ class LBFGSBJob(Job):
                 e[i] = sign[i] * h[i]
                 e[j] = sign[j] * h[j]
                 offsets[('m', i, j)] = e
-        g['hess'] = {'h': h, 'sign': sign, 'offsets': offsets,
-                     'vals': {k: None for k in offsets}, 'sent': set()}
+        g['hess'] = {'sign': sign, 'offsets': offsets, 'vals': dict.fromkeys(offsets)}
 
     def _hessian_task(self, gid, key):
         g = self._grads[gid]
-        g['hess']['sent'].add(key)
         return {'params': self._construct_full_params_for_task(g['x'] + g['hess']['offsets'][key]),
                 'context': self._ctx('LBFGS_HESSIAN', hkey=key, gid=gid)}
 
@@ -446,7 +397,7 @@ class LBFGSBJob(Job):
         return {'params': self._construct_full_params_for_task(x_step),
                 'context': self._ctx('LBFGS_GRADIENT', dim=i, sign=sign, gid=gid)}
 
-    def _begin_gradient(self, gid, user_grad_full=None):
+    def _begin_gradient(self, gid, user_grad_full=None, measure_hessian=False):
         """Wait for the gradient at the current point; returns the probes not yet sent."""
         if gid not in self._grads:
             self._make_gradient(gid, self.current_params, user_grad_full)
@@ -459,15 +410,9 @@ class LBFGSBJob(Job):
         for other in [k for k in self._grads if k != gid]:
             del self._grads[other]
         tasks = [self._probe_task(gid, key) for key in g['probes'] if key not in g['sent']]
-        # Measure the Hessian with this gradient if the run has none, or if
-        # the last line search showed that the one it has is poor.
-        if self.use_hessian and (self.Hinv is None or self._want_hessian):
-            self._want_hessian = False
-            if g['hess'] is None:
-                self._add_hessian_probes(gid)
-        if g['hess'] is not None:
-            tasks += [self._hessian_task(gid, key) for key in g['hess']['vals']
-                      if key not in g['hess']['sent']]
+        if self.use_hessian and (self.Hinv is None or measure_hessian):
+            self._add_hessian_probes(gid)
+            tasks += [self._hessian_task(gid, key) for key in g['hess']['vals']]
         if self._gradient_complete(g):
             return self._finalize_gradient_and_line_search()
         return tasks
@@ -480,11 +425,11 @@ class LBFGSBJob(Job):
     def _process_gradient_result(self, result):
         """Processes a returned likelihood evaluation for a gradient or Hessian calculation."""
         context = result['context']
-        g = self._grads.get(context.get('gid'))
+        g = self._grads.get(context['gid'])
         if g is None:
             return []          # probe of a trial point that was not accepted
         if context['sub_type'] == 'LBFGS_HESSIAN':
-            g['hess']['vals'][tuple(context['hkey'])] = -result['target_val']
+            g['hess']['vals'][context['hkey']] = -result['target_val']
         else:
             g['probes'][(context['dim'], context['sign'])] = -result['target_val']  # objective
         if (self.status == 'NEEDS_GRADIENT' and context['gid'] == self._gid
@@ -524,7 +469,6 @@ class LBFGSBJob(Job):
             if hinv is not None:
                 # A measured Hessian replaces what the run had, pairs included.
                 self.Hinv = hinv
-                self.hessian_own = True
                 self._hessian_z = (store['x'] - self._lo) / self._scale
                 self.s_hist.clear()
                 self.y_hist.clear()
@@ -548,9 +492,6 @@ class LBFGSBJob(Job):
 
         return self._start_line_search()
 
-    # ------------------------------------------------------------------
-    # direction and line search
-    # ------------------------------------------------------------------
     def _two_loop(self, grad):
         """L-BFGS direction -H grad, or None without usable curvature pairs.
 
@@ -605,11 +546,8 @@ class LBFGSBJob(Job):
         if not free.any():
             return d
         Hi = self.Hinv
-        try:
-            reduced = Hi[np.ix_(free, free)] - Hi[np.ix_(free, held)] @ np.linalg.solve(
-                Hi[np.ix_(held, held)], Hi[np.ix_(held, free)])
-        except np.linalg.LinAlgError:
-            return None
+        reduced = Hi[np.ix_(free, free)] - Hi[np.ix_(free, held)] @ np.linalg.solve(
+            Hi[np.ix_(held, held)], Hi[np.ix_(held, free)])
         d[free] = -reduced @ g[free]
         return d
 
@@ -642,18 +580,15 @@ class LBFGSBJob(Job):
             scaled = bool(gamma)
 
         gd = float(np.dot(g, d))
-        dmax = float(np.max(np.abs(d))) if self.n_opt_dims else 0.0
+        dmax = float(np.max(np.abs(d)))
         if dmax == 0.0 or gd >= 0.0:
             # Every component of the gradient is held by a bound: stationary.
             return self._finish(converged=True)
         if self.Hinv is not None and scaled and -0.5 * gd < self.ftol_eff:
-            # With a Hessian the step is a Newton step, and -g.d/2 is the
-            # decrease the quadratic model expects from it. Below the function
-            # tolerance there is nothing left to gain.
+            # -g.d/2 is the decrease the quadratic model expects from a Newton
+            # step. Below the function tolerance there is nothing left to gain.
             return self._finish(converged=True)
 
-        # A step is trusted at full length when it comes from curvature
-        # information; otherwise its first trial displacement is first_step.
         alpha0 = 1.0 if scaled else self.first_step / dmax
         alpha0 = min(alpha0, self.max_step / dmax)
         # A line search that had to cut its step says how far the model can be
@@ -680,11 +615,10 @@ class LBFGSBJob(Job):
                 break
 
         self._ls = {
-            'lid': self._next_lid, 'x0': x0, 'z0': z0, 'f0': self.current_objective,
+            'x0': x0, 'z0': z0, 'f0': self.current_objective,
             'g': g, 'd': d, 'alphas': alphas, 'vals': {}, 'ugrad': {}, 'sent': set(),
             'decided': 0, 'scaled': scaled, 'probe_gid': None,
         }
-        self._next_lid += 1
         self.status = 'NEEDS_LINE_SEARCH'
         return [self._rung_task(0)]
 
@@ -702,14 +636,14 @@ class LBFGSBJob(Job):
         ls = self._ls
         ls['sent'].add(j)
         return {'params': self._construct_full_params_for_task(self._rung_point(j)),
-                'context': self._ctx('LBFGS_LINE_SEARCH', alpha=ls['alphas'][j], rung=j,
-                                     lid=ls['lid'], compute_gradient=self.has_user_grad)}
+                'context': self._ctx('LBFGS_LINE_SEARCH', rung=j, lid=self.iteration,
+                                     compute_gradient=self.has_user_grad)}
 
     def _process_line_search_result(self, result):
         """Record a rung; accept the first rung that passes, in ladder order."""
         ctx = result['context']
         ls = self._ls
-        if self.status != 'NEEDS_LINE_SEARCH' or ls is None or ctx.get('lid') != ls['lid']:
+        if ls is None or ctx['lid'] != self.iteration:
             return []          # rung of an earlier line search
         j = ctx['rung']
         ls['vals'][j] = -result['target_val']
@@ -729,14 +663,12 @@ class LBFGSBJob(Job):
             ls['decided'] += 1
             if ls['probe_gid'] is not None:
                 # The probes sent ahead were for rung 0.
-                self._grads.pop(ls['probe_gid'], None)
+                del self._grads[ls['probe_gid']]
                 ls['probe_gid'] = None
 
         j = ls['decided']
         if j >= len(ls['alphas']):
-            # No trial step down to the finite-difference step improves on the
-            # current point along a descent direction: stationary within the
-            # resolution of the target.
+            # No rung improves on the current point: stationary within the resolution.
             return self._finish(converged=True)
         if j not in ls['sent']:
             return [self._rung_task(j)]
@@ -763,47 +695,37 @@ class LBFGSBJob(Job):
 
         self._trust = max(2.0 * float(np.max(np.abs(dz))), 4.0 * self._resolution())
 
-        # A step that had to be cut several times means the Hessian in use
-        # does not describe the target here. Measure it again at the new
-        # point if it came from somewhere else.
+        # The Hessian in use is poor here (see HESSIAN_REFRESH_*): measure it again.
+        measure_hessian = False
         if (self.use_hessian and j >= HESSIAN_REFRESH_RUNG
                 and self._hessian_refreshes < HESSIAN_MAX_REFRESH
                 and np.abs(f_old - f_new) > HESSIAN_REFRESH_GAIN * self.ftol_eff):
             z_new = (x_new - self._lo) / self._scale
-            moved = (self._hessian_z is None
-                     or float(np.max(np.abs(z_new - self._hessian_z))) > HESSIAN_REFRESH_DISTANCE)
-            if moved:
+            measure_hessian = (
+                self._hessian_z is None
+                or float(np.max(np.abs(z_new - self._hessian_z))) > HESSIAN_REFRESH_DISTANCE)
+            if measure_hessian:
                 self._hessian_refreshes += 1
-                self._want_hessian = True
 
-        if j == 0 and ls['probe_gid'] is not None:
+        if ls['probe_gid'] is not None:
             gid = ls['probe_gid']           # probes sent ahead for this point
         else:
             gid = self._new_gid()
-            self._make_gradient(gid, x_new, ls['ugrad'].get(j))
-        return self._begin_gradient(gid)
+            self._make_gradient(gid, x_new, ls['ugrad'][j])
+        return self._begin_gradient(gid, measure_hessian=measure_hessian)
 
-    # ------------------------------------------------------------------
-    # speculation
-    # ------------------------------------------------------------------
     @property
     def wants_speculation(self):
-        return (self.speculative and not self._is_finished
-                and self.status == 'NEEDS_LINE_SEARCH' and self._ls is not None)
+        return self.speculative and self._ls is not None
 
     def speculate(self):
-        """One task that may save a wall step, or None.
+        """One task for a worker that would otherwise idle, or None.
 
-        Called by the master when a worker would otherwise idle. Two kinds:
-
-        * a later rung of the ladder, so that the outcome is already there if
-          the rungs before it are rejected;
-        * a gradient probe at the point of rung 0, so that the next iteration
-          can start at once if rung 0 is accepted.
-
-        With curvature information rung 0 is usually accepted and its probes
-        come first; without it the ladder comes first. Neither changes which
-        rung is accepted.
+        Either a later rung of the ladder, whose value is then there if the
+        rungs before it are rejected, or a gradient probe at rung 0, so the
+        next iteration can start at once if rung 0 is accepted. Probes come
+        first for a step from curvature information, rungs otherwise.
+        Neither changes which rung is accepted.
         """
         if not self.wants_speculation:
             return None
@@ -829,14 +751,11 @@ class LBFGSBJob(Job):
                         return self._probe_task(ls['probe_gid'], key)
         return None
 
-    # ------------------------------------------------------------------
-    # finish
-    # ------------------------------------------------------------------
     def _finish(self, converged=False, success=True):
         self.status = 'FINISHED'
         self._is_finished = True
         self.success = success
-        self.converged = bool(converged) and success
+        self.converged = converged
         self._ls = None
         self._grads = {}
         return []
@@ -844,9 +763,7 @@ class LBFGSBJob(Job):
     def on_finish(self, next_job_id):
         """Finalize the job and write the result back to the sampler state.
 
-        The best accepted iterate is written back however the run ended: a
-        line search that finds no further improvement is the normal way for
-        the run to stop at the resolution of the target, not a failure.
+        The best accepted iterate is written back however the run ended.
         """
         sampler = self.sampler
         usable = np.isfinite(self.current_fitness)
@@ -879,8 +796,8 @@ class LBFGSBJob(Job):
                 state = sampler.population[grid_idx]
                 state['optimizer_state'] = {'s': list(self.s_hist), 'y': list(self.y_hist),
                                             'Hinv': self.Hinv}
-                if self.Hinv is not None and self.hessian_own:
-                    sampler.note_lbfgsb_hessian(self.Hinv)
+                if self._hessian_z is not None:
+                    sampler.lbfgsb_hessian_hint = self.Hinv
                 # LBFGSB_LOOP cells stay 'converged' so dynamic activation can
                 # re-promote them; everything else terminates at 'optimized'.
                 # A run that could not start (invalid start point) also leaves

@@ -194,10 +194,6 @@ def _two_mode_target(x):
 
 
 def test_planted_wrong_optimum_strip_is_repaired():
-    import os
-    import sys
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                    'tools'))
     from virtual_pool import run_virtual_scan
 
     record = {}

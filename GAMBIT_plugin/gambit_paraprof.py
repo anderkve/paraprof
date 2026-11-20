@@ -126,10 +126,8 @@ YAML options:
                              (multi-projection knowledge transfer),
                              'suspect_recheck' (wrong-optimum strip recheck).
                              See the paraprof README for the full key list.
-                             For a likelihood that costs seconds per call,
-                             'lbfgsb': {'ftol': 1e-4} is the setting that
-                             matters most: the default of 1e-9 polishes each
-                             cell far beyond what a contour shows.
+                             For an expensive likelihood consider
+                             'lbfgsb': {'ftol': 1e-4}.
                         Optional run-time keys:
     save_plots:              If true, paraprof writes its diagnostic plots to
                              the working directory after each projection. When
@@ -280,13 +278,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
 
     def _initial_points_to_unit(self, points):
-        """Unit-hypercube coordinates of the user's initial points.
-
-        A mapping {parameter name: value} is a point in physical coordinates
-        and goes through ScannerBit's inverse prior transform. Names may be
-        given with or without the model prefix. A list is taken as
-        unit-hypercube coordinates already.
-        """
+        """Unit-hypercube coordinates of the user's initial points (formats:
+        see initial_points in the module docstring)."""
         names = list(self.parameter_names)
         short = {}
         for full in names:

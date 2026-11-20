@@ -239,7 +239,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `de.allow_early_DE_exit`                | `True`                         | Smooth-interior cells (neighbour argmax agreement) skip the DE search — 1 DE generation then polish, instead of the full window (see below). Set `False` for multimodal-inner targets |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
-| `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance. For a profile likelihood `1e-5` is far below what a contour shows and saves iterations |
+| `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance. For a profile likelihood `1e-4` is far below what a contour shows and saves iterations |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` or `'central'` (~50% more calls)                     |
 | `lbfgsb.fd_step`                   | `'auto'`                       | Finite-difference step as a fraction of the bound extent. `'auto'` sets it from a noise estimate of the target; `None` is `max(\|x\| * 1e-8, 1e-10)` |
 | `lbfgsb.noise`                     | `None`                         | Numerical noise of the target, if known. Estimated when `fd_step` is `'auto'` |

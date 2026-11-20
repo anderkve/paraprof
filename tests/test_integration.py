@@ -412,12 +412,9 @@ def test_suspect_recheck_fixes_rosenbrock_strip():
 
     assert result['fired'], "Suspect-recheck stage never ran"
 
-    # The scan used to leave a wrong-optimum strip on this case, which the
-    # pass then repaired (4-10 cells, 4-20 logL each). With the current
-    # L-BFGS-B polish the cells are at their optimum before the pass starts,
-    # so there may be nothing for it to improve here. That it repairs a strip
-    # is tested on a planted one in test_suspect_recheck.py; this test keeps
-    # the guarantee that it never lowers a cell.
+    # The scan may leave nothing for the pass to improve here. Repair of a
+    # strip is tested on a planted one in test_suspect_recheck.py; this test
+    # checks that no cell is lowered.
 
     # Never regress a cell. The LBFGSB polish only writes back when
     # current_fitness > state['best_fitness'], so this is a structural

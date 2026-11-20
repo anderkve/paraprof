@@ -1,17 +1,13 @@
 """Tests for the L-BFGS-B job and its scheduling, run on virtual workers (no MPI)."""
-import os
-import sys
-import zlib
-
 import numpy as np
 import pytest
 
-from paraprof import ProfileProjector
+from bench_scheduling import with_noise as noisy
+from paraprof import ProfileProjector, get_logger
 from paraprof.jobs.lbfgsb_job import LBFGSBJob
 from paraprof.jobs.noise_job import ecnoise
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
-from virtual_pool import run_virtual_scan  # noqa: E402
+from paraprof.worker import evaluate_task
+from virtual_pool import run_virtual_scan
 
 CENTRE = np.array([0.45, 0.55, 0.50, 0.40])
 SIGMA = np.array([0.10, 0.12, 0.05, 0.15])
@@ -26,15 +22,6 @@ def gauss4(x):
     return -10.0 - 0.5 * float(d @ M @ d)
 
 
-def noisy(func, amp):
-    """Add a deterministic pseudo-random term of rms `amp`."""
-    def f(x):
-        x = np.asarray(x, dtype=float)
-        u = zlib.crc32(x.tobytes()) / 2 ** 32
-        return func(x) + amp * np.sqrt(12.0) * (u - 0.5)
-    return f
-
-
 def exact_profile(cell, axes, proj):
     prof = [i for i in range(4) if i not in proj]
     d = np.array([axes[0][cell[0]], axes[1][cell[1]]]) - CENTRE[proj]
@@ -43,24 +30,39 @@ def exact_profile(cell, axes, proj):
     return -10.0 - 0.5 * float(d @ S @ d)
 
 
-def scan(target, n_workers, **advanced):
+def plane(dims=(0, 1), grid=12, method='lbfgsb', **extra):
+    return dict({'dims': list(dims), 'grid_points': [grid, grid], 'optimization_method': method},
+                **extra)
+
+
+def virtual_scan(projections, n_workers, target=gauss4, **kwargs):
+    """A scan on virtual workers with the settings the tests share."""
     np.random.seed(3)
-    return run_virtual_scan(
-        target, [(0.0, 1.0)] * 4,
-        [{'dims': [0, 1], 'grid_points': [12, 12], 'optimization_method': 'lbfgsb'}],
-        n_workers, jitter=0.05, seed=3, roi_threshold=4.0, n_initial_optimizations=6,
-        max_patching_waves=2, lbfgsb_max_iter=20,
-        advanced_config={'lbfgsb': advanced} if advanced else None)
+    settings = dict(jitter=0.05, seed=3, roi_threshold=4.0, n_initial_optimizations=6,
+                    max_patching_waves=2, lbfgsb_max_iter=20)
+    settings.update(kwargs)
+    return run_virtual_scan(target, [(0.0, 1.0)] * 4, projections, n_workers, **settings)
+
+
+def scan(target, n_workers, **advanced):
+    return virtual_scan([plane()], n_workers, target,
+                        advanced_config={'lbfgsb': advanced} if advanced else None)
+
+
+def projection_errors(result):
+    """Stored minus exact profile value over the cells inside the region of interest."""
+    sol = result['coarse_solution']
+    proj = list(sol['projection_dims'])
+    err = []
+    for cell, entry in sol['solutions'].items():
+        ref = exact_profile(cell, sol['grid_axes'], proj)
+        if ref > -10.0 - 4.0:
+            err.append(entry['likelihood'] - ref)
+    return np.array(err)
 
 
 def roi_errors(out):
-    proj = list(out['projection_dims'])
-    err = []
-    for cell, st in out['population'].items():
-        ref = exact_profile(cell, out['grid_axes'], proj)
-        if ref > -10.0 - 4.0:
-            err.append(st['best_fitness'] - ref)
-    return np.array(err)
+    return projection_errors(out['results'][-1])
 
 
 @pytest.mark.parametrize('n_workers', [3, 40])
@@ -106,32 +108,17 @@ def make_sampler(target=gauss4, **advanced):
                             advanced_config={'lbfgsb': cfg})
 
 
-def evaluate(task, target):
-    ctx = dict(task['context'])
-    ctx['worker_rank'] = 1
-    return {'target_val': float(target(task['params'])), 'params': task['params'],
-            'context': ctx, 'error': None, 'user_gradient': None, 'user_gradient_error': None}
-
-
-def drive(job, target, speculate=False, rng=None):
-    """Run a job to the end. With `speculate`, every evaluation the job offers
-    ahead of time is evaluated as well, and results return in random order."""
+def drive(job, target, rng=None):
+    """Run a job to the end. With `rng`, every evaluation the job offers ahead
+    of time is evaluated as well, and results return in random order."""
     pending = list(job.start())
-    n = 0
     while not job.is_finished():
-        if speculate:
-            while True:
-                extra = job.speculate()
-                if extra is None:
-                    break
-                pending.append(extra)
-            if rng is not None:
-                rng.shuffle(pending)
+        if rng is not None:
+            pending.extend(iter(job.speculate, None))
+            rng.shuffle(pending)
         assert pending, "job is waiting for a result that was never requested"
-        task = pending.pop(0)
-        n += 1
-        pending.extend(job.process_result(evaluate(task, target)))
-    return n
+        result = evaluate_task(pending.pop(0), target, None, 1, get_logger())
+        pending.extend(job.process_result(result))
 
 
 def global_job(sampler, start):
@@ -147,7 +134,7 @@ def test_evaluations_sent_ahead_do_not_change_the_path(hessian):
     a = global_job(make_sampler(hessian=hessian), start)
     drive(a, gauss4)
     b = global_job(make_sampler(hessian=hessian), start)
-    drive(b, gauss4, speculate=True, rng=np.random.default_rng(0))
+    drive(b, gauss4, rng=np.random.default_rng(0))
     assert a.iteration == b.iteration
     np.testing.assert_allclose(a.current_params, b.current_params, rtol=0, atol=1e-12)
     np.testing.assert_allclose(a.current_params, CENTRE, atol=1e-4)
@@ -193,9 +180,7 @@ def test_endpoint_is_kept_when_no_step_improves():
     target = noisy(gauss4, 1e-3)
     sampler = make_sampler(target=target, hessian=False, fd_step=1e-8)
     start = CENTRE + 1e-4
-    job = LBFGSBJob(job_id=0, job_type='INITIAL_OPTIMIZATION', sampler=sampler,
-                    opt_dims=(0, 1, 2, 3), start_params=start, grid_idx=None,
-                    start_params_full=start)
+    job = global_job(sampler, start)
     drive(job, target)
     assert job.success
     job.on_finish(next_job_id=1)
@@ -239,17 +224,12 @@ def test_ecnoise_flags_a_dominating_trend():
 
 def test_noise_stage_sets_the_step():
     amp = 1e-6
-    out = scan(noisy(gauss4, amp), 3)
-    assert out['evaluations'] > 0
     np.random.seed(3)
     sampler = ProfileProjector(target_func=noisy(gauss4, amp), bounds=[(0.0, 1.0)] * 4,
                                projections=[{'dims': [0, 1], 'grid_points': [4, 4]}])
     jobs, _ = sampler.create_noise_estimate_job(0)
     job = jobs[0]
-    pending = list(job.start())
-    while pending:
-        pending.extend(job.process_result(evaluate(pending.pop(0), noisy(gauss4, amp))))
-    assert job.is_finished()
+    drive(job, noisy(gauss4, amp))
     job.on_finish(1)
     assert amp / 5 < sampler.lbfgsb_noise < amp * 5
     # near sqrt(noise / curvature): well above the 1e-8 that suits double precision
@@ -258,13 +238,8 @@ def test_noise_stage_sets_the_step():
 
 # ---- initial points ------------------------------------------------------------------------
 def seeded_scan(refine):
-    np.random.seed(3)
     seed = CENTRE + np.array([0.03, -0.02, 0.01, 0.04])     # near the maximum, on no grid node
-    return run_virtual_scan(
-        gauss4, [(0.0, 1.0)] * 4,
-        [{'dims': [0, 1], 'grid_points': [12, 12], 'optimization_method': 'lbfgsb'}],
-        3, jitter=0.05, seed=3, roi_threshold=4.0, max_patching_waves=2, lbfgsb_max_iter=20,
-        initial_points=[seed], refine_initial_points=refine)
+    return virtual_scan([plane()], 3, initial_points=[seed], refine_initial_points=refine)
 
 
 def test_initial_points_are_not_optimised_unless_asked():
@@ -279,13 +254,9 @@ def test_initial_points_are_not_optimised_unless_asked():
 
 
 # ---- activation depth ----------------------------------------------------------------------
-def depth_scan(depth, n_workers):
-    return scan(gauss4, n_workers, activation_depth=depth)
-
-
 def test_activation_depth_keeps_the_cells_and_their_values():
-    base = depth_scan(1, 200)
-    deep = depth_scan(3, 200)
+    base = scan(gauss4, 200)
+    deep = scan(gauss4, 200, activation_depth=3)
     # Cells activated ahead that stay outside the border are dropped: same cells, same profile.
     assert set(deep['population']) == set(base['population'])
     assert roi_errors(deep).min() > -1e-5
@@ -296,8 +267,8 @@ def test_activation_depth_keeps_the_cells_and_their_values():
 
 
 def test_activation_depth_does_nothing_without_idle_workers():
-    base = depth_scan(1, 3)
-    deep = depth_scan(3, 3)
+    base = scan(gauss4, 3)
+    deep = scan(gauss4, 3, activation_depth=3)
     assert set(deep['population']) == set(base['population'])
     assert deep['target_calls'] < 1.05 * base['target_calls']
 
@@ -312,25 +283,9 @@ def test_activation_depth_validation():
 PLANES = ([0, 1], [2, 3], [0, 2])
 
 
-def multi_scan(eager, n_workers, method='lbfgsb', planes=PLANES, **proj_extra):
-    np.random.seed(3)
-    projections = [dict({'dims': list(d), 'grid_points': [12, 12], 'optimization_method': method},
-                        **proj_extra) for d in planes]
-    return run_virtual_scan(
-        gauss4, [(0.0, 1.0)] * 4, projections, n_workers, jitter=0.05, seed=3,
-        roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2, lbfgsb_max_iter=20,
-        advanced_config={'cross_projection': {'eager_start': eager}})
-
-
-def projection_errors(result):
-    sol = result['coarse_solution']
-    proj = list(sol['projection_dims'])
-    err = []
-    for cell, entry in sol['solutions'].items():
-        ref = exact_profile(cell, sol['grid_axes'], proj)
-        if ref > -10.0 - 4.0:
-            err.append(entry['likelihood'] - ref)
-    return np.array(err)
+def multi_scan(eager, n_workers, method='lbfgsb', **kwargs):
+    return virtual_scan([plane(d, method=method) for d in PLANES], n_workers,
+                        advanced_config={'cross_projection': {'eager_start': eager}}, **kwargs)
 
 
 @pytest.mark.parametrize('method', ['lbfgsb', 'de'])
@@ -366,13 +321,7 @@ def test_eager_start_writes_each_projection_when_it_ends(monkeypatch, capsys):
                       sampler.target_calls))
 
     monkeypatch.setattr(paraprof.visualization, 'plot_profiles', record)
-    np.random.seed(3)
-    projections = [{'dims': list(d), 'grid_points': [12, 12], 'optimization_method': 'lbfgsb'}
-                   for d in PLANES]
-    out = run_virtual_scan(
-        gauss4, [(0.0, 1.0)] * 4, projections, 200, jitter=0.05, seed=3, log_level='INFO',
-        save_plots=True, roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2,
-        lbfgsb_max_iter=20, advanced_config={'cross_projection': {'eager_start': True}})
+    out = multi_scan(True, 200, log_level='INFO', save_plots=True)
     log = capsys.readouterr().err
 
     # One plot per projection, made with the state of that projection in the sampler.
@@ -393,16 +342,8 @@ def test_eager_start_writes_each_projection_when_it_ends(monkeypatch, capsys):
 
 
 def test_projections_with_refinement_are_not_started_early():
-    np.random.seed(3)
-    projections = [
-        {'dims': [0, 1], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
-        {'dims': [2, 3], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb',
-         'grid_refinement_factor': 2},
-        {'dims': [0, 2], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
-    ]
-    out = run_virtual_scan(
-        gauss4, [(0.0, 1.0)] * 4, projections, 100, jitter=0.05, seed=3,
-        roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2, lbfgsb_max_iter=20,
+    out = virtual_scan(
+        [plane([0, 1], 8), plane([2, 3], 8, grid_refinement_factor=2), plane([0, 2], 8)], 100,
         advanced_config={'cross_projection': {'eager_start': True}})
     assert len(out['results']) == 3
     assert out['results'][1]['refined_solution'] is not None
@@ -431,12 +372,7 @@ def test_projection_state_lists_everything_the_reset_sets():
 def test_cells_ahead_do_not_outlive_the_scan_when_nothing_follows():
     # No patching: the cell loop is the last stage, and evaluations for dropped cells may
     # still be out when it ends. The master waits for them before the next projection.
-    np.random.seed(3)
-    projections = [{'dims': list(d), 'grid_points': [12, 12], 'optimization_method': 'lbfgsb',
-                    'patch_coarse_grid': False} for d in PLANES[:2]]
-    out = run_virtual_scan(
-        gauss4, [(0.0, 1.0)] * 4, projections, 200, jitter=0.05, seed=3,
-        roi_threshold=4.0, n_initial_optimizations=6, lbfgsb_max_iter=20,
-        advanced_config={'lbfgsb': {'activation_depth': 3}})
+    out = virtual_scan([plane(d, patch_coarse_grid=False) for d in PLANES[:2]], 200,
+                       advanced_config={'lbfgsb': {'activation_depth': 3}})
     for res in out['results']:
         assert projection_errors(res).min() > -1e-4
