@@ -306,3 +306,102 @@ def test_activation_depth_validation():
     for bad in (0, -1, 1.5, True, 'two'):
         with pytest.raises(Exception, match='activation_depth'):
             make_sampler(activation_depth=bad)
+
+
+# ---- projections started on idle workers (cross_projection eager_start) --------------------
+PLANES = ([0, 1], [2, 3], [0, 2])
+
+
+def multi_scan(eager, n_workers, method='lbfgsb', planes=PLANES, **proj_extra):
+    np.random.seed(3)
+    projections = [dict({'dims': list(d), 'grid_points': [12, 12], 'optimization_method': method},
+                        **proj_extra) for d in planes]
+    return run_virtual_scan(
+        gauss4, [(0.0, 1.0)] * 4, projections, n_workers, jitter=0.05, seed=3,
+        roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2, lbfgsb_max_iter=20,
+        advanced_config={'cross_projection': {'eager_start': eager}})
+
+
+def projection_errors(result):
+    sol = result['coarse_solution']
+    proj = list(sol['projection_dims'])
+    err = []
+    for cell, entry in sol['solutions'].items():
+        ref = exact_profile(cell, sol['grid_axes'], proj)
+        if ref > -10.0 - 4.0:
+            err.append(entry['likelihood'] - ref)
+    return np.array(err)
+
+
+@pytest.mark.parametrize('method', ['lbfgsb', 'de'])
+def test_eager_start_gives_the_same_projections(method):
+    seq = multi_scan(False, 200, method)
+    eag = multi_scan(True, 200, method)
+    assert len(eag['results']) == len(PLANES)
+    for a, b, dims in zip(seq['results'], eag['results'], PLANES):
+        assert list(b['coarse_solution']['projection_dims']) == sorted(dims)
+        assert set(b['coarse_solution']['solutions']) == set(a['coarse_solution']['solutions'])
+        err = projection_errors(b)
+        assert len(err) >= 10
+        assert err.min() > -1e-4 and err.max() <= 1e-9
+    # The sampler is left holding the last projection, as after a sequential run.
+    assert eag['projection_dims'] == sorted(PLANES[-1])
+    assert set(eag['population']) == set(eag['results'][-1]['coarse_solution']['solutions'])
+    assert eag['wall'] < 0.8 * seq['wall']
+
+
+def test_eager_start_changes_little_on_a_busy_pool():
+    seq = multi_scan(False, 3)
+    eag = multi_scan(True, 3)
+    assert eag['wall'] < 1.05 * seq['wall']
+    assert eag['target_calls'] < 1.05 * seq['target_calls']
+
+
+def test_projections_with_refinement_are_not_started_early():
+    np.random.seed(3)
+    projections = [
+        {'dims': [0, 1], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
+        {'dims': [2, 3], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb',
+         'grid_refinement_factor': 2},
+        {'dims': [0, 2], 'grid_points': [8, 8], 'optimization_method': 'lbfgsb'},
+    ]
+    out = run_virtual_scan(
+        gauss4, [(0.0, 1.0)] * 4, projections, 100, jitter=0.05, seed=3,
+        roi_threshold=4.0, n_initial_optimizations=6, max_patching_waves=2, lbfgsb_max_iter=20,
+        advanced_config={'cross_projection': {'eager_start': True}})
+    assert len(out['results']) == 3
+    assert out['results'][1]['refined_solution'] is not None
+    for k in (0, 2):
+        assert projection_errors(out['results'][k]).min() > -1e-4
+    assert out['projection_dims'] == [0, 2]
+
+
+def test_projection_state_lists_everything_the_reset_sets():
+    import ast
+    import inspect
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(ProfileProjector._reset_for_new_projection)))
+    assigned = set()
+    for node in ast.walk(tree):
+        targets = (node.targets if isinstance(node, ast.Assign)
+                   else [node.target] if isinstance(node, (ast.AugAssign, ast.AnnAssign)) else [])
+        for target in targets:
+            for sub in ast.walk(target):
+                if (isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name)
+                        and sub.value.id == 'self'):
+                    assigned.add(sub.attr)
+    assert assigned == set(ProfileProjector.PROJECTION_STATE_ATTRS)
+
+
+def test_cells_ahead_do_not_outlive_the_scan_when_nothing_follows():
+    # No patching: the cell loop is the last stage, and evaluations for dropped cells may
+    # still be out when it ends. The master waits for them before the next projection.
+    np.random.seed(3)
+    projections = [{'dims': list(d), 'grid_points': [12, 12], 'optimization_method': 'lbfgsb',
+                    'patch_coarse_grid': False} for d in PLANES[:2]]
+    out = run_virtual_scan(
+        gauss4, [(0.0, 1.0)] * 4, projections, 200, jitter=0.05, seed=3,
+        roi_threshold=4.0, n_initial_optimizations=6, lbfgsb_max_iter=20,
+        advanced_config={'lbfgsb': {'activation_depth': 3}})
+    for res in out['results']:
+        assert projection_errors(res).min() > -1e-4

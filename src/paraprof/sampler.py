@@ -341,6 +341,7 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
+                    'eager_start': bool,                 # Default: False
                 },
 
                 'suspect_recheck': {
@@ -431,6 +432,19 @@ class ProfileProjector:
         knowledge-transfer hooks. Both default to enabled; set either to
         ``False`` to disable that hook (useful for A/B benchmarking or as a
         safety valve if a target pathology surfaces).
+
+        ``eager_start`` (default ``False``) lets the next projection start
+        while the current one is running, on workers it leaves idle. A
+        projection is started when a tenth of the workers is idle and the
+        one started before it has finished its first cell optimisation (or
+        DE generation). It takes its initial maxima from the pool, as later
+        projections do anyway, so ``pool_seeded_initial_maxima`` must be on.
+        Work is handed out in the order the projections were started: a
+        later one only gets workers the earlier ones have no use for.
+        Projections with ``grid_refinement_factor``, and those without
+        profiled parameters, are not started early and are not overlapped;
+        they run in turn as before. The results hold the same cells as a
+        sequential run.
 
         Several DE knobs that did not show measurable effect on grid quality
         in benchmarking (mutation_strategy, pbest_fraction,
@@ -625,6 +639,7 @@ class ProfileProjector:
             'cross_projection': {
                 'proximity_warm_start': True,
                 'pool_seeded_initial_maxima': True,
+                'eager_start': False,
             },
 
             'suspect_recheck': {
@@ -826,6 +841,9 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
+        # 3. eager_start: the next projection starts on workers the current
+        #    one leaves idle (run_all_projections, master_main).
+        self.eager_projection_start = bool(config['cross_projection']['eager_start'])
 
         # Suspect-cell recheck configuration. Runs after standard patching to
         # catch grid cells (including contiguous strips) that converged to a
@@ -949,6 +967,44 @@ class ProfileProjector:
                 self._deep_update(base_dict[key], value)
             else:
                 base_dict[key] = value
+
+    # Everything _reset_for_new_projection sets: the state of one projection.
+    # With eager_start several projections are live at once and the master
+    # swaps these in before it works on one of them (the curvature scales of
+    # the cell runs, a deque inside _lbfgsb_scales, go with them).
+    PROJECTION_STATE_ATTRS = (
+        'projection_dims', 'grid_points_per_dim', 'optimization_method',
+        'patch_coarse_grid', 'patch_refined_grid', 'profiled_dims', 'n_proj_dims',
+        'n_prof_dims', 'direct_eval_mode', 'grid_shape', 'grid_axes',
+        'profile_likelihood_grid', 'initial_maxima', 'initial_optima_registry',
+        '_initial_opt_start_points', '_initial_opt_lhs_idx', 'population',
+        'activated_grid_indices', 'pending_activation_indices', 'ahead_cells',
+        'current_generation', 'memory_F', 'memory_CR', 'memory_idx',
+        '_lbfgsb_hessian_hint', '_neighbor_cache', '_proximity_pool_cache',
+        '_profiled_bounds', '_projection_bounds',
+    )
+
+    def capture_projection_state(self):
+        """The state of the projection the sampler is working on, as a dict."""
+        state = {name: getattr(self, name) for name in self.PROJECTION_STATE_ATTRS}
+        state['_cell_scales'] = self._lbfgsb_scales['cell']
+        return state
+
+    def restore_projection_state(self, state):
+        """Make ``state`` (from capture_projection_state) the current projection."""
+        for name in self.PROJECTION_STATE_ATTRS:
+            setattr(self, name, state[name])
+        self._lbfgsb_scales['cell'] = state['_cell_scales']
+
+    def begin_projection_state(self, projection_config):
+        """Set the sampler up for another projection and return its state.
+
+        The state of the projection worked on so far is not touched: the
+        caller captures it first and restores it to go back.
+        """
+        self._lbfgsb_scales['cell'] = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
+        self._reset_for_new_projection(projection_config)
+        return self.capture_projection_state()
 
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""

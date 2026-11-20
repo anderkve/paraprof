@@ -2,6 +2,7 @@
 MPI master process orchestration logic.
 """
 import collections
+import logging
 import time
 import numpy as np
 import sys
@@ -26,6 +27,10 @@ PENDING_SENDS_PRUNE = 1024
 # > 1) leave free. Their evaluations cannot be interrupted, so without a
 # reserve ordinary work would wait behind them.
 AHEAD_RESERVE_FRACTION = 0.25
+
+# With cross_projection eager_start, the next projection starts when at least
+# this fraction of the workers is idle after a dispatch pass.
+EAGER_START_IDLE_FRACTION = 0.1
 # Seconds between progress lines of the L-BFGS-B loop. With rolling activation
 # the loop has no waves to report.
 PROGRESS_LOG_INTERVAL = 60.0
@@ -84,11 +89,77 @@ def terminate_workers(comm, myrank=0):
     logger.debug("terminate_workers: All workers terminated.")
 
 
+def _eager_eligible(sampler, projection_config):
+    """Whether a projection may overlap with others (cross_projection
+    eager_start). Not with grid refinement, whose second pass keeps state
+    outside the per-projection state, and not without profiled parameters."""
+    factor = projection_config.get('grid_refinement_factor', None)
+    if factor is not None and factor > 1:
+        return False
+    return len(projection_config['dims']) < sampler.dims
+
+
+def _collect_coarse_result(sampler, projection_config, save_plots, plot_settings, myrank):
+    """Flush, plot and export the projection the sampler holds."""
+    sampler._flush_samples_buffer()
+    if save_plots:
+        from .visualization import plot_profiles
+        dims_str = "_".join(map(str, projection_config['dims']))
+        plot_profiles(sampler, f"profile_plot_rank_{myrank}_dims_{dims_str}_coarse", plot_settings)
+    return sampler.export_grid_solution()
+
+
+class _EagerProjections:
+    """Projections that master_main may start while it runs another one."""
+
+    def __init__(self, host_index, indices, projections, save_plots, plot_settings, myrank):
+        self.host_index = host_index
+        self.pending = list(indices)
+        self.projections = projections
+        self.save_plots = save_plots
+        self.plot_settings = plot_settings
+        self.myrank = myrank
+        self.results = {}       # projection index -> result dict
+        self.states = {}        # projection index -> sampler state at the end
+
+    def has_next(self):
+        return bool(self.pending)
+
+    def start_next(self, logger):
+        index = self.pending.pop(0)
+        config = self.projections[index]
+        logger.info("=" * 80)
+        logger.info(f"=== Starting Projection {index + 1}/{len(self.projections)} "
+                    f"on idle workers ===")
+        logger.info(f"=== Dimensions: {config['dims']} ===")
+        logger.info("=" * 80)
+        return index, config
+
+    def finish(self, index, sampler, logger):
+        """Called by master_main with the projection's state in the sampler."""
+        config = self.projections[index]
+        solution = _collect_coarse_result(sampler, config, self.save_plots,
+                                          self.plot_settings, self.myrank)
+        self.results[index] = {
+            'coarse_solution': solution,
+            'refined_solution': None,
+            'metrics': {'coarse_target_calls': sampler.target_calls,
+                        'total_target_calls': sampler.target_calls,
+                        'global_max': sampler.global_max_target_val},
+            'projection_config': config,
+        }
+        self.states[index] = sampler.capture_projection_state()
+        logger.info("=" * 80)
+        logger.info(f"=== Completed Projection {index + 1}/{len(self.projections)} ===")
+        logger.info(f"  Total Grid Points Explored: {len(sampler.population)}")
+        logger.info("=" * 80)
+
+
 def run_projection(comm, sampler, projection_config,
                    save_plots=False,
                    plot_settings=None,
                    skip_init_opt_on_warm_start=True,
-                   myrank=0):
+                   myrank=0, eager=None):
     """Run one projection (coarse grid + optional refinement) end-to-end.
 
     ``projection_config`` keys: required ``dims`` (list of int) and
@@ -127,7 +198,8 @@ def run_projection(comm, sampler, projection_config,
         sampler=sampler,
         plot_settings=plot_settings,
         skip_init_opt_on_warm_start=skip_init_opt_on_warm_start,
-        myrank=myrank
+        myrank=myrank,
+        eager=eager,
     )
 
     # Flush samples buffer after coarse grid
@@ -228,16 +300,26 @@ def run_all_projections(comm, sampler, projections,
                         save_plots=False,
                         plot_settings=None,
                         myrank=0):
-    """Run a list of projections sequentially with automatic cross-projection warm-start.
+    """Run a list of projections with automatic cross-projection warm-start.
+
+    They run one after another, unless ``cross_projection`` ``eager_start`` is
+    set: then a projection may be started while an earlier one is running, on
+    workers that one leaves idle (see ``master_main``).
 
     See :func:`run_projection` for the per-projection config and result shape.
-    Returns a list of per-projection result dicts with an extra
-    ``projection_config`` field carrying the original input.
+    Returns a list of per-projection result dicts, in the order of
+    ``projections``, with an extra ``projection_config`` field carrying the
+    original input.
     """
     logger = setup_logger(rank=myrank)
     all_results = []
+    done_eagerly = {}   # projection index -> result, for those started on idle workers
 
     for proj_idx, projection_config in enumerate(projections):
+        if proj_idx in done_eagerly:
+            all_results.append(done_eagerly.pop(proj_idx))
+            continue
+
         logger.info("=" * 80)
         logger.info(f"=== Starting Projection {proj_idx + 1}/{len(projections)} ===")
         logger.info(f"=== Dimensions: {projection_config['dims']} ===")
@@ -250,6 +332,21 @@ def run_all_projections(comm, sampler, projections,
         # Enable warm start after first projection
         skip_init_opt = (proj_idx > 0)
 
+        # cross_projection eager_start: the projections that follow, as far as
+        # they qualify, may be started while this one runs. Those not started
+        # by the time it ends are run in turn as before.
+        eager = None
+        if (sampler.eager_projection_start and sampler.pool_seeded_initial_maxima
+                and _eager_eligible(sampler, projection_config)):
+            following = []
+            for j in range(proj_idx + 1, len(projections)):
+                if not _eager_eligible(sampler, projections[j]):
+                    break
+                following.append(j)
+            if following:
+                eager = _EagerProjections(proj_idx, following, projections,
+                                          save_plots, plot_settings, myrank)
+
         # Run projection (handles coarse + refinement automatically)
         results = run_projection(
             comm=comm,
@@ -258,8 +355,14 @@ def run_all_projections(comm, sampler, projections,
             save_plots=save_plots,
             plot_settings=plot_settings,
             skip_init_opt_on_warm_start=skip_init_opt,
-            myrank=myrank
+            myrank=myrank,
+            eager=eager,
         )
+        if eager is not None and eager.results:
+            done_eagerly.update(eager.results)
+            # Leave the sampler holding the last of these projections, as
+            # after a sequential run.
+            sampler.restore_projection_state(eager.states[max(eager.states)])
 
         # Add projection config to results for reference
         results['projection_config'] = projection_config
@@ -523,10 +626,94 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     return result
 
 
+class _ProjectionRun:
+    """Stage machine and queues of one projection inside master_main."""
+
+    def __init__(self, index, stages, state, skip_init_opt_on_warm_start):
+        self.index = index                  # position in the list of projections
+        self.state = state                  # sampler.capture_projection_state()
+        self.skip_init_opt_on_warm_start = skip_init_opt_on_warm_start
+        self.stages = stages
+        self.current_stage = stages.pop(0) if stages else None
+        self.active_jobs = {}               # {job_id: Job object}
+        self.high_prio_tasks = collections.deque()
+        self.low_prio_tasks = collections.deque()
+        # Tasks of cells activated ahead (lbfgsb activation_depth > 1). They
+        # are served last, after the evaluations sent ahead of time for other
+        # jobs.
+        self.ahead_tasks = collections.deque()
+        # Jobs that can use a worker which would otherwise idle (see
+        # LBFGSBJob.speculate), served round-robin; the same for the jobs of
+        # cells activated ahead.
+        self.spec_ring = collections.deque()
+        self.spec_members = set()
+        self.ahead_spec_ring = collections.deque()
+        self.ahead_spec_members = set()
+        self.inflight = 0                   # evaluations in flight
+        self.ahead_inflight = 0             # of which for cells activated ahead
+        self.idle_after_dispatch = 0        # workers ordinary work of this run left over
+        self.optimisations_finished = 0     # cell optimisations or DE generation jobs done
+        self.last_progress_log = time.time()
+
+        # DE stage state
+        self.de_generation = 0
+        self.de_successful_F = []
+        self.de_successful_CR = []
+
+        # Wave-based patching state
+        self.patching_wave_number = 0
+        self.patching_updated_last_wave = None
+        self.patching_wave_baseline_fitness = {}   # grid_idx -> fitness at wave start
+        self.patching_wave_test_jobs = set()       # IDs of test jobs in current wave
+        self.patching_wave_lbfgsb_jobs = set()     # IDs of L-BFGS-B jobs spawned by current wave
+
+        # Wave-based suspect-recheck state (mirrors patching state)
+        self.suspect_wave_number = 0
+        self.suspect_updated_last_wave = None
+        self.suspect_wave_baseline_fitness = {}
+        self.suspect_wave_test_jobs = set()
+        self.suspect_wave_lbfgsb_jobs = set()
+
+        # Rolling initial-optimization (basin detection) state. The stage
+        # keeps `initial_opt_batch_size` global L-BFGS-B starts in flight,
+        # classifying each converged optimum and refilling until the Bayesian
+        # stopping rule trips or the `initial_opt_cap` (=
+        # n_initial_optimizations) is reached.
+        self.initial_opt_inflight = set()   # job IDs of in-flight INITIAL_OPTIMIZATION jobs
+        self.initial_opt_started = 0        # starts launched so far
+        self.initial_opt_completed = 0      # starts finished so far (incl. failures)
+        self.initial_opt_batch_size = 0
+        self.initial_opt_cap = 0
+        self.initial_opt_stopped = False    # rule tripped or cap reached: stop refilling
+        self.initial_opt_refining = False   # the starts are the user's initial_points
+
+
+class _ProjectionLabel(logging.Filter):
+    """Prefixes log lines with the projection being worked on (eager start)."""
+
+    def __init__(self):
+        super().__init__()
+        self.prefix = ''
+
+    def set(self, index):
+        self.prefix = f"[P{index + 1}] "
+
+    def filter(self, record):
+        record.msg = self.prefix + str(record.msg)
+        return True
+
+
 def master_main(comm, sampler,
                 plot_settings=None, skip_init_opt_on_warm_start=True,
-                myrank=0):
-    """State-machine main loop: dispatches jobs and processes results until done."""
+                myrank=0, eager=None):
+    """State-machine main loop: dispatches jobs and processes results until done.
+
+    ``eager`` (an ``_EagerProjections``) lists projections that may be started
+    while this one runs, on workers it leaves idle. Every projection being
+    worked on has its own stage machine and queues (a ``_ProjectionRun``), and
+    the sampler state of the one being handled is swapped in. Work is handed
+    out in the order the projections were started.
+    """
     logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
     if n_workers <= 0:
@@ -539,58 +726,75 @@ def master_main(comm, sampler,
     free_workers = list(range(1, n_workers + 1))
     pending_sends = []  # Track non-blocking send requests
 
-    # Define the workflow stages (different for refinement runs only)
-    if sampler.is_refinement_run:
-        stages = ['REFINEMENT_LBFGSB']
-        # Disable patching in direct evaluation mode (no profiled params to share)
-        if sampler.patch_refined_grid and not sampler.direct_eval_mode:
-            stages.append('PATCHING_WAVES')
-            if sampler.suspect_recheck_enabled:
-                stages.append('SUSPECT_RECHECK_WAVES')
-        logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
-    else:
-        # Normal mode: workflow depends on optimization method
-        stages = []
-        # With an automatic finite-difference step, measure the noise of the
-        # target once, before anything is optimised with it.
-        if sampler.needs_noise_estimate():
-            stages.append('NOISE_ESTIMATE')
-        # Evaluate user-supplied initial points first (if any). This stage is
-        # only added on the first projection that sees them; the job sets
-        # ``_initial_points_evaluated`` once complete.
-        if (sampler.initial_points is not None
-                and not sampler._initial_points_evaluated):
-            stages.append('INITIAL_POINTS_EVAL')
-        stages += ['INITIAL_OPTIMIZATION', 'ACTIVATION']
-
-        # Add optimization stage based on configured method
-        if sampler.optimization_method == 'de':
-            stages.append('DE_LOOP')
-        elif sampler.optimization_method == 'lbfgsb':
-            stages.append('LBFGSB_LOOP')
-
-        # Add patching if enabled (applies to all optimization methods)
-        if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
-            stages.append('PATCHING_WAVES')
-            if sampler.suspect_recheck_enabled:
-                stages.append('SUSPECT_RECHECK_WAVES')
-
-        if sampler.direct_eval_mode:
-            logger.info("--- Direct Evaluation Mode: No profiled parameters ---")
-            logger.info("    Patching automatically disabled")
+    def _build_stages():
+        """Workflow stages of the projection the sampler is set up for."""
+        # Define the workflow stages (different for refinement runs only)
+        if sampler.is_refinement_run:
+            stages = ['REFINEMENT_LBFGSB']
+            # Disable patching in direct evaluation mode (no profiled params to share)
+            if sampler.patch_refined_grid and not sampler.direct_eval_mode:
+                stages.append('PATCHING_WAVES')
+                if sampler.suspect_recheck_enabled:
+                    stages.append('SUSPECT_RECHECK_WAVES')
+            logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
         else:
-            logger.info(f"--- Optimization method: {sampler.optimization_method} ---")
+            # Normal mode: workflow depends on optimization method
+            stages = []
+            # With an automatic finite-difference step, measure the noise of the
+            # target once, before anything is optimised with it.
+            if sampler.needs_noise_estimate():
+                stages.append('NOISE_ESTIMATE')
+            # Evaluate user-supplied initial points first (if any). This stage is
+            # only added on the first projection that sees them; the job sets
+            # ``_initial_points_evaluated`` once complete.
+            if (sampler.initial_points is not None
+                    and not sampler._initial_points_evaluated):
+                stages.append('INITIAL_POINTS_EVAL')
+            stages += ['INITIAL_OPTIMIZATION', 'ACTIVATION']
 
-    current_stage = stages.pop(0) if stages else None
+            # Add optimization stage based on configured method
+            if sampler.optimization_method == 'de':
+                stages.append('DE_LOOP')
+            elif sampler.optimization_method == 'lbfgsb':
+                stages.append('LBFGSB_LOOP')
 
-    active_jobs = {} # {job_id: Job object}
+            # Add patching if enabled (applies to all optimization methods)
+            if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
+                stages.append('PATCHING_WAVES')
+                if sampler.suspect_recheck_enabled:
+                    stages.append('SUSPECT_RECHECK_WAVES')
 
-    # Create priority task queues
-    high_prio_tasks = collections.deque()
-    low_prio_tasks = collections.deque()
-    # Tasks of cells activated ahead (lbfgsb activation_depth > 1). They are
-    # served last, after the evaluations sent ahead of time for other jobs.
-    ahead_tasks = collections.deque()
+            if sampler.direct_eval_mode:
+                logger.info("--- Direct Evaluation Mode: No profiled parameters ---")
+                logger.info("    Patching automatically disabled")
+            else:
+                logger.info(f"--- Optimization method: {sampler.optimization_method} ---")
+
+        return stages
+
+    host = _ProjectionRun(index=(eager.host_index if eager is not None else 0),
+                          stages=_build_stages(),
+                          state=sampler.capture_projection_state(),
+                          skip_init_opt_on_warm_start=skip_init_opt_on_warm_start)
+    R = host                           # the run being worked on
+    loaded = host                      # the run whose state the sampler holds
+    runs = [host]                      # unfinished runs, in the order they were started
+    run_by_index = {host.index: host}
+    label = _ProjectionLabel() if eager is not None else None
+    if label is not None:
+        label.set(host.index)
+        logger.addFilter(label)
+
+    def _switch(run):
+        """Make ``run`` the projection the sampler works on."""
+        nonlocal loaded
+        if run is loaded:
+            return
+        loaded.state.update(sampler.capture_projection_state())
+        sampler.restore_projection_state(run.state)
+        loaded = run
+        if label is not None:
+            label.set(run.index)
 
     def _is_ahead(job):
         return bool(sampler.ahead_cells) and getattr(job, 'grid_idx', None) in sampler.ahead_cells
@@ -599,45 +803,35 @@ def master_main(comm, sampler,
     def _queue_tasks(tasks, job_type, job=None):
         """Add tasks to appropriate priority queue based on job type."""
         if job is not None and _is_ahead(job):
-            ahead_tasks.extend(tasks)
+            R.ahead_tasks.extend(tasks)
         elif job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
-            high_prio_tasks.extend(tasks)
+            R.high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
-            low_prio_tasks.extend(tasks)
+            R.low_prio_tasks.extend(tasks)
 
     def _purge_queued_tasks(job_ids):
         """Drop not-yet-dispatched tasks belonging to the given jobs from both
         priority queues (used to abort optimizations). Tasks already running on
         workers return normally and are ignored via the unknown-job path."""
-        for q in (high_prio_tasks, low_prio_tasks, ahead_tasks):
+        for q in (R.high_prio_tasks, R.low_prio_tasks, R.ahead_tasks):
             kept = [t for t in q if t.get('context', {}).get('job_id') not in job_ids]
             q.clear()
             q.extend(kept)
 
-    # Jobs that can use a worker which would otherwise idle (see
-    # LBFGSBJob.speculate), served round-robin.
-    spec_ring = collections.deque()
-    spec_members = set()
-
-    # The same for the jobs of cells activated ahead, served after everything
-    # else.
-    ahead_spec_ring = collections.deque()
-    ahead_spec_members = set()
-
     def _offer_speculation(job):
         if not getattr(job, 'wants_speculation', False):
             return
-        ring, members = ((ahead_spec_ring, ahead_spec_members) if _is_ahead(job)
-                         else (spec_ring, spec_members))
+        ring, members = ((R.ahead_spec_ring, R.ahead_spec_members) if _is_ahead(job)
+                         else (R.spec_ring, R.spec_members))
         if job.id not in members:
             ring.append(job.id)
             members.add(job.id)
 
-    def _next_speculative_task(ring=spec_ring, members=spec_members):
+    def _next_speculative_task(run, ring, members):
         for _ in range(len(ring)):
             jid = ring.popleft()
-            job = active_jobs.get(jid)
+            job = run.active_jobs.get(jid)
             task = job.speculate() if (job is not None and job.wants_speculation) else None
             if task is None:
                 members.discard(jid)
@@ -649,7 +843,7 @@ def master_main(comm, sampler,
     def _start_jobs(jobs):
         """Add jobs to the active pool and queue their first tasks."""
         for job in jobs:
-            active_jobs[job.id] = job
+            R.active_jobs[job.id] = job
             initial_tasks = job.start()
             _queue_tasks(initial_tasks, job.type, job)
             _offer_speculation(job)
@@ -660,350 +854,335 @@ def master_main(comm, sampler,
             # a result arrives.
             if not initial_tasks and job.is_finished():
                 job.on_finish(next_job_id)
-                del active_jobs[job.id]
+                del R.active_jobs[job.id]
 
     next_job_id = 0
     tasks_sent = 0
     tasks_completed = 0
     speculative_sent = 0
-    idle_after_dispatch = 0     # workers not needed by ordinary work after a dispatch pass
     free_after_dispatch = 0     # workers with nothing at all to do after a dispatch pass
-    ahead_inflight = 0          # evaluations in flight for cells activated ahead
-    last_progress_log = time.time()
-
-    # DE stage state
-    de_generation = 0 # Counter for DE stage
-    de_successful_F = [] # Shared list for F/CR
-    de_successful_CR = []
-
-    # Wave-based patching state
-    patching_wave_number = 0
-    patching_updated_last_wave = None
-    patching_wave_baseline_fitness = {}  # grid_idx -> fitness at wave start
-    patching_wave_test_jobs = set()  # IDs of test jobs in current wave
-    patching_wave_lbfgsb_jobs = set()  # IDs of L-BFGS-B jobs spawned by current wave
-
-    # Wave-based suspect-recheck state (mirrors patching state)
-    suspect_wave_number = 0
-    suspect_updated_last_wave = None
-    suspect_wave_baseline_fitness = {}
-    suspect_wave_test_jobs = set()
-    suspect_wave_lbfgsb_jobs = set()
-
-    # Rolling initial-optimization (basin detection) state. The stage keeps
-    # `initial_opt_batch_size` global L-BFGS-B starts in flight, classifying each
-    # converged optimum and refilling until the Bayesian stopping rule trips or
-    # the `initial_opt_cap` (= n_initial_optimizations) is reached.
-    initial_opt_inflight = set()   # job IDs of in-flight INITIAL_OPTIMIZATION jobs
-    initial_opt_started = 0        # starts launched so far
-    initial_opt_completed = 0      # starts finished so far (incl. failures)
-    initial_opt_batch_size = 0
-    initial_opt_cap = 0
-    initial_opt_stopped = False    # rule tripped or cap reached: stop refilling
-    initial_opt_refining = False   # the starts are the user's initial_points
-
-    # --- Main Event Loop ---
     # Cells activated ahead leave this many workers to ordinary work.
     ahead_reserve = int(AHEAD_RESERVE_FRACTION * n_workers)
+    # Another projection is started when at least this many workers are idle.
+    eager_min_idle = max(1, int(EAGER_START_IDLE_FRACTION * n_workers))
 
-    while current_stage or active_jobs or high_prio_tasks or low_prio_tasks or (tasks_sent > tasks_completed):
+    def _drained(run):
+        """Nothing of this run is active, queued or in flight. Evaluations
+        still out for dropped cells activated ahead do not count: their
+        results are ignored when they return."""
+        return (not run.active_jobs and not run.high_prio_tasks and not run.low_prio_tasks
+                and run.inflight == run.ahead_inflight)
+
+    def _advance():
+        """Create the jobs of the current stage of run ``R``. Returns True if
+        the stage had nothing to do and the next one should be tried at once."""
+        nonlocal next_job_id
+        logger.info(f"--- Master: Entering stage: {R.current_stage} (all jobs complete, creating new jobs) ---")
+        new_jobs = []
+
+        if R.current_stage == 'NOISE_ESTIMATE':
+            new_jobs, next_job_id = sampler.create_noise_estimate_job(next_job_id)
+            if not new_jobs:
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+        elif R.current_stage == 'INITIAL_POINTS_EVAL':
+            # Evaluate user-supplied initial_points via the standard Job
+            # path so the master result-handler does the bookkeeping
+            # (samples_output_file, global solution pool, etc.).
+            new_jobs, next_job_id = sampler.create_initial_points_eval_job(next_job_id)
+            if not new_jobs:
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+        elif R.current_stage == 'INITIAL_OPTIMIZATION':
+            # Try to initialize from a warm-start file (separate from the
+            # samples output file; see ProfileProjector.warm_start_file).
+            if R.skip_init_opt_on_warm_start and sampler.warm_start_file:
+                sampler._initialize_from_warm_start_file(sampler.warm_start_file)
+
+            # In-memory cross-projection seeding: skip the global L-BFGS-B
+            # starts on projections 2..N when the accumulated pool already
+            # covers the relevant peaks. Falls through to the original
+            # initial-optimization path when the pool is empty (first
+            # projection) or the feature is disabled.
+            if (R.skip_init_opt_on_warm_start
+                    and not sampler.initial_maxima
+                    and sampler.pool_seeded_initial_maxima
+                    and len(sampler.global_solution_pool) > 0):
+                sampler._initialize_from_global_pool()
+
+            # refine_initial_points: one global L-BFGS-B run from every
+            # user-supplied point, through the same rolling stage. All of
+            # them run to the end; the basin stopping rule is not applied.
+            n_refine = sampler.start_initial_point_refinement()
+            R.initial_opt_refining = n_refine > 0
+
+            # If maxima already came from warm start / pool seeding, skip the
+            # global optimization stage entirely.
+            if sampler.initial_maxima and not R.initial_opt_refining:
+                logger.info("Skipping initial optimization - using provided initial points or warm start.")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            # Rolling multistart with online basin detection. Launch a
+            # first batch and hand control to WAITING_FOR_INITIAL_OPT,
+            # which refills and applies the stopping rule as jobs return.
+            R.initial_opt_started = 0
+            R.initial_opt_completed = 0
+            R.initial_opt_stopped = False
+            R.initial_opt_inflight = set()
+            if R.initial_opt_refining:
+                R.initial_opt_cap = n_refine
+                R.initial_opt_batch_size = max(1, min(n_refine, n_workers))
+                logger.info(
+                    f"--- Refining {n_refine} user-provided initial point(s) "
+                    f"with L-BFGS-B over all parameters ---"
+                )
+            else:
+                R.initial_opt_cap = sampler.n_initial_optimizations
+                R.initial_opt_batch_size = sampler.resolve_initial_opt_batch_size(n_workers)
+                sampler.init_initial_opt_lhs(R.initial_opt_cap)
+                logger.info(
+                    f"--- Basin detection: rolling multistart "
+                    f"(batch_size={R.initial_opt_batch_size}, cap={R.initial_opt_cap}, "
+                    f"min_starts={sampler.basin_min_starts}) ---"
+                )
+            new_jobs = []
+            for _ in range(min(R.initial_opt_batch_size, R.initial_opt_cap)):
+                job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
+                new_jobs.append(job)
+                R.initial_opt_inflight.add(job.id)
+                R.initial_opt_started += 1
+
+            if not new_jobs:
+                # Degenerate cap (e.g. n_initial_optimizations == 0):
+                # nothing to optimize, move on.
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+            R.current_stage = 'WAITING_FOR_INITIAL_OPT'
+
+        elif R.current_stage == 'ACTIVATION':
+            # Use refinement activation for refinement runs
+            if sampler.is_refinement_run:
+                new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
+                if not new_jobs:
+                    logger.info("No refinement activation jobs created. Moving to next stage.")
+                    R.current_stage = R.stages.pop(0) if R.stages else None
+                    return True
+            else:
+                new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
+                if not new_jobs:
+                    logger.info("No activation jobs created (no initial maxima?). Moving to next stage.")
+                    R.current_stage = R.stages.pop(0) if R.stages else None
+                    return True
+
+        elif R.current_stage == 'DE_LOOP':
+            # This stage loops
+            if R.de_generation >= sampler.de_num_generations:
+                logger.info("--- Master: DE generations complete. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            if R.de_generation > 0:
+                sampler.update_de_memory(R.de_successful_F, R.de_successful_CR)
+
+            R.de_generation += 1
+            sampler.current_generation = R.de_generation # Update sampler state
+            logger.info(f"--- Master: Starting DE Generation {R.de_generation} ---")
+
+            new_de_jobs, next_job_id, R.de_successful_F, R.de_successful_CR = sampler.create_de_generation_jobs(
+                next_job_id, sampler.de_max_num_to_evolve
+            )
+
+            # --- Add dynamic activation jobs ---
+            new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+            new_jobs = new_de_jobs + new_act_jobs
+
+            # --- Print Generation Summary ---
+            total_grid_points = len(sampler.population)
+            active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
+            converged_count = total_grid_points - active_count
+            newly_activated_count = len(new_act_jobs)
+
+            logger.info(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                  f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                  f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                  f"New Activations: {newly_activated_count:3d}")
+            # --- End Print ---
+
+            if not new_jobs and not R.de_successful_F: # DE converged and no new activations
+                logger.info("--- Master: DE converged and no new activations. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+        elif R.current_stage == 'LBFGSB_LOOP':
+            # Iterative L-BFGS-B optimization with dynamic activation
+            # Similar to DE_LOOP but using gradient-based optimization
+
+            # Cells activated ahead that were never confirmed are not part
+            # of the result.
+            if sampler.ahead_cells:
+                n_dropped = sampler.drop_ahead_cells()
+                logger.info(f"--- Dropped {n_dropped} cells activated ahead "
+                            f"that stayed outside the border ---")
+
+            # Create L-BFGS-B jobs for all active (non-converged) grid points
+            new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
+
+            # Create dynamic activation jobs for neighbors of high-likelihood points
+            new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
+            new_jobs = new_lbfgsb_jobs + new_act_jobs
+
+            # --- Print iteration summary ---
+            total_grid_points = len(sampler.population)
+            active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
+            converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
+            newly_activated_count = len(new_act_jobs)
+
+            logger.info(f"LBFGSB Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                  f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
+                  f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                  f"New Activations: {newly_activated_count:3d} | "
+                  f"L-BFGS-B Jobs: {len(new_lbfgsb_jobs):3d}")
+
+            # Check convergence: no active jobs and no new activations
+            if not new_jobs:
+                logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+        elif R.current_stage == 'PATCHING_WAVES':
+            # Check appropriate flag based on run type
+            patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
+            if not patching_enabled:
+                logger.info("--- Master: Patching disabled for this stage. Skipping. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            # Check if max waves reached
+            if R.patching_wave_number >= sampler.max_patching_waves:
+                logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            logger.info(f"--- Master: Starting Patching Wave {R.patching_wave_number} ---")
+
+            # Create jobs for this wave
+            new_jobs, next_job_id = sampler.create_patching_wave_jobs(
+                wave_number=R.patching_wave_number,
+                updated_points_last_wave=R.patching_updated_last_wave,
+                next_job_id=next_job_id
+            )
+
+            if not new_jobs:
+                logger.info("--- Master: No patching candidates found. Ending patching. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            # Record baseline fitness for all grid points at wave start
+            R.patching_wave_baseline_fitness = {
+                idx: state['best_fitness']
+                for idx, state in sampler.population.items()
+            }
+
+            # Track test job IDs
+            R.patching_wave_test_jobs = {j.id for j in new_jobs}
+            R.patching_wave_lbfgsb_jobs = set()
+
+            # Transition to waiting state
+            R.current_stage = 'WAITING_FOR_PATCHING_WAVE'
+
+        elif R.current_stage == 'WAITING_FOR_PATCHING_WAVE':
+            # This stage just waits for wave jobs to complete
+            # Wave is complete when checked in job completion handling
+            pass
+
+        elif R.current_stage == 'SUSPECT_RECHECK_WAVES':
+            if not sampler.suspect_recheck_enabled or sampler.direct_eval_mode:
+                logger.info("--- Master: Suspect recheck disabled. Skipping. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            if R.suspect_wave_number >= sampler.max_suspect_waves:
+                logger.info(f"--- Master: Max suspect waves ({sampler.max_suspect_waves}) reached. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            logger.info(f"--- Master: Starting Suspect Recheck Wave {R.suspect_wave_number} ---")
+
+            new_jobs, next_job_id = sampler.create_suspect_recheck_jobs(
+                wave_number=R.suspect_wave_number,
+                updated_points_last_wave=R.suspect_updated_last_wave,
+                next_job_id=next_job_id,
+            )
+
+            if not new_jobs:
+                logger.info("--- Master: No suspect candidates. Ending suspect recheck. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+            R.suspect_wave_baseline_fitness = {
+                idx: state['best_fitness']
+                for idx, state in sampler.population.items()
+            }
+            R.suspect_wave_test_jobs = {j.id for j in new_jobs}
+            R.suspect_wave_lbfgsb_jobs = set()
+            R.current_stage = 'WAITING_FOR_SUSPECT_WAVE'
+
+        elif R.current_stage == 'WAITING_FOR_SUSPECT_WAVE':
+            pass
+
+        elif R.current_stage == 'REFINEMENT_LBFGSB':
+            # For refinement runs, directly create LBFGSB jobs from interpolated starts
+            new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
+
+            if not new_jobs:
+                logger.info("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+        elif R.current_stage == 'POST_ACTIVATION_LBFGSB':
+            # Direct L-BFGS-B optimization of all activated points
+            # (alternative to DE when optimization_method='lbfgsb')
+            new_jobs, next_job_id = sampler.create_post_activation_lbfgsb_jobs(next_job_id)
+
+            if not new_jobs:
+                logger.info("--- Master: No post-activation L-BFGS-B jobs created. ---")
+                R.current_stage = R.stages.pop(0) if R.stages else None
+                return True
+
+
+        # --- Add new jobs to active pool and queue initial tasks ---
+        _start_jobs(new_jobs)
+
+        # If we just finished a non-looping stage, advance to the next
+        # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
+        if R.current_stage not in ['DE_LOOP', 'LBFGSB_LOOP',
+                                 'WAITING_FOR_PATCHING_WAVE',
+                                 'WAITING_FOR_SUSPECT_WAVE',
+                                 'WAITING_FOR_INITIAL_OPT']:
+             R.current_stage = R.stages.pop(0) if R.stages else None
+        return False
+
+    # --- Main Event Loop ---
+    while runs or tasks_sent > tasks_completed:
 
         # --- 1. Generate new jobs if a stage is starting or continuing ---
-        # This block only runs when no jobs are active and no tasks are queued.
-        # Evaluations still in flight for dropped cells activated ahead do
-        # not hold a stage back: their results are ignored when they return.
-        if (not active_jobs and not high_prio_tasks and not low_prio_tasks
-                and (tasks_sent - tasks_completed == ahead_inflight)):
-
-            if not current_stage:
-                break # All stages and jobs are complete
-
-            logger.info(f"--- Master: Entering stage: {current_stage} (all jobs complete, creating new jobs) ---")
-            new_jobs = []
-
-            if current_stage == 'NOISE_ESTIMATE':
-                new_jobs, next_job_id = sampler.create_noise_estimate_job(next_job_id)
-                if not new_jobs:
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-            elif current_stage == 'INITIAL_POINTS_EVAL':
-                # Evaluate user-supplied initial_points via the standard Job
-                # path so the master result-handler does the bookkeeping
-                # (samples_output_file, global solution pool, etc.).
-                new_jobs, next_job_id = sampler.create_initial_points_eval_job(next_job_id)
-                if not new_jobs:
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-            elif current_stage == 'INITIAL_OPTIMIZATION':
-                # Try to initialize from a warm-start file (separate from the
-                # samples output file; see ProfileProjector.warm_start_file).
-                if skip_init_opt_on_warm_start and sampler.warm_start_file:
-                    sampler._initialize_from_warm_start_file(sampler.warm_start_file)
-
-                # In-memory cross-projection seeding: skip the global L-BFGS-B
-                # starts on projections 2..N when the accumulated pool already
-                # covers the relevant peaks. Falls through to the original
-                # initial-optimization path when the pool is empty (first
-                # projection) or the feature is disabled.
-                if (skip_init_opt_on_warm_start
-                        and not sampler.initial_maxima
-                        and sampler.pool_seeded_initial_maxima
-                        and len(sampler.global_solution_pool) > 0):
-                    sampler._initialize_from_global_pool()
-
-                # refine_initial_points: one global L-BFGS-B run from every
-                # user-supplied point, through the same rolling stage. All of
-                # them run to the end; the basin stopping rule is not applied.
-                n_refine = sampler.start_initial_point_refinement()
-                initial_opt_refining = n_refine > 0
-
-                # If maxima already came from warm start / pool seeding, skip the
-                # global optimization stage entirely.
-                if sampler.initial_maxima and not initial_opt_refining:
-                    logger.info("Skipping initial optimization - using provided initial points or warm start.")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                # Rolling multistart with online basin detection. Launch a
-                # first batch and hand control to WAITING_FOR_INITIAL_OPT,
-                # which refills and applies the stopping rule as jobs return.
-                initial_opt_started = 0
-                initial_opt_completed = 0
-                initial_opt_stopped = False
-                initial_opt_inflight = set()
-                if initial_opt_refining:
-                    initial_opt_cap = n_refine
-                    initial_opt_batch_size = max(1, min(n_refine, n_workers))
-                    logger.info(
-                        f"--- Refining {n_refine} user-provided initial point(s) "
-                        f"with L-BFGS-B over all parameters ---"
-                    )
-                else:
-                    initial_opt_cap = sampler.n_initial_optimizations
-                    initial_opt_batch_size = sampler.resolve_initial_opt_batch_size(n_workers)
-                    sampler.init_initial_opt_lhs(initial_opt_cap)
-                    logger.info(
-                        f"--- Basin detection: rolling multistart "
-                        f"(batch_size={initial_opt_batch_size}, cap={initial_opt_cap}, "
-                        f"min_starts={sampler.basin_min_starts}) ---"
-                    )
-                new_jobs = []
-                for _ in range(min(initial_opt_batch_size, initial_opt_cap)):
-                    job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
-                    new_jobs.append(job)
-                    initial_opt_inflight.add(job.id)
-                    initial_opt_started += 1
-
-                if not new_jobs:
-                    # Degenerate cap (e.g. n_initial_optimizations == 0):
-                    # nothing to optimize, move on.
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-                current_stage = 'WAITING_FOR_INITIAL_OPT'
-
-            elif current_stage == 'ACTIVATION':
-                # Use refinement activation for refinement runs
-                if sampler.is_refinement_run:
-                    new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
-                    if not new_jobs:
-                        logger.info("No refinement activation jobs created. Moving to next stage.")
-                        current_stage = stages.pop(0) if stages else None
-                        continue
-                else:
-                    new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
-                    if not new_jobs:
-                        logger.info("No activation jobs created (no initial maxima?). Moving to next stage.")
-                        current_stage = stages.pop(0) if stages else None
-                        continue
-
-            elif current_stage == 'DE_LOOP':
-                # This stage loops
-                if de_generation >= sampler.de_num_generations:
-                    logger.info("--- Master: DE generations complete. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                if de_generation > 0:
-                    sampler.update_de_memory(de_successful_F, de_successful_CR)
-
-                de_generation += 1
-                sampler.current_generation = de_generation # Update sampler state
-                logger.info(f"--- Master: Starting DE Generation {de_generation} ---")
-
-                new_de_jobs, next_job_id, de_successful_F, de_successful_CR = sampler.create_de_generation_jobs(
-                    next_job_id, sampler.de_max_num_to_evolve
-                )
-
-                # --- Add dynamic activation jobs ---
-                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
-                new_jobs = new_de_jobs + new_act_jobs
-
-                # --- Print Generation Summary ---
-                total_grid_points = len(sampler.population)
-                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
-                converged_count = total_grid_points - active_count
-                newly_activated_count = len(new_act_jobs)
-
-                logger.info(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
-                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
-                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                      f"New Activations: {newly_activated_count:3d}")
-                # --- End Print ---
-
-                if not new_jobs and not de_successful_F: # DE converged and no new activations
-                    logger.info("--- Master: DE converged and no new activations. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-            elif current_stage == 'LBFGSB_LOOP':
-                # Iterative L-BFGS-B optimization with dynamic activation
-                # Similar to DE_LOOP but using gradient-based optimization
-
-                # Cells activated ahead that were never confirmed are not part
-                # of the result.
-                if sampler.ahead_cells:
-                    n_dropped = sampler.drop_ahead_cells()
-                    logger.info(f"--- Dropped {n_dropped} cells activated ahead "
-                                f"that stayed outside the border ---")
-
-                # Create L-BFGS-B jobs for all active (non-converged) grid points
-                new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
-
-                # Create dynamic activation jobs for neighbors of high-likelihood points
-                new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
-                new_jobs = new_lbfgsb_jobs + new_act_jobs
-
-                # --- Print iteration summary ---
-                total_grid_points = len(sampler.population)
-                active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
-                converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
-                newly_activated_count = len(new_act_jobs)
-
-                logger.info(f"LBFGSB Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
-                      f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
-                      f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                      f"New Activations: {newly_activated_count:3d} | "
-                      f"L-BFGS-B Jobs: {len(new_lbfgsb_jobs):3d}")
-
-                # Check convergence: no active jobs and no new activations
-                if not new_jobs:
-                    logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-            elif current_stage == 'PATCHING_WAVES':
-                # Check appropriate flag based on run type
-                patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
-                if not patching_enabled:
-                    logger.info("--- Master: Patching disabled for this stage. Skipping. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                # Check if max waves reached
-                if patching_wave_number >= sampler.max_patching_waves:
-                    logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                logger.info(f"--- Master: Starting Patching Wave {patching_wave_number} ---")
-
-                # Create jobs for this wave
-                new_jobs, next_job_id = sampler.create_patching_wave_jobs(
-                    wave_number=patching_wave_number,
-                    updated_points_last_wave=patching_updated_last_wave,
-                    next_job_id=next_job_id
-                )
-
-                if not new_jobs:
-                    logger.info("--- Master: No patching candidates found. Ending patching. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                # Record baseline fitness for all grid points at wave start
-                patching_wave_baseline_fitness = {
-                    idx: state['best_fitness']
-                    for idx, state in sampler.population.items()
-                }
-
-                # Track test job IDs
-                patching_wave_test_jobs = {j.id for j in new_jobs}
-                patching_wave_lbfgsb_jobs = set()
-
-                # Transition to waiting state
-                current_stage = 'WAITING_FOR_PATCHING_WAVE'
-
-            elif current_stage == 'WAITING_FOR_PATCHING_WAVE':
-                # This stage just waits for wave jobs to complete
-                # Wave is complete when checked in job completion handling
-                pass
-
-            elif current_stage == 'SUSPECT_RECHECK_WAVES':
-                if not sampler.suspect_recheck_enabled or sampler.direct_eval_mode:
-                    logger.info("--- Master: Suspect recheck disabled. Skipping. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                if suspect_wave_number >= sampler.max_suspect_waves:
-                    logger.info(f"--- Master: Max suspect waves ({sampler.max_suspect_waves}) reached. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                logger.info(f"--- Master: Starting Suspect Recheck Wave {suspect_wave_number} ---")
-
-                new_jobs, next_job_id = sampler.create_suspect_recheck_jobs(
-                    wave_number=suspect_wave_number,
-                    updated_points_last_wave=suspect_updated_last_wave,
-                    next_job_id=next_job_id,
-                )
-
-                if not new_jobs:
-                    logger.info("--- Master: No suspect candidates. Ending suspect recheck. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-                suspect_wave_baseline_fitness = {
-                    idx: state['best_fitness']
-                    for idx, state in sampler.population.items()
-                }
-                suspect_wave_test_jobs = {j.id for j in new_jobs}
-                suspect_wave_lbfgsb_jobs = set()
-                current_stage = 'WAITING_FOR_SUSPECT_WAVE'
-
-            elif current_stage == 'WAITING_FOR_SUSPECT_WAVE':
-                pass
-
-            elif current_stage == 'REFINEMENT_LBFGSB':
-                # For refinement runs, directly create LBFGSB jobs from interpolated starts
-                new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
-
-                if not new_jobs:
-                    logger.info("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-            elif current_stage == 'POST_ACTIVATION_LBFGSB':
-                # Direct L-BFGS-B optimization of all activated points
-                # (alternative to DE when optimization_method='lbfgsb')
-                new_jobs, next_job_id = sampler.create_post_activation_lbfgsb_jobs(next_job_id)
-
-                if not new_jobs:
-                    logger.info("--- Master: No post-activation L-BFGS-B jobs created. ---")
-                    current_stage = stages.pop(0) if stages else None
-                    continue
-
-
-            # --- Add new jobs to active pool and queue initial tasks ---
-            _start_jobs(new_jobs)
-
-            # If we just finished a non-looping stage, advance to the next
-            # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
-            if current_stage not in ['DE_LOOP', 'LBFGSB_LOOP',
-                                     'WAITING_FOR_PATCHING_WAVE',
-                                     'WAITING_FOR_SUSPECT_WAVE',
-                                     'WAITING_FOR_INITIAL_OPT']:
-                 current_stage = stages.pop(0) if stages else None
+        # For every run whose jobs are all complete and whose queues are empty.
+        for R in list(runs):
+            while _drained(R):
+                _switch(R)
+                if not R.current_stage:
+                    # All stages of this projection are complete.
+                    runs.remove(R)
+                    sampler._flush_samples_buffer()
+                    if R is not host:
+                        eager.finish(R.index, sampler, logger)
+                    R.state.update(sampler.capture_projection_state())
+                    break
+                if not _advance():
+                    break
 
         # --- 2. Check for and process ALL available results ---
         while comm.Iprobe(source=MPI.ANY_SOURCE):
@@ -1012,8 +1191,10 @@ def master_main(comm, sampler,
             worker_rank = result['context']['worker_rank']
             free_workers.append(worker_rank)
             tasks_completed += 1
+            R = run_by_index[result['context'].get('proj', host.index)]
+            R.inflight -= 1
             if result['context'].get('ahead_task'):
-                ahead_inflight -= 1
+                R.ahead_inflight -= 1
 
             _log_worker_error(result, sampler, logger)
             _log_user_gradient_error(result, sampler, logger)
@@ -1022,13 +1203,14 @@ def master_main(comm, sampler,
                 phase=phase_for_job_type(result['context'].get('type')))
 
             job_id = result['context'].get('job_id', -1)
-            if job_id not in active_jobs:
+            if job_id not in R.active_jobs:
                 # Expected for evaluations sent ahead of time for a job that
                 # has since finished, and for aborted multistart runs.
                 logger.debug(f"Received result for unknown/finished job {job_id}. Ignoring.")
                 continue
 
-            job = active_jobs[job_id]
+            _switch(R)
+            job = R.active_jobs[job_id]
             new_tasks = job.process_result(result)
 
             # Add to correct priority queue
@@ -1039,35 +1221,35 @@ def master_main(comm, sampler,
                 job_id_finished = job.id
 
                 # Track wave-based patching jobs
-                is_patch_test_job = job_id_finished in patching_wave_test_jobs
-                is_patch_lbfgsb_job = job_id_finished in patching_wave_lbfgsb_jobs
-                is_suspect_test_job = job_id_finished in suspect_wave_test_jobs
-                is_suspect_lbfgsb_job = job_id_finished in suspect_wave_lbfgsb_jobs
+                is_patch_test_job = job_id_finished in R.patching_wave_test_jobs
+                is_patch_lbfgsb_job = job_id_finished in R.patching_wave_lbfgsb_jobs
+                is_suspect_test_job = job_id_finished in R.suspect_wave_test_jobs
+                is_suspect_lbfgsb_job = job_id_finished in R.suspect_wave_lbfgsb_jobs
 
                 if is_patch_test_job:
-                    patching_wave_test_jobs.remove(job_id_finished)
+                    R.patching_wave_test_jobs.remove(job_id_finished)
                 if is_patch_lbfgsb_job:
-                    patching_wave_lbfgsb_jobs.remove(job_id_finished)
+                    R.patching_wave_lbfgsb_jobs.remove(job_id_finished)
                 if is_suspect_test_job:
-                    suspect_wave_test_jobs.remove(job_id_finished)
+                    R.suspect_wave_test_jobs.remove(job_id_finished)
                 if is_suspect_lbfgsb_job:
-                    suspect_wave_lbfgsb_jobs.remove(job_id_finished)
+                    R.suspect_wave_lbfgsb_jobs.remove(job_id_finished)
 
                 # This updates the sampler state and can spawn a new job
                 spawn_result = job.on_finish(next_job_id)
-                del active_jobs[job_id_finished]
+                del R.active_jobs[job_id_finished]
 
                 if spawn_result:
                     new_job, next_job_id = spawn_result
-                    active_jobs[new_job.id] = new_job
+                    R.active_jobs[new_job.id] = new_job
                     initial_tasks = new_job.start()
 
                     # Track child jobs spawned within a wave so the wave's
                     # completion check knows to wait for them.
                     if is_patch_test_job and new_job.type == 'PATCHING_LBFGSB':
-                        patching_wave_lbfgsb_jobs.add(new_job.id)
+                        R.patching_wave_lbfgsb_jobs.add(new_job.id)
                     if is_suspect_test_job and new_job.type == 'SUSPECT_RECHECK_LBFGSB':
-                        suspect_wave_lbfgsb_jobs.add(new_job.id)
+                        R.suspect_wave_lbfgsb_jobs.add(new_job.id)
 
                     # Add to correct priority queue
                     _queue_tasks(initial_tasks, new_job.type)
@@ -1079,7 +1261,10 @@ def master_main(comm, sampler,
                 # cell inside the region of interest activates its neighbours
                 # at once. The wave logic above still runs when everything is
                 # idle, and ends the stage.
-                if current_stage == 'LBFGSB_LOOP' and sampler.lbfgsb_rolling_activation:
+                if job.type in ('LBFGSB_LOOP', 'DE_GRID_POINT'):
+                    R.optimisations_finished += 1
+
+                if R.current_stage == 'LBFGSB_LOOP' and sampler.lbfgsb_rolling_activation:
                     rolling = []
                     if job.type == 'ACTIVATE_GRID_POINT':
                         new_job, next_job_id = sampler.create_lbfgsb_job_for_active_cell(
@@ -1094,16 +1279,16 @@ def master_main(comm, sampler,
                         # been; the neighbours start from a less refined point.
                         # With activation_depth > 1 it also activates cells
                         # further out, which may lie outside the border.
-                        if sampler.lbfgsb_eager_activation and idle_after_dispatch > 0:
+                        if sampler.lbfgsb_eager_activation and R.idle_after_dispatch > 0:
                             more, next_job_id = sampler.create_dynamic_activation_jobs(
                                 next_job_id, around=[job.grid_idx],
                                 depth=(sampler.lbfgsb_activation_depth
-                                       if idle_after_dispatch > ahead_reserve else 1))
+                                       if R.idle_after_dispatch > ahead_reserve else 1))
                             rolling += more
                     elif job.type == 'LBFGSB_LOOP':
                         ahead = (sampler.lbfgsb_activation_depth
                                  if (sampler.lbfgsb_eager_activation
-                                     and idle_after_dispatch > ahead_reserve)
+                                     and R.idle_after_dispatch > ahead_reserve)
                                  else 1)
                         rolling, next_job_id = sampler.create_dynamic_activation_jobs(
                             next_job_id, around=[job.grid_idx], depth=ahead)
@@ -1115,99 +1300,99 @@ def master_main(comm, sampler,
                         # queued tasks move up.
                         confirmed = set(sampler.confirm_ahead_cells(job.grid_idx))
                         if confirmed:
-                            moved = {j.id: j for j in active_jobs.values()
+                            moved = {j.id: j for j in R.active_jobs.values()
                                      if getattr(j, 'grid_idx', None) in confirmed}
                             kept = []
-                            for t in ahead_tasks:
+                            for t in R.ahead_tasks:
                                 owner = moved.get(t.get('context', {}).get('job_id'))
                                 if owner is None:
                                     kept.append(t)
                                 else:
                                     _queue_tasks([t], owner.type)
-                            ahead_tasks.clear()
-                            ahead_tasks.extend(kept)
+                            R.ahead_tasks.clear()
+                            R.ahead_tasks.extend(kept)
                             for j in moved.values():
                                 _offer_speculation(j)
                         # Only cells activated ahead are still being worked
                         # on: every cell the result needs is done. Drop them.
-                        if (sampler.ahead_cells and not high_prio_tasks and not low_prio_tasks
-                                and all(_is_ahead(j) for j in active_jobs.values())):
-                            active_jobs.clear()
-                            ahead_tasks.clear()
-                            ahead_spec_ring.clear()
-                            ahead_spec_members.clear()
+                        if (sampler.ahead_cells and not R.high_prio_tasks and not R.low_prio_tasks
+                                and all(_is_ahead(j) for j in R.active_jobs.values())):
+                            R.active_jobs.clear()
+                            R.ahead_tasks.clear()
+                            R.ahead_spec_ring.clear()
+                            R.ahead_spec_members.clear()
                             n_dropped = sampler.drop_ahead_cells()
                             logger.info(f"--- Dropped {n_dropped} cells activated ahead "
                                         f"that stayed outside the border ---")
 
                 # Check if the patching wave is now complete
-                if current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
-                   not patching_wave_test_jobs and not patching_wave_lbfgsb_jobs:
+                if R.current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
+                   not R.patching_wave_test_jobs and not R.patching_wave_lbfgsb_jobs:
 
                     # Determine which grid points were updated (fitness improved)
                     updated_points = []
                     for idx, state in sampler.population.items():
-                        baseline_fitness = patching_wave_baseline_fitness.get(idx, -np.inf)
+                        baseline_fitness = R.patching_wave_baseline_fitness.get(idx, -np.inf)
                         if state['best_fitness'] > baseline_fitness:
                             updated_points.append(idx)
 
-                    logger.info(f"--- Master: Patching Wave {patching_wave_number} complete. Updated {len(updated_points)} points ---")
+                    logger.info(f"--- Master: Patching Wave {R.patching_wave_number} complete. Updated {len(updated_points)} points ---")
 
                     if updated_points:
                         # Start next wave with updated points as seeds
-                        patching_updated_last_wave = updated_points
-                        patching_wave_number += 1
-                        current_stage = 'PATCHING_WAVES'  # Loop back to start next wave
+                        R.patching_updated_last_wave = updated_points
+                        R.patching_wave_number += 1
+                        R.current_stage = 'PATCHING_WAVES'  # Loop back to start next wave
                     else:
                         # No updates, patching converged
                         logger.info("--- Master: No updates in wave. Patching converged. ---")
-                        current_stage = stages.pop(0) if stages else None
+                        R.current_stage = R.stages.pop(0) if R.stages else None
 
                 # Check if the suspect-recheck wave is now complete
-                if current_stage == 'WAITING_FOR_SUSPECT_WAVE' and \
-                   not suspect_wave_test_jobs and not suspect_wave_lbfgsb_jobs:
+                if R.current_stage == 'WAITING_FOR_SUSPECT_WAVE' and \
+                   not R.suspect_wave_test_jobs and not R.suspect_wave_lbfgsb_jobs:
 
                     updated_points = []
                     for idx, state in sampler.population.items():
-                        baseline_fitness = suspect_wave_baseline_fitness.get(idx, -np.inf)
+                        baseline_fitness = R.suspect_wave_baseline_fitness.get(idx, -np.inf)
                         if state['best_fitness'] > baseline_fitness:
                             updated_points.append(idx)
 
                     logger.info(
-                        f"--- Master: Suspect Wave {suspect_wave_number} complete. "
+                        f"--- Master: Suspect Wave {R.suspect_wave_number} complete. "
                         f"Updated {len(updated_points)} points ---"
                     )
 
                     if updated_points:
-                        suspect_updated_last_wave = updated_points
-                        suspect_wave_number += 1
-                        current_stage = 'SUSPECT_RECHECK_WAVES'
+                        R.suspect_updated_last_wave = updated_points
+                        R.suspect_wave_number += 1
+                        R.current_stage = 'SUSPECT_RECHECK_WAVES'
                     else:
                         logger.info("--- Master: No updates in wave. Suspect recheck converged. ---")
-                        current_stage = stages.pop(0) if stages else None
+                        R.current_stage = R.stages.pop(0) if R.stages else None
 
                 # Rolling initial-optimization with basin detection. The job's
                 # on_finish has already clustered its endpoint into the registry;
                 # here we apply the stopping rule and refill the in-flight batch.
-                if current_stage == 'WAITING_FOR_INITIAL_OPT' and \
-                   job_id_finished in initial_opt_inflight:
+                if R.current_stage == 'WAITING_FOR_INITIAL_OPT' and \
+                   job_id_finished in R.initial_opt_inflight:
 
-                    initial_opt_inflight.discard(job_id_finished)
-                    initial_opt_completed += 1
+                    R.initial_opt_inflight.discard(job_id_finished)
+                    R.initial_opt_completed += 1
 
-                    if not initial_opt_stopped:
-                        if initial_opt_started >= initial_opt_cap:
-                            initial_opt_stopped = True
-                            if not initial_opt_refining:
+                    if not R.initial_opt_stopped:
+                        if R.initial_opt_started >= R.initial_opt_cap:
+                            R.initial_opt_stopped = True
+                            if not R.initial_opt_refining:
                                 logger.info(
                                     f"--- Basin detection: reached cap of "
-                                    f"{initial_opt_cap} starts; stopping ---"
+                                    f"{R.initial_opt_cap} starts; stopping ---"
                                 )
-                        elif (not initial_opt_refining
-                              and sampler.basin_detection_should_stop(initial_opt_completed)):
+                        elif (not R.initial_opt_refining
+                              and sampler.basin_detection_should_stop(R.initial_opt_completed)):
                             W, n_roi = sampler.basin_detection_roi_stats()
                             n_distinct = len(sampler.initial_optima_registry)
-                            initial_opt_stopped = True
+                            R.initial_opt_stopped = True
                             # Attribute the stop to the prior vs the Bayesian rule.
                             reason = (
                                 "known-optima prior met"
@@ -1220,75 +1405,88 @@ def master_main(comm, sampler,
                             # Dropping them from active_jobs makes their in-flight
                             # results get ignored; queued tasks are purged. (The
                             # cap branch above keeps runs we've already paid for.)
-                            aborted = set(initial_opt_inflight)
+                            aborted = set(R.initial_opt_inflight)
                             for jid in aborted:
-                                active_jobs.pop(jid, None)
-                            initial_opt_inflight.clear()
+                                R.active_jobs.pop(jid, None)
+                            R.initial_opt_inflight.clear()
                             _purge_queued_tasks(aborted)
                             logger.info(
                                 f"--- Basin detection: {reason} after "
-                                f"{initial_opt_completed} optimizations "
+                                f"{R.initial_opt_completed} optimizations "
                                 f"({n_distinct} distinct optima, {W} in ROI); "
                                 f"aborted {len(aborted)} in-flight run(s) ---"
                             )
 
                     # Refill to keep `initial_opt_batch_size` starts in flight.
-                    if not initial_opt_stopped:
-                        while (len(initial_opt_inflight) < initial_opt_batch_size
-                               and initial_opt_started < initial_opt_cap):
+                    if not R.initial_opt_stopped:
+                        while (len(R.initial_opt_inflight) < R.initial_opt_batch_size
+                               and R.initial_opt_started < R.initial_opt_cap):
                             new_job, next_job_id = sampler.create_one_initial_optimization_job(next_job_id)
-                            active_jobs[new_job.id] = new_job
-                            initial_opt_inflight.add(new_job.id)
-                            initial_opt_started += 1
+                            R.active_jobs[new_job.id] = new_job
+                            R.initial_opt_inflight.add(new_job.id)
+                            R.initial_opt_started += 1
                             _queue_tasks(new_job.start(), new_job.type)
 
                     # Stage done once the in-flight batch has fully drained.
-                    if not initial_opt_inflight:
-                        if initial_opt_refining:
+                    if not R.initial_opt_inflight:
+                        if R.initial_opt_refining:
                             logger.info(
                                 f"--- Initial points refined: best target "
                                 f"{sampler._refine_best_before:.6f} -> "
                                 f"{sampler.global_max_target_val:.6f} ---"
                             )
-                            initial_opt_refining = False
+                            R.initial_opt_refining = False
                         else:
                             W, n_roi = sampler.basin_detection_roi_stats()
                             logger.info(
-                                f"--- Basin detection complete: {initial_opt_completed} "
+                                f"--- Basin detection complete: {R.initial_opt_completed} "
                                 f"optimizations, {W} distinct ROI optima "
                                 f"({len(sampler.initial_optima_registry)} optima total) ---"
                             )
-                        current_stage = stages.pop(0) if stages else None
+                        R.current_stage = R.stages.pop(0) if R.stages else None
 
         # --- End of Iprobe receive loop ---
 
 
         # --- 3. Dispatch tasks to free workers ---
-        # Prioritize high priority tasks
+        # Runs are served in the order they were started: queued tasks, then
+        # evaluations a job may need next. What is left goes to cells
+        # activated ahead, which leave a reserve of workers free.
         while free_workers:
-            if high_prio_tasks:
-                task = high_prio_tasks.popleft()
-            elif low_prio_tasks:
-                task = low_prio_tasks.popleft()
-            else:
-                # Nothing is queued: let a job use the worker for an
-                # evaluation it may need next, or else for a cell activated
-                # ahead.
-                task = _next_speculative_task()
-                if task is not None:
-                    speculative_sent += 1
-                elif len(free_workers) <= ahead_reserve:
-                    break
-                else:
-                    if ahead_tasks:
-                        task = ahead_tasks.popleft()
-                    else:
-                        task = _next_speculative_task(ahead_spec_ring, ahead_spec_members)
-                        if task is None:
-                            break
+            task = None
+            owner = None
+            for run in runs:
+                if run.high_prio_tasks:
+                    task = run.high_prio_tasks.popleft()
+                elif run.low_prio_tasks:
+                    task = run.low_prio_tasks.popleft()
+                elif run.spec_ring:
+                    _switch(run)
+                    task = _next_speculative_task(run, run.spec_ring, run.spec_members)
+                    if task is not None:
                         speculative_sent += 1
-                    task['context']['ahead_task'] = True
-                    ahead_inflight += 1
+                if task is not None:
+                    owner = run
+                    break
+            if task is None and len(free_workers) > ahead_reserve:
+                for run in runs:
+                    if run.ahead_tasks:
+                        task = run.ahead_tasks.popleft()
+                    elif run.ahead_spec_ring:
+                        _switch(run)
+                        task = _next_speculative_task(run, run.ahead_spec_ring,
+                                                      run.ahead_spec_members)
+                        if task is not None:
+                            speculative_sent += 1
+                    if task is not None:
+                        task['context']['ahead_task'] = True
+                        run.ahead_inflight += 1
+                        owner = run
+                        break
+            if task is None:
+                break
+            task['context']['proj'] = owner.index
+            owner.inflight += 1
             worker_rank = free_workers.pop(0)
 
             # Use non-blocking send to overlap communication
@@ -1296,20 +1494,42 @@ def master_main(comm, sampler,
             pending_sends.append(req)
             tasks_sent += 1
 
-        # Workers left without anything to do after this pass, and workers
-        # that ordinary work left over (idle, or busy with a cell activated
-        # ahead).
+        # Workers left without anything to do after this pass. For each run,
+        # the workers that it and the runs before it left over: idle, busy
+        # with a later run, or busy with a cell activated ahead.
         free_after_dispatch = len(free_workers)
-        idle_after_dispatch = free_after_dispatch + ahead_inflight
+        spare = free_after_dispatch + sum(run.ahead_inflight for run in runs)
+        for run in reversed(runs):
+            run.idle_after_dispatch = spare
+            spare += run.inflight - run.ahead_inflight
 
-        if current_stage == 'LBFGSB_LOOP' and time.time() - last_progress_log > PROGRESS_LOG_INTERVAL:
-            last_progress_log = time.time()
-            done = sum(1 for st in sampler.population.values()
-                       if st['status'] in ('converged', 'optimized'))
-            logger.info(f"LBFGSB Loop | Calls: {sampler.target_calls/1e3:6.1f}k | "
-                        f"Grid Pts (done/tot): {done:4d}/{len(sampler.population):4d} | "
-                        f"Global Max logL: {sampler.global_max_target_val:.4e} | "
-                        f"Busy workers: {n_workers - len(free_workers):4d}/{n_workers}")
+        # Eager start: with workers idle and the newest run under way, the
+        # next projection starts. It takes its initial maxima from the pool.
+        if (eager is not None and runs and eager.has_next()
+                and free_after_dispatch >= eager_min_idle
+                and runs[-1].optimisations_finished > 0):
+            _switch(runs[-1])
+            loaded.state.update(sampler.capture_projection_state())
+            label.set(eager.pending[0])
+            new_index, new_config = eager.start_next(logger)
+            new_state = sampler.begin_projection_state(new_config)
+            R = _ProjectionRun(index=new_index, stages=_build_stages(), state=new_state,
+                               skip_init_opt_on_warm_start=True)
+            loaded = R
+            runs.append(R)
+            run_by_index[R.index] = R
+
+        now = time.time()
+        for run in runs:
+            if run.current_stage == 'LBFGSB_LOOP' and now - run.last_progress_log > PROGRESS_LOG_INTERVAL:
+                run.last_progress_log = now
+                _switch(run)
+                done = sum(1 for st in sampler.population.values()
+                           if st['status'] in ('converged', 'optimized'))
+                logger.info(f"LBFGSB Loop | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                            f"Grid Pts (done/tot): {done:4d}/{len(sampler.population):4d} | "
+                            f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                            f"Busy workers: {n_workers - len(free_workers):4d}/{n_workers}")
 
         # Completed sends are dropped as the scan goes, so the list does not
         # grow with the number of evaluations.
@@ -1329,6 +1549,11 @@ def master_main(comm, sampler,
         MPI.Request.Waitall(pending_sends)
 
     logger.debug("master_main: Workflow finished.")
+
+    # The caller reads the result of the projection it started this for.
+    _switch(host)
+    if label is not None:
+        logger.removeFilter(label)
 
     # Final flush of sample buffer
     sampler._flush_samples_buffer()

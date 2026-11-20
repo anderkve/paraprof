@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   had said physical coordinates for those.
 
 ### Fixed
+- `master_main` returns only when no evaluation is in flight. With
+  `activation_depth` above 1 and the cell loop as the last stage (patching
+  off) it could return while evaluations for dropped cells were still out;
+  their results would have reached the next projection.
 - `grid_points` were paired with the wrong parameters when `dims` was not given
   in ascending order: the dims were sorted, the grid sizes were not.
 - The list of non-blocking sends in the master grew by one entry per
@@ -63,6 +67,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   L-BFGS recursion, and stops when the decrease its quadratic model predicts is
   below the function tolerance. A cell takes the Hessian of a finished
   neighbour. Parameters held by a bound are left out of the Newton step.
+- **Projections started on idle workers** (`cross_projection.eager_start`,
+  default `False`). The next projection starts while the current one runs,
+  when a tenth of the workers is idle and the projection started before it has
+  finished its first cell optimisation or DE generation. It takes its initial
+  maxima from the pool. Work is handed out in the order the projections were
+  started, so a later one only gets workers the earlier ones have no use for.
+  `'lbfgsb'` and `'de'` projections can overlap; projections with
+  `grid_refinement_factor` and those without profiled parameters run in turn
+  as before. For this the state of a projection can be captured and restored
+  (`ProfileProjector.PROJECTION_STATE_ATTRS`, `capture_projection_state`,
+  `restore_projection_state`), and `master_main` keeps one stage machine and
+  one set of queues per projection (`_ProjectionRun`). With the option off the
+  master behaves as before. Measured on virtual workers (6-parameter Gaussian,
+  three 25 x 25 planes, one seed), wall time in evaluation-times, sequential
+  against eager: 3 818 and 3 815 on 3 workers, 148 and 134 on 100, 75 and 59
+  on 300, 55 and 31 on 1000, with the same cells in every projection and 0 to
+  11 % fewer evaluations. Eight planes on 1000 workers: 139 and 70. Three DE
+  planes on 1000 workers: about 320 and 140. On 100 workers the first
+  projection ends 5 % later than it would alone; on 1000 it is not held back.
 - `lbfgsb.activation_depth` (default 1, the behaviour so far): how many cells
   ahead a cell inside the region of interest activates while workers are idle.
   With a depth above 1 the cells further out than a neighbour start from the
