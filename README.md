@@ -98,13 +98,14 @@ Rank 0 is the master: it owns the grid, hands out optimization jobs, and tracks 
 A scan proceeds roughly as follows:
 
 1. Lay a regular grid over the projection dimensions; the rest are profiled at each grid point.
-2. Run global L-BFGS-B starts to find initial maxima. Rather than firing a fixed number of Latin-hypercube starts and hoping it was enough, paraprof runs a *rolling* multistart with **basin detection**: each converged optimum is clustered online into a registry of distinct optima, and a Bayesian stopping rule (Boender–Rinnooy Kan, restricted to region-of-interest optima) halts the stage once the expected number of undiscovered ROI optima drops below a threshold — aborting any still-running optimizations at that point so their remaining evaluations aren't wasted. `n_initial_optimizations` becomes the upper bound. On later projections these are seeded from an in-memory pool built up by earlier projections, often skipping the global step entirely.
-3. Anchor a DE population (or an initial point for L-BFGS-B optimization) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
-4. Optimize the profiled parameters at each active cell. L-BFGS-B cells also reuse the best already-converged neighbour's quasi-Newton history and its best profiled parameters as an alternative start, propagating local curvature outward.
-5. Activate the neighbours of high-likelihood cells, expanding the active set into the region of interest.
-6. Patching: re-test each cell with its neighbours' best profiled parameters and polish any improvement.
-7. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seed points. This breaks contiguous wrong-optimum strips that the fitness-only filter of the patching step cannot fix.
-8. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
+2. Estimate the numerical noise of the target and choose the finite-difference step of the L-BFGS-B gradient from it (once per scan; skipped when the step is given or a gradient function is supplied).
+3. Run global L-BFGS-B starts to find initial maxima. Rather than firing a fixed number of Latin-hypercube starts and hoping it was enough, paraprof runs a *rolling* multistart with **basin detection**: each converged optimum is clustered online into a registry of distinct optima, and a Bayesian stopping rule (Boender–Rinnooy Kan, restricted to region-of-interest optima) halts the stage once the expected number of undiscovered ROI optima drops below a threshold — aborting any still-running optimizations at that point so their remaining evaluations aren't wasted. `n_initial_optimizations` becomes the upper bound. On later projections these are seeded from an in-memory pool built up by earlier projections, often skipping the global step entirely.
+4. Anchor a DE population (or an initial point for L-BFGS-B optimization) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
+5. Optimize the profiled parameters at each active cell. L-BFGS-B cells also reuse the best already-converged neighbour's quasi-Newton history and its best profiled parameters as an alternative start, propagating local curvature outward.
+6. Activate the neighbours of high-likelihood cells, expanding the active set into the region of interest.
+7. Patching: re-test each cell with its neighbours' best profiled parameters and polish any improvement.
+8. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seed points. This breaks contiguous wrong-optimum strips that the fitness-only filter of the patching step cannot fix.
+9. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
 
 Key code paths: `ProfileProjector` (`sampler.py`) holds state and configuration, `master_main()` (`master.py`) is the state machine, `worker_main()` (`worker.py`) is the evaluation loop, and `jobs/` contains the asynchronous optimization jobs.
 
@@ -237,8 +238,15 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `de.allow_early_DE_exit`                | `True`                         | Smooth-interior cells (neighbour argmax agreement) skip the DE search — 1 DE generation then polish, instead of the full window (see below). Set `False` for multimodal-inner targets |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
-| `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance                                      |
+| `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance. For a profile likelihood `1e-5` is far below what a contour shows and saves iterations |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` or `'central'` (~50% more calls)                     |
+| `lbfgsb.fd_step`                   | `'auto'`                       | Finite-difference step as a fraction of the bound extent. `'auto'` sets it from a noise estimate of the target; `None` is `max(\|x\| * 1e-8, 1e-10)` |
+| `lbfgsb.noise`                     | `None`                         | Numerical noise of the target, if known. Estimated when `fd_step` is `'auto'` |
+| `lbfgsb.first_step`, `lbfgsb.max_step` | `0.1`, `0.5`               | First trial displacement without curvature information, and longest trial displacement (fractions of the bound extent) |
+| `lbfgsb.ladder_factor`             | `0.5`                          | Ratio between consecutive trial steps of the line search         |
+| `lbfgsb.speculative`, `lbfgsb.lookahead` | `True`, `8`              | Use idle workers for evaluations a run may need next             |
+| `lbfgsb.hessian`, `lbfgsb.hessian_max_dims` | `True`, `12`          | Measure a finite-difference Hessian and take Newton steps, for runs over at most this many parameters |
+| `lbfgsb.rolling_activation`, `lbfgsb.eager_activation` | `True`, `True` | In `'lbfgsb'` projections, optimise and activate cells as results arrive instead of in waves |
 | `clustering.*`                     | auto-DBSCAN                    | Mode detection during refinement                                 |
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
@@ -252,6 +260,16 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
+
+**L-BFGS-B on a target with numerical noise.** A likelihood that contains an iterative solver, a tabulated input or an ill-conditioned linear solve returns values that scatter between neighbouring points. A finite-difference step sized for double precision then measures that scatter instead of the slope. With `lbfgsb.fd_step='auto'` paraprof estimates the noise before the first optimisation (the ECNoise procedure of Moré and Wild, about 60 evaluations) and logs it together with the step it chooses:
+
+```
+--- Noise of the target: 1.07e-09; curvature scale: 3.35e+02; finite-difference step: 3.0e-06 of the bound extent ---
+```
+
+A noise level far above `1e-12` is worth a look at the target: it also limits how far any optimiser can converge.
+
+**L-BFGS-B on many workers.** One L-BFGS-B iteration is a gradient (one evaluation per parameter, in parallel) and a line search. The trial steps of the line search form a fixed ladder, and the step accepted is the first one that passes the Armijo test, so the ladder can be evaluated ahead of time. When workers are idle the master hands them later rungs and the gradient probes of the first rung; if that rung is accepted, the next iteration starts without waiting. With `lbfgsb.hessian` a run also measures its Hessian in the same parallel step, takes Newton steps, and passes the Hessian on to neighbouring cells. In `'lbfgsb'` projections cells are activated and optimised as results arrive rather than wave by wave. `tools/bench_scheduling.py` measures the effect for a given number of workers without MPI, on virtual workers (`tools/virtual_pool.py`).
 
 **Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
 
@@ -296,7 +314,7 @@ paraprof/
 │   ├── sampler.py            # ProfileProjector (state + config)
 │   ├── master.py             # Master event loop
 │   ├── worker.py             # Worker event loop
-│   ├── jobs/                 # Optimization jobs (LBFGSB, DE, activation, patching)
+│   ├── jobs/                 # Optimization jobs (LBFGSB, DE, activation, patching, noise estimate)
 │   ├── interpolation.py      # Grid interpolation + clustering for refinement
 │   ├── visualization.py      # Plot helpers
 │   ├── nuisance_wrapper.py   # Wrap test functions with nuisance parameters
@@ -304,6 +322,7 @@ paraprof/
 │   ├── exceptions.py
 │   └── logger.py
 ├── tests/
+├── tools/                    # virtual_pool.py (master on virtual workers), bench_scheduling.py
 └── examples/                 # `*_advanced.py` exercises advanced_config
 ```
 

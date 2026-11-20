@@ -2,6 +2,7 @@
 MPI master process orchestration logic.
 """
 import collections
+import time
 import numpy as np
 import sys
 
@@ -20,6 +21,9 @@ except ImportError:
 TASK_TERMINATE = -1
 # Length of the list of non-blocking sends at which completed ones are dropped.
 PENDING_SENDS_PRUNE = 1024
+# Seconds between progress lines of the L-BFGS-B loop. With rolling activation
+# the loop has no waves to report.
+PROGRESS_LOG_INTERVAL = 60.0
 
 
 def _send_done(request):
@@ -641,6 +645,7 @@ def master_main(comm, sampler,
     tasks_completed = 0
     speculative_sent = 0
     idle_after_dispatch = 0
+    last_progress_log = time.time()
 
     # DE stage state
     de_generation = 0 # Counter for DE stage
@@ -1179,6 +1184,15 @@ def master_main(comm, sampler,
 
         # Workers left without anything to do after this pass.
         idle_after_dispatch = len(free_workers)
+
+        if current_stage == 'LBFGSB_LOOP' and time.time() - last_progress_log > PROGRESS_LOG_INTERVAL:
+            last_progress_log = time.time()
+            done = sum(1 for st in sampler.population.values()
+                       if st['status'] in ('converged', 'optimized'))
+            logger.info(f"LBFGSB Loop | Calls: {sampler.target_calls/1e3:6.1f}k | "
+                        f"Grid Pts (done/tot): {done:4d}/{len(sampler.population):4d} | "
+                        f"Global Max logL: {sampler.global_max_target_val:.4e} | "
+                        f"Busy workers: {n_workers - len(free_workers):4d}/{n_workers}")
 
         # Completed sends are dropped as the scan goes, so the list does not
         # grow with the number of evaluations.

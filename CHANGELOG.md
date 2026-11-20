@@ -8,6 +8,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **L-BFGS-B runs work in bound-normalised coordinates and choose their
+  finite-difference step from the noise of the target.** The step was
+  `max(|x| * 1e-8, 1e-10)` in parameter units, which suits a target accurate to
+  double precision. On a target with numerical noise of `1e-7` the gradient was
+  noise, the line search ran its full ladder of 34 trial steps one evaluation
+  at a time, and the run ended as a failure. The step is now a fraction of each
+  parameter's bound extent, `advanced_config['lbfgsb']['fd_step']`: `'auto'`
+  (default) sets it from a noise estimate made once before the first
+  optimisation (new `NOISE_ESTIMATE` stage, about 60 evaluations, logged), a
+  number fixes it, `None` restores the old rule. Probes step into the box at a
+  bound instead of being clipped onto the point they start from.
+- **A run that ends because no trial step improves keeps its result.** Such a
+  run used to write nothing back: its best accepted point was dropped, the
+  global maximum could stay below a point the scan had evaluated, and a cell of
+  an `'lbfgsb'` projection stayed in status `LBFGSB_queued`, outside
+  `export_grid_solution`. The best accepted point is now written back however
+  the run ends, and the run counts as converged.
+- **Line search.** The first trial step is scaled: from curvature pairs or the
+  Hessian of a finished neighbour, from the curvature scale of earlier runs, or
+  else capped at `first_step` of the bound extent. It used to be the raw
+  gradient, thousands of box widths long in a unit hypercube. The ladder starts
+  where the clipped trial point starts to move and ends when the displacement
+  drops below the finite-difference step, so no point is evaluated twice. A run
+  remembers the step length its last line search accepted. The value at the
+  start point of a cell run is known and is no longer evaluated again.
+- **`'lbfgsb'` projections activate and optimise cells as results arrive**
+  (`rolling_activation`, `eager_activation`) instead of wave by wave.
+- Cells near several initial maxima are seeded from the highest one, not from
+  the one whose run finished first.
+- `roi_threshold` docstring: a depth in the units of the target (log L), not
+  in chi-squared.
+
+### Fixed
+- `grid_points` were paired with the wrong parameters when `dims` was not given
+  in ascending order: the dims were sorted, the grid sizes were not.
+- The list of non-blocking sends in the master grew by one entry per
+  evaluation for the whole scan. Completed sends are now dropped as it goes.
+
+### Added
+- **Evaluations ahead of time on idle workers** (`lbfgsb.speculative`). The
+  trial steps of a line search form a fixed ladder and the step accepted is
+  the first that passes the Armijo test, so later rungs can be evaluated before
+  earlier ones return; so can the gradient at the first rung. The master offers
+  idle workers to running jobs for this (`LBFGSBJob.speculate`). The accepted
+  step does not depend on it.
+- **Finite-difference Hessian** (`lbfgsb.hessian`). A run measures its Hessian
+  together with its gradient, uses the inverse as the initial matrix of the
+  L-BFGS recursion, and stops when the decrease its quadratic model predicts is
+  below the function tolerance. A cell takes the Hessian of a finished
+  neighbour. Parameters held by a bound are left out of the Newton step.
+- `tools/virtual_pool.py` runs the master against any number of virtual
+  workers in one process, with a simulated clock, and
+  `tools/bench_scheduling.py` uses it to report evaluations, wall time in
+  units of one evaluation, busy workers and accuracy for a given worker count.
 - **Sample log gained a `phase` column.** Rows in `samples_output_file` are now
   `[params…, logL, phase]`, where `phase` is an integer tagging the algorithm
   stage that produced the point (`paraprof.PHASE_*`, described in

@@ -14,13 +14,17 @@ LEGACY_FD_BASE = 1e-8
 LEGACY_FD_FLOOR = 1e-10
 
 # A Hessian is measured again when the line search had to shrink the step this
-# many times (the quadratic model was poor) and the run has moved at least
+# many times (the quadratic model was poor), the run has moved at least
 # HESSIAN_REFRESH_DISTANCE (fraction of the bound extent) away from where the
-# one in use was measured, at most HESSIAN_MAX_REFRESH times per run. A model
-# that fails where it was measured is not improved by measuring it again: the
-# target is not quadratic there.
+# one in use was measured, and the accepted step still gained more than
+# HESSIAN_REFRESH_GAIN times the function tolerance; at most
+# HESSIAN_MAX_REFRESH times per run. A model that fails where it was measured
+# is not improved by measuring it again (the target is not quadratic there),
+# and a run that is within a few tolerances of its end does not repay the
+# n(n+3)/2 evaluations.
 HESSIAN_REFRESH_RUNG = 2
 HESSIAN_REFRESH_DISTANCE = 0.05
+HESSIAN_REFRESH_GAIN = 100.0
 HESSIAN_MAX_REFRESH = 3
 # Eigenvalues of the finite-difference Hessian are kept at least this fraction
 # of the largest one in magnitude, and made positive.
@@ -763,7 +767,8 @@ class LBFGSBJob(Job):
         # does not describe the target here. Measure it again at the new
         # point if it came from somewhere else.
         if (self.use_hessian and j >= HESSIAN_REFRESH_RUNG
-                and self._hessian_refreshes < HESSIAN_MAX_REFRESH):
+                and self._hessian_refreshes < HESSIAN_MAX_REFRESH
+                and np.abs(f_old - f_new) > HESSIAN_REFRESH_GAIN * self.ftol_eff):
             z_new = (x_new - self._lo) / self._scale
             moved = (self._hessian_z is None
                      or float(np.max(np.abs(z_new - self._hessian_z))) > HESSIAN_REFRESH_DISTANCE)

@@ -306,6 +306,17 @@ class ProfileProjector:
                 'lbfgsb': {
                     'ftol': float,                 # Default: 1e-9
                     'gradient_method': str,        # Default: 'forward'
+                    'fd_step': 'auto'|float|None,  # Default: 'auto'
+                    'noise': float,                # Default: None (estimated with fd_step 'auto')
+                    'first_step': float,           # Default: 0.1
+                    'max_step': float,             # Default: 0.5
+                    'ladder_factor': float,        # Default: 0.5
+                    'speculative': bool,           # Default: True
+                    'lookahead': int,              # Default: 8
+                    'hessian': bool,               # Default: True
+                    'hessian_max_dims': int,       # Default: 12
+                    'rolling_activation': bool,    # Default: True
+                    'eager_activation': bool,      # Default: True
                 },
 
                 'clustering': {
@@ -337,6 +348,47 @@ class ProfileProjector:
                     'min_starts': int,              # Default: None (auto)
                 },
             }
+
+        The ``lbfgsb`` sub-dict controls the L-BFGS-B runs (global starts,
+        cell optimisations, polish). They work in bound-normalised
+        coordinates, so the lengths below are fractions of each parameter's
+        bound extent.
+
+        ``fd_step`` is the finite-difference step of the gradient. ``'auto'``
+        measures the numerical noise of the target once, before the first
+        optimisation, and sets the step that balances noise against
+        truncation (about ``sqrt(noise / curvature)``); the estimate costs
+        about 60 evaluations and is logged. A number fixes the step. ``None``
+        selects ``max(|x| * 1e-8, 1e-10)`` in parameter units, which suits a
+        target accurate to double precision and no other. ``noise`` gives the
+        noise level directly; a run stops once an accepted step changes the
+        target by less than ``max(ftol, 4 * noise)``.
+
+        ``first_step`` is the first trial displacement of a line search that
+        has no curvature information, ``max_step`` the longest trial
+        displacement of any line search, ``ladder_factor`` the ratio between
+        consecutive trial steps.
+
+        ``speculative`` lets the master use idle workers for evaluations a run
+        may need next: later trial steps of its line search (``lookahead`` of
+        them beyond the one being decided) and the gradient at its first trial
+        point. The accepted step is the same with or without them.
+
+        ``hessian`` measures the Hessian by finite differences,
+        ``n (n + 3) / 2`` evaluations dispatched together with the gradient,
+        for runs over at most ``hessian_max_dims`` parameters. The run then
+        takes Newton steps and stops when the decrease its quadratic model
+        predicts is below the function tolerance. A cell takes the Hessian of
+        a finished neighbour instead of measuring one.
+
+        ``rolling_activation`` and ``eager_activation`` apply to projections
+        with ``optimization_method='lbfgsb'``. With the first, a cell is
+        optimised as soon as its activation returns and activates its
+        neighbours as soon as it has finished inside the region of interest,
+        instead of waiting for the other cells of its wave. With the second,
+        and only while workers are idle, a cell whose activation samples
+        already put it inside the region of interest activates its neighbours
+        before its own optimisation has finished.
 
         The ``basin_detection`` sub-dict controls the initial-optimization
         stage, where ``n_initial_optimizations`` is treated as a *maximum*:
