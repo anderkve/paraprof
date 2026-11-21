@@ -76,6 +76,14 @@ Scanner:
         roi_threshold: 10.0
         pop_per_grid_point: 3
         n_initial_optimizations: 40
+        # Optional starting points in physical coordinates: one mapping
+        # {parameter name: value} per point, naming every scanned parameter
+        # (with or without the model prefix). They replace the global
+        # optimisations above and are evaluated, not optimised, unless
+        # refine_initial_points is set. The point below is the maximum.
+        # initial_points:
+        #   - {x1: 1.0, x2: 1.0, x3: 1.0, x4: 1.0, x5: 1.0}
+        # refine_initial_points: true
         max_patching_waves: 15
         lbfgsb_max_iter: 50
         lbfgsb_polish: true
