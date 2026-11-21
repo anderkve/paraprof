@@ -50,12 +50,10 @@ See `paraprof_example.yaml` for a complete worked example.
   (`grid`, `binminpy`, etc.).
 - Projection `dims` may be parameter **names** (matching the YAML
   `Parameters` block) or integer indices; names are resolved by paraprof.
-- `initial_points` entries written as a mapping `{parameter name: value}` are
-  in physical coordinates and go through ScannerBit's inverse prior transform
-  (every scanned parameter must be named, with or without its model prefix).
-  An entry written as a list is taken as unit-hypercube coordinates in
-  ScannerBit's parameter order. The plugin prints the unit-hypercube point
-  it derives from a mapping.
+- `initial_points` is a list of points in physical coordinates. Each point is
+  a mapping `{parameter name: value}` that names every scanned parameter, with
+  or without its model prefix. The plugin maps it to the unit hypercube with
+  ScannerBit's inverse prior transform and prints the result.
 - `refine_initial_points: true` makes paraprof optimise all parameters from
   every initial point before it activates grid points. Without it the points
   are evaluated only, and the best of them stands as the maximum unless a

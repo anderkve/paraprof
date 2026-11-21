@@ -77,12 +77,10 @@ YAML options:
     use_clustering:          Detect modes during refinement (default true).
     refinement_direct_eval:  Skip optimisation in refinement runs (default false).
     initial_points:          Optional list of starting points to activate
-                             explicitly. A point given as a mapping
-                             {parameter name: value} is in physical
-                             coordinates (every scanned parameter must be
-                             named, with or without its model prefix). A
-                             point given as a list is in unit-hypercube
-                             coordinates, in ScannerBit's parameter order.
+                             explicitly, in physical coordinates. Each point
+                             is a mapping {parameter name: value} that names
+                             every scanned parameter, with or without its
+                             model prefix.
     refine_initial_points:   Optimise all parameters from every initial point
                              before grid points are activated (default false).
                              Without it the points are evaluated only.
@@ -278,8 +276,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
 
     def _initial_points_to_unit(self, points):
-        """Unit-hypercube coordinates of the user's initial points (formats:
-        see initial_points in the module docstring)."""
+        """Unit-hypercube coordinates of the user's initial points (mappings
+        {parameter name: physical value})."""
         names = list(self.parameter_names)
         short = {}
         for full in names:
@@ -287,8 +285,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
         unit_points = []
         for i, point in enumerate(points):
             if not isinstance(point, dict):
-                unit_points.append([float(v) for v in point])
-                continue
+                raise RuntimeError(
+                    f"{self.print_prefix} initial_points must be a list of mappings "
+                    f"{{parameter name: value}} in physical coordinates; "
+                    f"entry {i} is not a mapping.")
             physical = {}
             for key, value in point.items():
                 if key in names:

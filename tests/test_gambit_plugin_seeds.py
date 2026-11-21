@@ -60,10 +60,14 @@ def test_mapping_is_physical_and_goes_through_the_inverse_transform(plugin):
     assert plugin.calls == [{"Model::alpha": 1.0, "Model::beta": 5.5e-5, "Model::gamma": 2.0}]
 
 
-def test_list_is_taken_as_unit_hypercube_coordinates(plugin):
-    out = plugin._initial_points_to_unit([[0.1, 0.2, 0.3], (0.9, 0.8, 0.7)])
-    assert out == [[0.1, 0.2, 0.3], [0.9, 0.8, 0.7]]
-    assert plugin.calls == []
+def test_a_point_that_is_not_a_mapping_is_rejected(plugin):
+    point = {"alpha": 1.0, "beta": 5.5e-5, "gamma": 2.0}
+    with pytest.raises(RuntimeError, match="entry 1 is not a mapping"):
+        plugin._initial_points_to_unit([point, [0.1, 0.2, 0.3]])
+    # A single mapping in place of the list of points.
+    with pytest.raises(RuntimeError, match="list of mappings"):
+        plugin._initial_points_to_unit(point)
+    assert plugin.calls == [{"Model::alpha": 1.0, "Model::beta": 5.5e-5, "Model::gamma": 2.0}]
 
 
 def test_unknown_and_missing_parameters_are_errors(plugin):
