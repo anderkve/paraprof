@@ -1,23 +1,18 @@
-"""Volume sampling (see docs/volume_sampling_plan.md).
+"""Volume sampling.
 
-After the projections complete, the volume-sampling stage populates the
-region of interest — ``{logL > global_max - roi_threshold}`` — with a set of
-samples that balances space-filling and lnL-filling, using an affine-invariant
-ensemble of umbrella walkers. Each walker carries a fixed *home level* spanning
-the band uniformly in ΔlnL and targets a log-Gaussian in logL around it; the
-ensemble is moved with the Goodman-Weare stretch move (partners pooled across
-the whole ensemble by default), so curved/stretched geometries need no step,
-gradient, or covariance tuning.
+After the projections complete, this stage fills the region
+``logL >= global_max - roi_threshold`` with samples spread both in parameter
+space and in logL. It runs an ensemble of umbrella walkers: each walker has a
+fixed home level, the levels are uniform in ΔlnL, and each walker targets a
+Gaussian in logL around its level. Walkers move with the Goodman-Weare
+stretch move, which is affine-invariant and needs no step-size tuning.
 
-The stage's ``roi_threshold`` defaults to the projection's but can be set
-larger to reach into the shell around the ROI (the band is one-sided, running
-up to the global max).
+``roi_threshold`` defaults to the projection's value. A larger value also
+covers the shell outside the region of interest.
 
-This module holds the MPI-free building blocks: config validation, the
-:class:`ProjectionEnvelope` prefilter (which seeds walkers and flags
-direct-eval mode), the ensemble primitives the master loop drives, and the
-output writer. Coordinates are in the input-parameter space; the affine
-stretch move needs no bounds-scaling.
+This module holds the MPI-free parts: config validation, the
+:class:`ProjectionEnvelope` prefilter, the ensemble primitives the master
+loop drives, and the output writer.
 """
 import os
 
@@ -28,8 +23,7 @@ from .exceptions import ConfigurationError
 from .logger import get_logger
 
 VOLUME_CONFIG_DEFAULTS = {
-    'roi_threshold': None,         # ΔlnL band depth; None = projection's roi_threshold.
-                                   # Larger reaches into the shell outside the ROI.
+    'roi_threshold': None,         # ΔlnL depth; None = projection's roi_threshold
     'n_walkers': 1000,             # ensemble size (each carries a home level)
     'n_steps': 30,                 # stretch sweeps per walker
     'eval_budget': None,           # optional cap; None = n_walkers * (n_steps + 1)
@@ -128,31 +122,23 @@ def normalize_volume_config(config, roi_threshold):
 
 
 def volume_band(config, global_max):
-    """The stage's logL lower edge and prefilter threshold for a config.
+    """Return ``(band_lo, prefilter_delta)`` for a config.
 
-    Returns ``(band_lo, prefilter_delta)``: a point is in-band iff
-    ``logL >= band_lo``. The band is one-sided (no upper edge), and the
-    envelope prefilter uses the same threshold (profile values upper-bound
-    logL and so can never exclude a point from above).
+    A point is in-band iff ``logL >= band_lo``. There is no upper edge.
     """
     return (global_max - config['roi_threshold'], config['roi_threshold'])
 
 
 class ProjectionEnvelope:
-    """Necessary-condition prefilter built from converged projection grids.
+    """Prefilter built from converged projection grids.
 
-    For any point θ and any computed projection, ``logL(θ) <=
-    profile(proj(θ))`` by definition of profiling, so a point whose
-    projection falls in a cell with profile value below ``global_max −
-    threshold_delta`` — or in a cell that was never activated, which the
-    scan's dynamic expansion only leaves outside the ROI — cannot satisfy
-    ``logL >= global_max − threshold_delta``. The true band region is
-    therefore contained in the intersection of the per-projection cylinder
-    sets this class tests against.
+    Profiling gives ``logL(θ) <= profile(proj(θ))`` for every projection. A
+    point whose projected cell has a profile value below
+    ``global_max - threshold_delta``, or was never activated, therefore
+    cannot satisfy ``logL >= global_max - threshold_delta``.
 
-    Built from ``export_grid_solution()``-style records and the *final*
-    global maximum, so per-cell membership honors improvements made by
-    later projections.
+    Built from ``export_grid_solution()`` records and the final global
+    maximum.
     """
 
     def __init__(self, records, global_max, n_dims):
@@ -177,8 +163,7 @@ class ProjectionEnvelope:
                     f"Projection record {i}: every grid axis needs at least 2 points."
                 )
             shape = tuple(len(ax) for ax in axes)
-            # Never-activated cells stay at -inf: presumed outside the ROI,
-            # matching the scan's own expansion logic.
+            # Never-activated cells stay at -inf (outside the region of interest).
             values = np.full(shape, -np.inf)
             for grid_idx, sol in rec['solutions'].items():
                 values[tuple(grid_idx)] = sol['likelihood']
@@ -205,19 +190,16 @@ class ProjectionEnvelope:
 
     @property
     def covers_full_space(self):
-        """True if any projection gridded the full parameter space directly.
+        """True if a projection grids the full parameter space.
 
-        In that case (direct-eval mode) the grid already covers the volume
-        and the sampling stage adds only resolution; callers should skip it.
+        The grid then already covers the volume and the stage is skipped.
         """
         return any(len(rec['dims']) == self.n_dims for rec in self._records)
 
     def cell_indices(self, record_index, points):
-        """Grid indices of ``points`` on one projection's grid.
+        """Nearest-node grid indices of ``points`` on one projection's grid.
 
-        Same nearest-cell arithmetic as the sampler's
-        ``_get_grid_indices_from_point`` (round to nearest grid node, clip
-        to the grid). Returns a tuple of index arrays, one per grid axis.
+        Returns a tuple of index arrays, one per grid axis.
         """
         rec = self._records[record_index]
         pts = np.atleast_2d(np.asarray(points, dtype=float))
@@ -231,12 +213,10 @@ class ProjectionEnvelope:
         return tuple(indices)
 
     def test(self, points, threshold_delta):
-        """Boolean mask: which points *may* lie in the band.
+        """Boolean mask of the points that may lie in the band.
 
-        ``True`` means the point passes every projection's necessary
-        condition (profile value at its cell >= ``global_max −
-        threshold_delta``); ``False`` means it provably cannot be in the
-        band. Accepts a single point or an ``(n, n_dims)`` array.
+        ``False`` means the point cannot be in the band. Accepts a single
+        point or an ``(n, n_dims)`` array.
         """
         pts = np.atleast_2d(np.asarray(points, dtype=float))
         if pts.ndim != 2 or pts.shape[1] != self.n_dims:
@@ -255,11 +235,7 @@ class ProjectionEnvelope:
 # Ensemble primitives
 # --------------------------------------------------------------------------- #
 def assign_levels(n_walkers, global_max, roi_threshold):
-    """Home levels for the ensemble: centres uniform in ΔlnL across the band.
-
-    Walker ``k`` gets ``global_max - (k + 0.5)/n_walkers * roi_threshold``, so
-    the levels tile ``[global_max - roi_threshold, global_max]`` evenly.
-    """
+    """Home levels: walker ``k`` gets ``global_max - (k + 0.5)/n_walkers * roi_threshold``."""
     dlnl = (np.arange(n_walkers) + 0.5) / n_walkers * roi_threshold
     return global_max - dlnl
 
@@ -324,11 +300,9 @@ def warm_start_positions(levels, sigma, scan_params, scan_logls,
                          fallback_seeds, rng):
     """Start each walker near its home level using existing scan samples.
 
-    For each walker, pick a random scan sample whose logL is within ``sigma``
-    of the walker's level (so high-level walkers start near the peak the scan
-    already found); where the scan has no nearby sample, use the next
-    envelope ``fallback_seeds`` point. Returns an ``(n_walkers, n_dims)``
-    array.
+    Each walker starts at a random scan sample with logL within ``sigma`` of
+    its level, or else at the next ``fallback_seeds`` point. Returns an
+    ``(n_walkers, n_dims)`` array.
     """
     n = len(levels)
     n_dims = fallback_seeds.shape[1]

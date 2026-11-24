@@ -89,15 +89,10 @@ YAML options:
                              prefix, e.g. [delta13]. The range must be exactly
                              one period (for an angle: [0, 6.283185307179586])
                              and the prior flat. The two ends of the range are
-                             then treated as the same point: a region of
-                             interest that reaches one end is followed from
-                             the other, and when the parameter is profiled the
-                             optimisers step through the ends. paraprof logs a
-                             warning if the likelihood differs between the
-                             two ends.
-    samples_output_file:     Optional CSV path; written by rank 0 only. Note that
-                             GAMBIT's printers already record every evaluation,
-                             so this is purely a paraprof-side diagnostic file.
+                             then treated as the same point. paraprof logs a
+                             warning if the likelihood differs between them.
+    samples_output_file:     Optional CSV path; written by rank 0 only. GAMBIT's
+                             printers already record every evaluation.
     warm_start_file:         Optional CSV path read at the start of each projection
                              to pre-populate ``initial_maxima``, skipping the
                              global L-BFGS-B seeding step. Set equal to
@@ -112,9 +107,9 @@ YAML options:
                              region {logL > global_max - roi_threshold} of the
                              full parameter space. Runs once and writes its own
                              output files. Keys (all optional):
-                               roi_threshold:        depth of the band to sample,
-                                                     in log-likelihood units 
-                                                     (default: the projection's 
+                               roi_threshold:        depth of the region to sample,
+                                                     in log-likelihood units
+                                                     (default: the projection's
                                                      roi_threshold)
                                n_walkers:            ensemble size (default 1000)
                                n_steps:              steps per walker (default 30)
@@ -132,18 +127,15 @@ YAML options:
                                summary_file:         summary statistics (default:
                                                      derived from output_file)
     advanced_config:         Forwarded as-is to ProfileProjector. Sub-dicts:
-                             'de', 'lbfgsb', 'clustering', 'cross_projection'
-                             (multi-projection knowledge transfer),
-                             'suspect_recheck' (wrong-optimum strip recheck).
-                             See the paraprof README for the full key list.
+                             'de', 'lbfgsb', 'clustering', 'cross_projection',
+                             'suspect_recheck'. See the paraprof README for the
+                             full key list.
                              For an expensive likelihood consider
                              'lbfgsb': {'ftol': 1e-4}.
                         Optional run-time keys:
-    save_plots:              If true, paraprof writes its diagnostic plots to
-                             the working directory after each projection. When
-                             volume_sampling is enabled, it also plots the
-                             collected volume samples on top of each 2D
-                             projection map.
+    save_plots:              If true, paraprof writes its plots after each
+                             projection, and with volume_sampling also the
+                             volume samples over each 2D projection map.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
                              contour_levels, slice_mode, plot_profiled_params.
@@ -190,16 +182,14 @@ only the loglike value, so L-BFGS-B uses finite differences.
                 f"{self.print_prefix} The required scanner option 'projections' "
                 "is missing from the 'run:' block."
             )
-        # Defensive copy so downstream mutation (string-dim resolution etc.)
-        # doesn't disturb the YAML dict.
+        # Copy so that paraprof's changes don't reach the YAML dict.
         self.projections = [dict(p) for p in ra["projections"]]
         for p in self.projections:
             for k in ('dims', 'grid_points'):
                 if k in p and isinstance(p[k], tuple):
                     p[k] = list(p[k])
 
-        # ProfileProjector tuning. Each is optional; we only forward keys the
-        # user actually set so paraprof's own defaults stay authoritative.
+        # Forward only the keys the user set, so paraprof's defaults apply.
         self.projector_kwargs = {}
         for key in (
             "roi_threshold", "pop_per_grid_point", "max_patching_waves",
@@ -211,18 +201,16 @@ only the loglike value, so L-BFGS-B uses finite differences.
             if key in ra:
                 self.projector_kwargs[key] = ra[key]
 
-        # Plot / output controls (paraprof-side, not GAMBIT printer side).
+        # Plot and output controls (paraprof side, not the GAMBIT printers).
         self.save_plots = bool(ra.get("save_plots", False))
         self.plot_settings = ra.get("plot_settings", None)
 
-        # Direct paraprof's plots into the dedicated ScannerBit output folder
-        # <default_output_path>/paraprof/. Plots are only written by rank 0.
+        # Plots go to <default_output_path>/paraprof/ unless output_dir is set.
         if self.save_plots and self.mpi_rank == 0:
             if self.plot_settings is None:
                 self.plot_settings = {}
             else:
-                self.plot_settings = dict(self.plot_settings)  # defensive copy
-            # Only set output_dir if the user didn't pin one explicitly.
+                self.plot_settings = dict(self.plot_settings)
             self.plot_settings.setdefault(
                 "output_dir", get_directory(self.__plugin_name__, **kwargs)
             )
@@ -233,11 +221,9 @@ only the loglike value, so L-BFGS-B uses finite differences.
         from mpi4py import MPI
         comm = MPI.COMM_WORLD
 
-        # The target function on every rank is GAMBIT's loglike, called via
-        # the unit-hypercube convenience method. Wrapping it lets us emit a
-        # weight=1 entry on the standard "Posterior" stream after each call,
-        # mirroring grid.py / the other ScannerBit Python plugins.
-        plugin = self  # bind into closure; avoids capturing self by name twice
+        # GAMBIT's loglike, followed by a weight-1 entry on the "Posterior"
+        # stream, as in the other ScannerBit Python plugins.
+        plugin = self
 
         def target_func(x):
             lnL = plugin.loglike_hypercube(x)
@@ -245,13 +231,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
             return lnL
 
         if self.mpi_rank != 0:
-            # Worker rank: hand the target function over directly. No bcast.
             paraprof_worker_main(comm, self.mpi_rank, target_func=target_func)
             return 0
 
-        # ---- Master rank ----
-        # Bounds always live on the unit hypercube; physical-space bounds come
-        # from the YAML Parameters node.
+        # Master rank. paraprof works on the unit hypercube.
         bounds = [(0.0, 1.0)] * self.dim
 
         if "initial_points" in self.projector_kwargs:
@@ -357,13 +340,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
 
     def _handle_volume_stage(self, sampler, results):
-        """Report the volume-sampling stage on rank 0, and (if save_plots is
-        set) scatter its in-band samples over each 2D projection map.
-
-        No-op when volume sampling was not configured. The stage stashes its
-        result on ``sampler.volume_stage_result``; a skipped stage carries a
-        ``reason`` instead of statistics.
-        """
+        """Print the volume-sampling summary and, with save_plots, plot the
+        samples over each 2D projection map. No-op without volume sampling."""
         vol = getattr(sampler, "volume_stage_result", None)
         if not vol:
             return
@@ -387,10 +365,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
         if not (self.save_plots and paraprof_plot_volume_samples is not None):
             return
-        # The volume samples cover the full parameter space, so they can be
-        # drawn on top of any 2D projection map. Each plot file name includes
-        # its pair of parameter indices, so the projections don't overwrite
-        # one another.
+        # The file name includes the parameter indices, so plots don't collide.
         for res in results:
             grid = res.get("refined_solution") or res.get("coarse_solution")
             if not grid:
@@ -427,11 +402,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
             print(f"{prefix}     target calls:     {calls}", flush=True)
             print(f"{prefix}     best logL found:  {global_max:.6e}", flush=True)
 
-            # Best-fit point: prefer the refined solution if available,
-            # otherwise the coarse one. The exported solution dict doesn't
-            # carry a "global best" field, so we derive it ourselves from the
-            # global solution pool (capped pool of the best entries) and fall
-            # back to the per-cell solutions table if the pool is empty.
+            # Best-fit point from the refined solution if there is one.
             best_solution = (res.get('refined_solution')
                              or res.get('coarse_solution')
                              or {})
@@ -446,12 +417,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
     @staticmethod
     def _best_full_params(exported_solution):
-        """Return the unit-hypercube parameter vector with the highest likelihood.
-
-        Looks first in ``global_solution_pool`` (the capped pool of best
-        entries), then falls back to scanning ``solutions``. Returns None if
-        nothing is available.
-        """
+        """Unit-hypercube parameters of the best entry in ``global_solution_pool``,
+        else in ``solutions``; None if both are empty."""
         if not exported_solution:
             return None
 

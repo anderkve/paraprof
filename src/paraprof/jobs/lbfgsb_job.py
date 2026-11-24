@@ -24,8 +24,7 @@ HESSIAN_MAX_DIMS = 12
 # the line search cut the step HESSIAN_REFRESH_RUNG times, the run is further
 # than HESSIAN_REFRESH_DISTANCE (fraction of the bound extent) from where the
 # Hessian was measured, and the step gained more than HESSIAN_REFRESH_GAIN
-# tolerances. Measuring again in place does not fix a model that failed there,
-# and the n(n+3)/2 evaluations are not repaid near the end of a run.
+# tolerances. Near the end of a run the evaluations would not be repaid.
 HESSIAN_REFRESH_RUNG = 2
 HESSIAN_REFRESH_DISTANCE = 0.05
 HESSIAN_REFRESH_GAIN = 100.0
@@ -186,8 +185,6 @@ class LBFGSBJob(Job):
 
     def start(self):
         """Return the first task(s) for this job."""
-        # The master loop also defensively cleans up zero-opt-dim jobs, but
-        # warn here so any future caller hitting this path is visible.
         if self.n_opt_dims == 0:
             self.sampler.logger.warning(
                 f"LBFGSBJob {self.id} ({self.type}) created with zero opt_dims; "
@@ -205,8 +202,7 @@ class LBFGSBJob(Job):
             for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
                 if neighbor_idx in self.sampler.population:
                     neighbor_state = self.sampler.population[neighbor_idx]
-                    # Check if neighbor is 'optimized' (post-LBFGSB) or 'converged' (post-DE)
-                    # and has an optimizer state to seed from.
+                    # Neighbour must be optimized or converged and have an optimizer state
                     if (neighbor_state['status'] in ['optimized', 'converged']) and \
                        (neighbor_state.get('optimizer_state') is not None):
 
@@ -215,16 +211,16 @@ class LBFGSBJob(Job):
                             best_neighbor_state = neighbor_state
 
             if best_neighbor_state:
-                # 1. Seed the history
+                # Seed the history
                 self.s_hist.clear()
                 self.y_hist.clear()
                 self._seed_curvature(best_neighbor_state['optimizer_state'])
 
-                # 2. Get neighbor's best params to test
+                # Neighbour's best params to test
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
                 self.neighbor_params_to_test = best_neighbor_state['profiled_params'][neighbor_best_idx]
 
-                # 3. Create a task to test these params at *our* grid point
+                # Evaluate the neighbour's best params at this cell.
                 full_params_test = self.sampler._construct_params(self.grid_idx, self.neighbor_params_to_test)
 
                 return [{'params': full_params_test,
@@ -481,8 +477,8 @@ class LBFGSBJob(Job):
         if self.pending_s_k is not None:
             s_k = self.pending_s_k
             y_k = g_new - self.pending_g_old
-            # Wolfe/relative curvature: require y·s to be a meaningful fraction
-            # of ||y||*||s||, not just > a tiny absolute threshold.
+            # Relative curvature condition: y.s must be a non-negligible
+            # fraction of |y| |s|.
             ys = float(np.dot(y_k, s_k))
             yn = float(np.linalg.norm(y_k))
             sn = float(np.linalg.norm(s_k))
@@ -801,9 +797,8 @@ class LBFGSBJob(Job):
 
             sampler._update_global_pool(final_params, final_target_val, grid_idx=None)
 
-            # Cluster this endpoint into the distinct-optima registry driving
-            # the stopping rule -- but only if it converged: a truncated descent
-            # isn't a basin minimizer and would inflate W.
+            # Only converged endpoints enter the basin registry of the stopping
+            # rule; a truncated descent is not a basin minimum.
             if self.converged:
                 sampler.register_initial_optimum(final_params, final_target_val)
 

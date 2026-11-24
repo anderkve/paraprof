@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**paraprof** is a robust and MPI-parallelised algorithm for computing profile likelihood projections – or more generally for mapping out low-dimensional projections of a target function by optimizing over the remaining dimensions.
+**paraprof** is an MPI-parallelised algorithm for computing profile likelihood projections – or more generally for mapping out low-dimensional projections of a target function by optimizing over the remaining dimensions.
 
 First an initial global optimization identifies promising starting points. These starting points are used to activate initial grid points in the user-selected projection space. At each active grid point the remaining parameters are profiled (optimized) out using differential evolution (DE) and/or L-BFGS-B. If the optimized target value for a grid point meets the user-set threshold, the neighboring grid points are activated. This way the set of optimized grid points dynamically expands to cover the full region of interest, e.g. the high-likelihood region. Information from already converged grid points is communicated to neighboring grid points for faster convergence.
 
@@ -99,7 +99,7 @@ A scan proceeds roughly as follows:
 
 1. Lay a regular grid over the projection dimensions; the rest are profiled at each grid point.
 2. Estimate the numerical noise of the target and choose the finite-difference step of the L-BFGS-B gradient from it (once per scan; skipped when the step is given or a gradient function is supplied).
-3. Run global L-BFGS-B starts to find initial maxima. Rather than firing a fixed number of Latin-hypercube starts and hoping it was enough, paraprof runs a *rolling* multistart with **basin detection**: each converged optimum is clustered online into a registry of distinct optima, and a Bayesian stopping rule (Boender–Rinnooy Kan, restricted to region-of-interest optima) halts the stage once the expected number of undiscovered ROI optima drops below a threshold — aborting any still-running optimizations at that point so their remaining evaluations aren't wasted. `n_initial_optimizations` becomes the upper bound. On later projections these are seeded from an in-memory pool built up by earlier projections, often skipping the global step entirely.
+3. Run global L-BFGS-B starts to find initial maxima. This is a rolling Latin-hypercube multistart with basin detection: each converged optimum is clustered online into a registry of distinct optima, and a Bayesian stopping rule (Boender–Rinnooy Kan, restricted to region-of-interest optima) halts the stage once the expected number of undiscovered ROI optima drops below a threshold, aborting any still-running optimizations. `n_initial_optimizations` is the upper bound. Later projections are seeded from a pool built up by earlier projections, which often skips the global step.
 4. Anchor a DE population (or an initial point for L-BFGS-B optimization) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
 5. Optimize the profiled parameters at each active cell. L-BFGS-B cells also reuse the best already-converged neighbour's quasi-Newton history and its best profiled parameters as an alternative start, propagating local curvature outward.
 6. Activate the neighbours of high-likelihood cells, expanding the active set into the region of interest.
@@ -117,10 +117,10 @@ Common constructor arguments:
 
 - `roi_threshold` — region-of-interest cutoff in log-likelihood; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 4.0.
 - `pop_per_grid_point` — DE population size per cell. Default 3.
-- `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)`: a safe ceiling, since the Bayesian stopping rule controls the actual spend, so set it generously. (If you disable early stopping with `basin_detection.undiscovered_threshold = 0`, this becomes a fixed count, so set it explicitly.)
+- `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)`. The Bayesian stopping rule sets the actual spend, so this can be set generously. With `basin_detection.undiscovered_threshold = 0` it is a fixed count, so set it explicitly.
 - `max_patching_waves` — cap on patching iterations. Default 10.
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
-- `n_optima` — prior on how many optima the target has *globally*; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (the global max is then among them, so the `min_starts` floor is skipped — `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
+- `n_optima` — prior on how many optima the target has globally; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (skipping the `min_starts` floor, so `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are. They replace the global L-BFGS-B starts and are evaluated, not optimised.
 - `periodic` — parameters whose bounds span exactly one period (indices, or names with `parameter_names`), e.g. an angle on `[0, 2π]`. See [Periodic parameters](#periodic-parameters).
 - `refine_initial_points` — run one L-BFGS-B optimisation over all parameters from every entry of `initial_points` before the grid points are activated. Default `False`. Without it the best initial point stands as the maximum unless a grid point exceeds it, so set it when the points are near the maximum but not known to be at it.
@@ -158,7 +158,7 @@ def grad(p):
 sampler = ProfileProjector(target_func=target, grad_func=grad, ...)
 ```
 
-`grad_func` returns the gradient of the function being *maximized*; ParaProf negates internally. Getting the sign wrong sends L-BFGS-B uphill.
+`grad_func` returns the gradient of the function being maximized; ParaProf negates internally. Getting the sign wrong sends L-BFGS-B uphill.
 
 You can return either a length-`n_dims` array or a `{dim_index: value}` dict for partial gradients. Entries that are `NaN`/`±inf` (or dims missing from the dict) fall back to finite differences using `lbfgsb.gradient_method`.
 
@@ -246,20 +246,20 @@ The samples are MCMC draws, so they are autocorrelated — read them as well-spr
 
 ### Advanced configuration
 
-Pass an `advanced_config` dict for the knobs that actually move solution quality or are real iteration budgets:
+Pass an `advanced_config` dict to set these:
 
 | Key                                | Default                        | What it does                                                     |
 |------------------------------------|--------------------------------|------------------------------------------------------------------|
 | `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
 | `convergence_threshold`            | `1e-6`                         | DE per-cell convergence cutoff                                   |
 | `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
-| `de.allow_early_DE_exit`                | `True`                         | Smooth-interior cells (neighbour argmax agreement) skip the DE search — 1 DE generation then polish, instead of the full window (see below). Set `False` for multimodal-inner targets |
+| `de.allow_early_DE_exit`           | `True`                         | Cells whose neighbours agree on the profiled argmax run one DE generation, then the L-BFGS-B polish (see below). Set `False` for multimodal-inner targets |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
 | `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance. For a profile likelihood `1e-4` is far below what a contour shows and saves iterations |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` or `'central'` (~50% more calls)                     |
 | `lbfgsb.fd_step`                   | `'auto'`                       | Finite-difference step as a fraction of the bound extent. `'auto'` sets it from a noise estimate of the target |
-| `lbfgsb.activation_depth` | `1` | How many cells ahead a cell inside the region of interest activates while workers are idle. Above 1 the extra cells get only idle workers and are dropped if they stay outside the border: the result holds the same cells. On a simulated 25 × 25 plane depth 2 cut the wall time by 12 % on 1000 workers for 46 % more evaluations, by 5 % on 300, and added 5 % on 100 |
+| `lbfgsb.activation_depth` | `1` | How many cells ahead a cell inside the region of interest activates while workers are idle. Above 1 the extra cells get only idle workers and are dropped if they stay outside the region of interest, so the result holds the same cells. Can shorten the wall time on many workers at the cost of more evaluations |
 | `clustering.*`                     | auto-DBSCAN                    | Mode detection during refinement                                 |
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
@@ -285,11 +285,9 @@ A noise level far above `1e-12` is worth a look at the target: it also limits ho
 
 **L-BFGS-B on many workers.** One L-BFGS-B iteration is a gradient (one evaluation per parameter, in parallel) and a line search. The trial steps of the line search form a fixed ladder, and the step accepted is the first one that passes the Armijo test, so the ladder can be evaluated ahead of time. When workers are idle the master hands them later rungs and the gradient probes of the first rung; if that rung is accepted, the next iteration starts without waiting. A run over at most 12 parameters also measures its Hessian in the same parallel step, takes Newton steps, and passes the Hessian on to neighbouring cells. In `'lbfgsb'` projections cells are activated and optimised as results arrive rather than wave by wave. `tools/bench_scheduling.py` measures the effect for a given number of workers without MPI, on virtual workers (`tools/virtual_pool.py`).
 
-**Usage:** with basin detection on, set `n_initial_optimizations` generously — it caps the worst case, while the stopping rule keeps the actual spend proportional to how multimodal the target turns out to be. Easy targets stop early; hard ones use the budget.
+**Early exit from the DE search (`de.allow_early_DE_exit`).** A cell normally runs at least `de.convergence_window` DE generations to confirm convergence. With `de.allow_early_DE_exit=True` (the default), a newly activated cell whose in-population neighbours agree on the profiled argmax, and whose neighbour warm-start was the best activation seed, runs one DE generation and then goes to the L-BFGS-B polish. A cell that improves in that generation keeps evolving. The default suits targets where the profiled-out dimensions enter smoothly (e.g. Gaussian-constrained nuisances). Set it to `False` when the inner problem is multimodal (e.g. Rastrigin-4D): one DE generation then under-explores the modes.
 
-**Early exit from the DE search on smooth cells (`de.allow_early_DE_exit`, on by default).** Every active grid cell normally spends at least `de.convergence_window` DE generations just *confirming* convergence — budget largely wasted on the smooth ROI interior. With `de.allow_early_DE_exit=True` (the default), a freshly activated cell whose in-population neighbours agree on the profiled argmax (and whose neighbour warm-start was the best activation seed) runs a **single** DE generation then goes straight to the L-BFGS-B polish. That generation still runs, so the exit is self-correcting — a cell that improves keeps evolving. A replicate study (`examples/run_allow_early_de_exit_replicate_study.py`) shows a clean win on unimodal-inner targets — Himmelblau-4D −13.7% and Rosenbrock-4D −10.9% target calls (both *p* < 0.01), ROI quality indistinguishable from baseline. Set `de.allow_early_DE_exit=False` for a genuinely multimodal *inner* problem (e.g. Rastrigin-4D), where one DE generation under-explores the modes and ROI quality degrades; the default suits targets where the profiled-out dimensions enter smoothly (e.g. Gaussian-constrained nuisances).
-
-See the `ProfileProjector` docstring for the full structure. Several DE knobs that did not change ROI quality in benchmarking (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and are intentionally not user-tunable.
+See the `ProfileProjector` docstring for the full structure. Some internal settings (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and not user-tunable.
 
 ### Projection options
 

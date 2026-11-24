@@ -14,9 +14,9 @@ This folder contains the ScannerBit Python plugin that exposes
 ## Requirements
 
 - GAMBIT compiled with MPI (`cmake -DWITH_MPI=1 …`).
-- At least 2 MPI processes (1 master + ≥1 worker). The paraprof master rank
-  performs no target evaluations; throwing fewer than 2 ranks at it will
-  raise an explicit error during plugin construction.
+- At least 2 MPI processes (1 master + ≥1 worker). The master rank performs
+  no target evaluations; with fewer than 2 ranks the plugin constructor
+  raises an error.
 - `paraprof` and `mpi4py` installed in the Python environment GAMBIT picks up
   (typically the same one used by other Python scanners). To install paraprof:
   `pip install git+https://github.com/anderkve/paraprof.git`.
@@ -44,11 +44,9 @@ See `paraprof_example.yaml` for a complete worked example.
   the GAMBIT loglike supplied directly (the bound method cannot be pickled,
   so the standard paraprof "broadcast the target function" path is bypassed).
 - Every worker evaluation goes through `self.loglike_hypercube(x)` followed
-  by `self.print(1.0, "Posterior")`. That keeps the standard ScannerBit
-  printer flow intact: each evaluation gets its own point id and shows up in
-  GAMBIT's HDF5/ASCII output exactly as for the other Python scanners
-  (`grid`, `binminpy`, etc.).
-- Projection `dims` may be parameter **names** (matching the YAML
+  by `self.print(1.0, "Posterior")`, so each evaluation gets its own point
+  id in GAMBIT's printer output, as for the other Python scanners.
+- Projection `dims` may be parameter names (matching the YAML
   `Parameters` block) or integer indices; names are resolved by paraprof.
 - `initial_points` is a list of points in physical coordinates. Each point is
   a mapping `{parameter name: value}` that names every scanned parameter, with
@@ -64,9 +62,8 @@ See `paraprof_example.yaml` for a complete worked example.
   every initial point before it activates grid points. Without it the points
   are evaluated only, and the best of them stands as the maximum unless a
   grid point exceeds it.
-- `samples_output_file` is forwarded to paraprof and only written by rank 0.
-  This is purely a paraprof-side diagnostic: GAMBIT's printers already
-  capture every evaluation, so it defaults to off.
+- `samples_output_file` is forwarded to paraprof and written by rank 0.
+  GAMBIT's printers already capture every evaluation, so it defaults to off.
 - `warm_start_file` reads a previous run's CSV at the start of each
   projection to pre-populate `initial_maxima` and skip the global L-BFGS-B
   seeding step. Set equal to `samples_output_file` to round-trip samples
@@ -74,8 +71,7 @@ See `paraprof_example.yaml` for a complete worked example.
 - `save_plots: true` enables paraprof's built-in 1D/2D profile plots
   alongside the GAMBIT outputs, written to the working directory.
 - Everything under `advanced_config:` is forwarded verbatim to
-  `ProfileProjector`, so every expert knob in the
-  [paraprof README](https://github.com/anderkve/paraprof) is reachable.
+  `ProfileProjector` (see the [paraprof README](https://github.com/anderkve/paraprof)).
 
 paraprof's `grad_func` is not exposed: ScannerBit's Python scanner API
 surfaces only the loglike value, so L-BFGS-B uses finite differences.
