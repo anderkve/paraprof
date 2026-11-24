@@ -91,6 +91,9 @@ LBFGSB_FD_STEP_FALLBACK = 1e-6
 LBFGSB_SCALE_MEMORY = 64
 # Base points of the noise estimate.
 NOISE_BASE_POINTS = 3
+# Base points at which the target is compared at the two bounds of a periodic
+# parameter (two evaluations per base point and periodic parameter).
+PERIODIC_CHECK_BASE_POINTS = 3
 # Bounds on the step of the second differences (fraction of the bound extent).
 LBFGSB_HESSIAN_STEP_MIN = 1e-4
 LBFGSB_HESSIAN_STEP_MAX = 0.05
@@ -160,7 +163,9 @@ class ProfileProjector:
                  # Parameter naming (optional, enables string dims in projections)
                  parameter_names=None,
                  # Advanced configuration (optional)
-                 advanced_config=None):
+                 advanced_config=None,
+                 # Parameters whose bounds span one period (optional)
+                 periodic=None):
         """
         Initializes the ProfileProjector with simplified interface.
 
@@ -290,6 +295,28 @@ class ProfileProjector:
             names (strings) and will be translated to integer indices. The list
             must have length equal to the number of parameters. Mixing names
             and indices within a single projection's ``dims`` is allowed.
+
+        Periodic Parameters
+        -------------------
+        periodic : list of int or str, optional
+            Parameters whose bounds span exactly one period, so the lower and
+            the upper bound are the same point (default: None). Entries are
+            parameter indices, or names if ``parameter_names`` is given.
+
+            As a projection dimension, the first and the last grid point of
+            such a parameter are neighbours of each other and of the grid
+            points next to either, so the region of interest is followed
+            through the bound. Both are still evaluated.
+
+            As a profiled parameter, a value that leaves the bounds comes
+            back in on the other side instead of stopping at the bound, and
+            differences between two values are taken the short way round.
+
+            Before the scan the target is evaluated at the two bounds of
+            each periodic parameter and a difference is logged as a warning.
+            With bounds that do not span one period the scan still returns
+            true target values, but cells and optimisers are continued from
+            a point that is not the same point.
 
         Advanced Configuration
         ----------------------
@@ -455,6 +482,13 @@ class ProfileProjector:
         else:
             self.parameter_names = None
             self._name_to_dim = None
+
+        # Periodic parameters: sorted indices and a mask over all parameters.
+        self.periodic_dims = self._resolve_periodic(periodic)
+        self._periodic_mask = np.zeros(self.dims, dtype=bool)
+        self._periodic_mask[self.periodic_dims] = True
+        self._has_periodic = bool(self.periodic_dims)
+        self._periodic_checked = False       # see PeriodicCheckJob
 
         # Validate projections
         if not isinstance(projections, list) or len(projections) == 0:
@@ -865,6 +899,67 @@ class ProfileProjector:
                 resolved.append(d)
         return resolved
 
+    def _resolve_periodic(self, periodic):
+        """Sorted parameter indices for the ``periodic`` argument (indices or names)."""
+        if periodic is None:
+            return []
+        if isinstance(periodic, (str, int, np.integer)) and not isinstance(periodic, bool):
+            periodic = [periodic]
+        if not isinstance(periodic, (list, tuple)):
+            raise ConfigurationError(
+                "periodic must be a list of parameter indices or names",
+                parameter="periodic", value=periodic)
+        dims = set()
+        for entry in periodic:
+            if isinstance(entry, str):
+                if self._name_to_dim is None or entry not in self._name_to_dim:
+                    raise ConfigurationError(
+                        f"periodic names the unknown parameter {entry!r}"
+                        + ("; names need parameter_names" if self._name_to_dim is None
+                           else f"; known names: {self.parameter_names}"),
+                        parameter="periodic", value=periodic)
+                dims.add(self._name_to_dim[entry])
+            elif (isinstance(entry, (int, np.integer)) and not isinstance(entry, bool)
+                    and 0 <= entry < self.dims):
+                dims.add(int(entry))
+            else:
+                raise ConfigurationError(
+                    f"periodic entry {entry!r} is not a parameter index in "
+                    f"0-{self.dims - 1} or a parameter name",
+                    parameter="periodic", value=periodic)
+        return sorted(dims)
+
+    def _wrap_periodic(self, vec, dims):
+        """``vec``, holding values of the parameters ``dims`` along its last
+        axis, with the periodic ones mapped into their bounds. The input is
+        returned as it is if none of them is periodic."""
+        if not self._has_periodic:
+            return vec
+        dims = list(dims)
+        mask = self._periodic_mask[dims]
+        if not mask.any():
+            return vec
+        lo = self.bounds[dims, 0][mask]
+        span = self.bounds[dims, 1][mask] - lo
+        vec = np.array(vec, dtype=float)
+        vec[..., mask] = lo + np.mod(vec[..., mask] - lo, span)
+        return vec
+
+    def _param_delta(self, a, b, dims):
+        """``a - b`` for values of the parameters ``dims`` (last axis). For a
+        periodic parameter the difference is taken the short way round."""
+        delta = a - b
+        if not self._has_periodic:
+            return delta
+        dims = list(dims)
+        mask = self._periodic_mask[dims]
+        if not mask.any():
+            return delta
+        span = self.bounds[dims, 1][mask] - self.bounds[dims, 0][mask]
+        delta = np.array(delta, dtype=float)
+        delta[..., mask] -= span * np.round(delta[..., mask] / span)
+        return delta
+
     def _deep_update(self, base_dict, update_dict):
         """Recursively merge update_dict into base_dict in place."""
         for key, value in update_dict.items():
@@ -1080,7 +1175,11 @@ class ProfileProjector:
 
         # Create interpolator from coarse solution
         if refinement_method == 'linear':
-            self.refinement_interpolator = GridInterpolator(coarse_solution)
+            periodic_bounds = {
+                i: tuple(self.bounds[dim])
+                for i, dim in enumerate(coarse_solution['profiled_dims'])
+                if self._periodic_mask[dim]}
+            self.refinement_interpolator = GridInterpolator(coarse_solution, periodic_bounds)
         else:
             raise ValueError(f"Unknown refinement_method: '{refinement_method}'. "
                            f"Only 'linear' is supported.")
@@ -1310,7 +1409,11 @@ class ProfileProjector:
 
 
     def _ensure_bounds(self, vec, dims_to_check):
-        """Clip ``vec`` to the bounds of the given dim subset; uses cached bounds arrays."""
+        """Bring ``vec`` into the bounds of the given dim subset: periodic
+        entries are wrapped, the others clipped. Uses cached bounds arrays."""
+        if self._has_periodic and np.shape(vec) == (len(dims_to_check),):
+            # A wrapped value lies inside the bounds; the clip below keeps it.
+            vec = self._wrap_periodic(vec, dims_to_check)
         if dims_to_check is self.profiled_dims and self._profiled_bounds is not None:
             return np.clip(vec, self._profiled_bounds[:, 0], self._profiled_bounds[:, 1])
         elif dims_to_check is self.projection_dims and self._projection_bounds is not None:
@@ -1327,21 +1430,65 @@ class ProfileProjector:
         return np.clip(vec, self.bounds[dims_to_check, 0], self.bounds[dims_to_check, 1])
 
 
+    def _has_periodic_projection_dim(self):
+        return self._has_periodic and bool(self._periodic_mask[self.projection_dims].any())
+
+    def _grid_images(self, idx):
+        """The grid points an index tuple stands for; none if it lies outside
+        the grid.
+
+        Along a periodic projection dimension the first and the last grid
+        point are the same point. An index there is taken modulo the number of
+        grid intervals, and the point on the bound is returned as both.
+        """
+        per_axis = []
+        for i, size, dim in zip(idx, self.grid_shape, self.projection_dims):
+            i = int(i)
+            if self._periodic_mask[dim]:
+                i %= size - 1
+                per_axis.append((0, size - 1) if i == 0 else (i,))
+            elif 0 <= i < size:
+                per_axis.append((i,))
+            else:
+                return []
+        return list(itertools.product(*per_axis))
+
+    def _cells_at_offsets(self, grid_idx, offsets, include_center=False):
+        """Distinct grid points at the given index offsets from ``grid_idx``,
+        with periodic projection dimensions wrapped."""
+        center = tuple(int(i) for i in grid_idx)
+        cells = {}
+        for offset in offsets:
+            for image in self._grid_images([i + o for i, o in zip(center, offset)]):
+                if include_center or image != center:
+                    cells[image] = None
+        return list(cells)
+
     def _get_valid_neighbors(self, grid_idx, include_center=False):
-        """Generator yielding in-bounds neighbour indices of ``grid_idx`` (cached)."""
+        """Generator yielding in-bounds neighbour indices of ``grid_idx`` (cached).
+
+        With a periodic projection dimension the neighbours include the grid
+        points across the bound, and for a point on the bound its copy on the
+        other bound.
+        """
         cache_key = (grid_idx, include_center)
 
         if cache_key in self._neighbor_cache:
             yield from self._neighbor_cache[cache_key]
             return
 
-        neighbors = []
-        for offset in itertools.product([-1, 0, 1], repeat=self.n_proj_dims):
-            if not include_center and all(o == 0 for o in offset):
-                continue
-            neighbor_idx = tuple(np.array(grid_idx) + np.array(offset))
-            if all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
-                neighbors.append(neighbor_idx)
+        if self._has_periodic_projection_dim():
+            neighbors = self._cells_at_offsets(
+                grid_idx, itertools.product([-1, 0, 1], repeat=self.n_proj_dims),
+                include_center=include_center)
+        else:
+            neighbors = []
+            for offset in itertools.product([-1, 0, 1], repeat=self.n_proj_dims):
+                if not include_center and all(o == 0 for o in offset):
+                    continue
+                neighbor_idx = tuple(np.array(grid_idx) + np.array(offset))
+                if all(0 <= i < s for i, s in zip(neighbor_idx, self.grid_shape)):
+                    neighbors.append(neighbor_idx)
 
         self._neighbor_cache[cache_key] = neighbors
         yield from neighbors
@@ -1428,7 +1575,7 @@ class ProfileProjector:
             self._proximity_pool_cache = cache
 
         target = np.asarray(target_proj_coords, dtype=float)
-        deltas = (cache['proj'] - target) / cache['extent']
+        deltas = self._param_delta(cache['proj'], target, self.projection_dims) / cache['extent']
         dists = np.einsum('ij,ij->i', deltas, deltas)
 
         n_cached = cache['size']
@@ -1660,7 +1807,11 @@ class ProfileProjector:
         sqrt_d = np.sqrt(self.dims)
 
         for opt in self.initial_optima_registry:
-            dist = np.linalg.norm(xnorm - opt['point_norm']) / sqrt_d
+            diff = xnorm - opt['point_norm']
+            if self._has_periodic:
+                # One period is 1 in these coordinates.
+                diff[self._periodic_mask] -= np.round(diff[self._periodic_mask])
+            dist = np.linalg.norm(diff) / sqrt_d
             if dist < self.basin_merge_tol:
                 opt['count'] += 1
                 if target_val > opt['target_val']:
@@ -1818,6 +1969,24 @@ class ProfileProjector:
         job = NoiseEstimateJob(next_job_id, self, base, LBFGSB_FD_STEP_MIN,
                                LBFGSB_FD_STEP_MAX, LBFGSB_FD_STEP_FALLBACK)
         return [job], next_job_id + 1
+
+    def needs_periodic_check(self):
+        """True if the target has not been compared at the bounds of the
+        periodic parameters yet."""
+        return self._has_periodic and not self._periodic_checked
+
+    def create_periodic_check_job(self, next_job_id):
+        """Job that compares the target at the two bounds of each periodic
+        parameter. Base points as for the noise estimate."""
+        from .jobs.periodic_check_job import PeriodicCheckJob
+
+        if self.initial_points is not None and len(self.initial_points) > 0:
+            base = np.asarray(self.initial_points, dtype=float)[:PERIODIC_CHECK_BASE_POINTS]
+        else:
+            lhs = LHS(d=self.dims, seed=np.random.randint(1e6, 1e12))
+            unit = lhs.random(n=PERIODIC_CHECK_BASE_POINTS)
+            base = self.bounds[:, 0] + unit * (self.bounds[:, 1] - self.bounds[:, 0])
+        return [PeriodicCheckJob(next_job_id, self, base)], next_job_id + 1
 
     def lbfgsb_hessian_step_value(self):
         """Step of the second differences of a finite-difference Hessian, as a
@@ -2256,6 +2425,9 @@ class ProfileProjector:
             return False
 
         phis = np.asarray(neigh_phis)
+        if self._has_periodic:
+            # Values on either side of a periodic bound count as close.
+            phis = phis[0] + self._param_delta(phis, phis[0], self.profiled_dims)
         extent = self._profiled_extent()
         # Normalised spread: largest per-dim deviation from the neighbour mean.
         spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
@@ -2420,6 +2592,10 @@ class ProfileProjector:
     def _cells_within(self, grid_idx, depth):
         """In-bounds cells at Chebyshev distance 1..depth from ``grid_idx``,
         nearest first."""
+        if self._has_periodic_projection_dim():
+            # The zero offset is the copy of a point on a periodic bound.
+            offsets = [(0,) * self.n_proj_dims] + _offsets_within(self.n_proj_dims, depth)
+            return self._cells_at_offsets(grid_idx, offsets)
         cells = []
         for offset in _offsets_within(self.n_proj_dims, depth):
             idx = tuple(int(i + o) for i, o in zip(grid_idx, offset))
@@ -2644,10 +2820,12 @@ class ProfileProjector:
             if len(neigh) < 2:
                 continue
             neigh_params = np.array([self._best_profiled_params(n) for n in neigh])
+            own = self._best_profiled_params(idx)
+            if self._has_periodic:
+                # Place the neighbours' periodic parameters next to the cell's own.
+                neigh_params = own + self._param_delta(neigh_params, own, self.profiled_dims)
             median = np.median(neigh_params, axis=0)
-            param_d[idx] = float(np.linalg.norm(
-                (self._best_profiled_params(idx) - median) / extent
-            ))
+            param_d[idx] = float(np.linalg.norm((own - median) / extent))
         if not param_d:
             return []
 
@@ -2675,6 +2853,12 @@ class ProfileProjector:
         """In-population grid cells at Chebyshev distance 2..k from grid_idx."""
         if k < 2:
             return []
+        if self._has_periodic_projection_dim():
+            ring = [o for o in itertools.product(range(-k, k + 1), repeat=self.n_proj_dims)
+                    if max(abs(v) for v in o) >= 2]
+            near = set(self._get_valid_neighbors(grid_idx, include_center=True))
+            return [c for c in self._cells_at_offsets(grid_idx, ring)
+                    if c not in near and c in self.population]
         cells = []
         center = np.array(grid_idx)
         for offset in itertools.product(range(-k, k + 1), repeat=self.n_proj_dims):
@@ -2702,7 +2886,7 @@ class ProfileProjector:
             if not np.all(np.isfinite(v)):
                 return
             for existing in seeds:
-                if np.linalg.norm((v - existing) / extent) < 1e-3:
+                if np.linalg.norm(self._param_delta(v, existing, self.profiled_dims) / extent) < 1e-3:
                     return
             seeds.append(v.copy())
 

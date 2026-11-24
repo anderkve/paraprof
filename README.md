@@ -120,12 +120,36 @@ Common constructor arguments:
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
 - `n_optima` — prior on how many optima the target has *globally*; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (the global max is then among them, so the `min_starts` floor is skipped — `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are. They replace the global L-BFGS-B starts and are evaluated, not optimised.
+- `periodic` — parameters whose bounds span exactly one period (indices, or names with `parameter_names`), e.g. an angle on `[0, 2π]`. See [Periodic parameters](#periodic-parameters).
 - `refine_initial_points` — run one L-BFGS-B optimisation over all parameters from every entry of `initial_points` before the grid points are activated. Default `False`. Without it the best initial point stands as the maximum unless a grid point exceeds it, so set it when the points are near the maximum but not known to be at it.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
 - `samples_output_file` — path to log every evaluation as `[params…, logL, phase]`; the `phase` column tags which algorithm stage produced each point (see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
 - `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
+
+### Periodic parameters
+
+By default every parameter lives on a closed interval. Cells are activated from their grid neighbours and optimisers stop at the bounds. For an angle that is wrong at the ends of the range: `0` and `2π` are the same point, but the first and the last grid point are not neighbours. A region of interest that runs through the bound is then found only on the side the scan started from, unless a global start happens to end on the other side.
+
+```python
+sampler = ProfileProjector(
+    target_func=log_likelihood,
+    bounds=[(0.0, 2 * np.pi), (0.0, 1.0), ...],
+    periodic=[0],          # or names, with parameter_names
+    ...
+)
+```
+
+The bounds of a periodic parameter must span exactly one period. What changes:
+
+- As a projection dimension, the two grid points on the bound are neighbours of each other and of the grid points next to either. Both are still evaluated, so the exported grid keeps its shape.
+- As a profiled parameter, a value that leaves the bounds is wrapped to the other side instead of clipped. This holds for L-BFGS-B steps and finite-difference probes, differential-evolution trial points, activation samples and volume-sampling walkers.
+- Differences between two values are taken the short way round: L-BFGS-B curvature pairs, differential-evolution mutation vectors, the discontinuity measure of the suspect recheck, merging of initial optima, and interpolation in grid refinement.
+
+Before the scan the target is evaluated at the lower and the upper bound of each periodic parameter, at three base points (six evaluations per parameter). A difference is logged as a warning and the scan continues. With bounds that are not one period the scan still returns true target values, but cells and optimisers are continued from a point that is not the same point, and the profile near the bound can come out too low.
+
+Limits: the clustering used in grid refinement compares raw parameter values, so a periodic profiled parameter that crosses its bound inside the region of interest can be split into two clusters there. The profile plots of such a parameter show a jump from one bound to the other where it crosses.
 
 ### User-supplied gradients
 

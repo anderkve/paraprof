@@ -46,6 +46,11 @@ class DEGridPointJob(Job):
 
         tasks = []
         grid_state = self.grid_state
+        sampler = self.sampler
+
+        def diff(a, b):
+            # a - b; the short way round for a periodic parameter.
+            return sampler._param_delta(a, b, sampler.profiled_dims)
 
         for i in range(self.pop_size):
             mem_loc = np.random.randint(0, self.sampler.memory_size)
@@ -84,17 +89,17 @@ class DEGridPointJob(Job):
             if use_neighbor_mutation:
                 r2_p, r3_p = np.random.choice(self.parent_pool, 2, replace=False)
                 r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
-                mutant = x_i_params + F_i * (best_neighbor_params - x_i_params) + F_i * (r2 - r3)
+                mutant = x_i_params + F_i * diff(best_neighbor_params, x_i_params) + F_i * diff(r2, r3)
 
             elif self.sampler.mutation_strategy == 'current-to-rand/1':
                 p1_p, p2_p, p3_p = np.random.choice(self.parent_pool, 3, replace=False)
                 p1, p2, p3 = p1_p['profiled_params'], p2_p['profiled_params'], p3_p['profiled_params']
-                mutant = x_i_params + F_i * (p1 - x_i_params) + F_i * (p2 - p3)
+                mutant = x_i_params + F_i * diff(p1, x_i_params) + F_i * diff(p2, p3)
 
             elif self.sampler.mutation_strategy == 'rand/1':
                 r1_p, r2_p, r3_p = np.random.choice(self.parent_pool, 3, replace=False)
                 r1, r2, r3 = r1_p['profiled_params'], r2_p['profiled_params'], r3_p['profiled_params']
-                mutant = r1 + F_i * (r2 - r3)
+                mutant = r1 + F_i * diff(r2, r3)
 
             elif self.sampler.mutation_strategy == 'current-to-pbest/1':
                 archive = self.pbest_archive if self.pbest_archive else self.parent_pool
@@ -114,7 +119,7 @@ class DEGridPointJob(Job):
                         break
 
                 r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
-                mutant = x_i_params + F_i * (x_pbest - x_i_params) + F_i * (r2 - r3)
+                mutant = x_i_params + F_i * diff(x_pbest, x_i_params) + F_i * diff(r2, r3)
 
             if mutant is None:
                 self.evals_remaining -= 1
