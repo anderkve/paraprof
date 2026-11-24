@@ -319,6 +319,13 @@ def test_eager_start_gives_the_same_projections(method):
     assert eag['wall'] < 0.8 * seq['wall']
 
 
+def test_eager_start_is_the_default():
+    assert make_sampler().eager_projection_start is True
+    default = virtual_scan([plane(d) for d in PLANES], 200)
+    eag = multi_scan(True, 200)
+    assert (default['wall'], default['target_calls']) == (eag['wall'], eag['target_calls'])
+
+
 def test_eager_start_changes_little_on_a_busy_pool():
     seq = multi_scan(False, 3)
     eag = multi_scan(True, 3)
@@ -383,10 +390,13 @@ def test_projection_state_lists_everything_the_reset_sets():
     assert assigned == set(ProfileProjector.PROJECTION_STATE_ATTRS)
 
 
-def test_cells_ahead_do_not_outlive_the_scan_when_nothing_follows():
+@pytest.mark.parametrize('eager', [False, True])
+def test_cells_ahead_do_not_outlive_the_scan_when_nothing_follows(eager):
     # No patching: the cell loop is the last stage, and evaluations for dropped cells may
-    # still be out when it ends. The master waits for them before the next projection.
+    # still be out when it ends. The master waits for them before the next projection,
+    # which without eager start begins in a new master_main.
     out = virtual_scan([plane(d, patch_coarse_grid=False) for d in PLANES[:2]], 200,
-                       advanced_config={'lbfgsb': {'activation_depth': 3}})
+                       advanced_config={'lbfgsb': {'activation_depth': 3},
+                                        'cross_projection': {'eager_start': eager}})
     for res in out['results']:
         assert projection_errors(res).min() > -1e-4
