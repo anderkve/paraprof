@@ -69,21 +69,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cell takes the Hessian of a finished neighbour. Parameters held by a bound
   are left out of the Newton step.
 - **Projections started on idle workers** (`cross_projection.eager_start`,
-  default `False`). The next projection starts while the current one runs,
+  default `True`). The next projection starts while the current one runs,
   when a tenth of the workers is idle and the projection started before it has
   finished its first cell optimisation or DE generation. It takes its initial
   maxima from the pool. Work is handed out in the order the projections were
   started, so a later one only gets workers the earlier ones have no use for.
   `'lbfgsb'` and `'de'` projections can overlap; projections with
   `grid_refinement_factor` and those without profiled parameters are not
-  overlapped. The master keeps one stage machine and one set of queues per
+  overlapped. While projections overlap, log lines are prefixed with the
+  projection number, and the call counts in a projection's `metrics` are those
+  of the whole scan when that projection ended, so the last entry of the
+  result list need not hold the total (`sampler.target_calls` does). Set
+  `eager_start` to `False` to run the projections one after another. The
+  master keeps one stage machine and one set of queues per
   projection and swaps the projection state of the sampler
   (`ProfileProjector.PROJECTION_STATE_ATTRS`). Measured on virtual workers
   (6-parameter Gaussian, three 25 x 25 planes, one seed), wall time in
   evaluation-times, sequential against eager: 3 818 and 3 815 on 3 workers,
   148 and 134 on 100, 75 and 59 on 300, 55 and 31 on 1000, with the same cells
   in every projection. On 100 workers the first projection ends 5 % later
-  than it would alone; on 1000 it is not held back.
+  than it would alone; on 1000 it is not held back. A projection that starts
+  early is seeded from a smaller pool, so on a target with several optima
+  single cells can end at a different optimum than in a sequential run.
+  Counting region-of-interest cells left more than `1e-3` below the best
+  value any run found (virtual workers, three 20 x 20 planes, 60 and 300
+  workers, 24 to 64 seeds): on 4-D Himmelblau and Rosenbrock, and on 4-D Levy
+  at the default budgets, eager start was not worse beyond the scatter
+  between seeds. On Levy with reduced budgets (`n_initial_optimizations=40`,
+  `max_patching_waves=5`, `lbfgsb_max_iter=20`) it left 7 of 175 cells below
+  with `'de'`, against 6 for a sequential run, and 34 to 41 with `'lbfgsb'`,
+  against 30.
 - `lbfgsb.activation_depth` (default 1): how many cells ahead a cell inside
   the region of interest activates while workers are idle. Cells further out
   than a neighbour get workers only when nothing else is queued (a quarter of
