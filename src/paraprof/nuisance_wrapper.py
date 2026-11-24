@@ -1,9 +1,7 @@
 """Nuisance parameter wrapper for test functions.
 
-Augments an existing test function with constrained nuisance parameters
-to mimic realistic physics scenarios where a few parameters of interest
-(POI) drive a complex likelihood and many nuisance parameters are tightly
-constrained and couple to the POIs.
+Adds constrained nuisance parameters, coupled to the parameters of interest
+(POI), to an existing test function.
 """
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple, Union
@@ -85,9 +83,7 @@ class NuisanceParameterWrapper:
             return np.zeros((self.n_poi, self.n_nuisance))
 
         elif self.coupling_mode in ['shift', 'scale']:
-            # Distribute nuisance params across POIs in roughly equal blocks
-            # (POI 0 gets the first chunk, POI 1 the next, etc.; leftover
-            # nuisance params from non-divisible counts go to the first POIs).
+            # Split nuisance params into contiguous, near-equal blocks, one per POI.
             matrix = np.zeros((self.n_poi, self.n_nuisance))
             nuis_per_poi = self.n_nuisance // self.n_poi
             remainder = self.n_nuisance % self.n_poi
@@ -115,8 +111,7 @@ class NuisanceParameterWrapper:
             return matrix
 
         elif self.coupling_mode == 'mixed':
-            # ~30% sparse random Gaussian. Fixed seed so the wrapper is
-            # reproducible from a constructor call.
+            # Random Gaussian, ~30% non-zero, with a fixed seed.
             rng = np.random.RandomState(42)
             matrix = rng.randn(self.n_poi, self.n_nuisance) * 0.3
             mask = rng.rand(self.n_poi, self.n_nuisance) > 0.7
@@ -243,11 +238,8 @@ def create_nuisance_wrapped_function(
 ) -> Tuple[Callable, List[List[float]], NuisanceParameterWrapper]:
     """Build a NuisanceParameterWrapper plus full-vector bounds.
 
-    Nuisance bounds are set to ``mean ± nuisance_bounds_sigma_multiple * sigma``
-    (default 5σ covers ~99.999% for Gaussian constraints).
-    Returns ``(wrapper, wrapped_bounds, wrapper)`` — the wrapper is
-    returned twice for callers that expect a ``(func, bounds, wrapper)``
-    triple.
+    Nuisance bounds are ``mean ± nuisance_bounds_sigma_multiple * sigma``.
+    Returns ``(func, bounds, wrapper)``, where ``func`` is the wrapper itself.
     """
     wrapper = NuisanceParameterWrapper(
         base_func=base_func,
@@ -314,7 +306,6 @@ def register_nuisance_wrapped_test_functions():
             constraint_sigma=sigma
         )
 
-        # Create descriptive name
         registry_name = f"{base_name}_{coupling}_{n_nuis}nuis_sigma{sigma}"
         registry[registry_name] = (func, bounds, wrapper, base_peaks)
 

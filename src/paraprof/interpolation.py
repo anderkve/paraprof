@@ -40,13 +40,9 @@ class GridInterpolator:
         self.n_proj_dims = len(self.projection_dims)
         self.n_prof_dims = len(self.profiled_dims)
 
-        # Build interpolators for each profiled parameter
         self._build_interpolators()
+        self._likelihood_interpolator = None  # built on first use
 
-        # Cache for likelihood interpolator (built on first use)
-        self._likelihood_interpolator = None
-
-        # Pre-compute coarse grid coordinates for performance
         self._coarse_coords_cache = {}
         for grid_idx in self.solutions.keys():
             proj_coords = np.array([self.grid_axes[i][grid_idx[i]]
@@ -89,8 +85,7 @@ class GridInterpolator:
                 self.grid_axes, values_grid,
                 method='nearest', bounds_error=False, fill_value=None,
             )
-        # fill_value=NaN so callers can detect out-of-bounds; we clip
-        # query points to the grid in _clip_to_grid first.
+        # Queries are clipped to the grid first (_clip_to_grid).
         return RegularGridInterpolator(
             self.grid_axes, values_grid,
             method='linear', bounds_error=False, fill_value=np.nan,
@@ -119,11 +114,7 @@ class GridInterpolator:
 
 
     def _clip_to_grid(self, coords):
-        """Clip query coordinates into the grid domain.
-
-        Linear RegularGridInterpolator extrapolates wildly outside the
-        grid; clipping forces nearest-neighbour behaviour at the boundary.
-        """
+        """Clip query coordinates into the grid domain, to avoid linear extrapolation."""
         coords = np.asarray(coords, dtype=float).copy()
         for i, axis in enumerate(self.grid_axes):
             coords[..., i] = np.clip(coords[..., i], axis[0], axis[-1])
@@ -203,9 +194,9 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
     ``cluster_info`` carries sizes/centers/spreads, and ``boundary_points``
     are cells whose neighbours sit in a different cluster.
 
-    Including projection coords as features (the default) gives DBSCAN
-    spatial context so connected components with similar profiled params
-    are kept together.
+    With ``include_projection_coords`` (default), the projection coords are
+    features too, so spatially connected cells with similar profiled params
+    stay in one cluster.
     """
     if not HAS_SKLEARN:
         raise ImportError(
@@ -259,9 +250,7 @@ def cluster_coarse_grid_by_modes(coarse_solution, method='dbscan',
             nn.fit(features_scaled)
             distances, _ = nn.kneighbors(features_scaled)
             eps_base = np.percentile(distances[:, -1], 90)
-            # Multiplier prevents over-segmentation from small variations in
-            # profiled params; ~3 keeps distinct modes apart while letting a
-            # single mode vary smoothly.
+            # The multiplier keeps one smoothly varying mode in one cluster.
             eps = eps_base * eps_multiplier
             logger.info(f"  Auto-estimated DBSCAN eps = {eps:.3f} (base: {eps_base:.3f}, multiplier: {eps_multiplier})")
 
@@ -359,7 +348,7 @@ def _identify_cluster_boundaries(cluster_labels, grid_shape):
 
 
 def _get_grid_neighbors(grid_idx, grid_shape):
-    """6-connectivity in-grid neighbours of ``grid_idx``."""
+    """Axis-aligned in-grid neighbours of ``grid_idx``."""
     neighbors = []
     for dim in range(len(grid_shape)):
         for delta in [-1, +1]:
@@ -442,7 +431,6 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     coarse_coords_list = []
     coarse_indices = []
 
-    # Use cache if provided, otherwise compute
     if coords_cache is not None:
         for grid_idx, proj_coords in coords_cache.items():
             coarse_coords_list.append(proj_coords)
@@ -450,7 +438,6 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     else:
         grid_axes = coarse_solution['grid_axes']
         for grid_idx in coarse_solution['solutions'].keys():
-            # Get projection coordinates of this coarse grid point
             proj_coords = np.array([grid_axes[i][grid_idx[i]] for i in range(len(grid_axes))])
             coarse_coords_list.append(proj_coords)
             coarse_indices.append(grid_idx)
@@ -461,10 +448,8 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     coarse_coords_array = np.array(coarse_coords_list)
     fine_coords = np.asarray(fine_coords)
 
-    # Compute distances
     distances = np.linalg.norm(coarse_coords_array - fine_coords, axis=1)
 
-    # Get k nearest (or all if fewer than k)
     k_actual = min(k, len(distances))
     k_nearest_mask = np.argsort(distances)[:k_actual]
     k_nearest_indices = [coarse_indices[i] for i in k_nearest_mask]

@@ -1,19 +1,15 @@
 """Pluggable read/write layer for ParaProf sample files.
 
-A sample is one evaluated point: ``n_dims`` parameter values plus one target
-(log-likelihood) value, stored as a row of length ``n_dims + 1``. The run's
-main sample log appends one more column, an integer ``phase`` tag (see
-:mod:`paraprof.phases`); this layer is width-agnostic and just stores whatever
-columns it is given. The format is chosen by file extension, so callers never
-handle it directly:
+A sample is a row of ``n_dims`` parameter values plus the target value. The
+run's sample log adds an integer ``phase`` column (see :mod:`paraprof.phases`);
+this layer stores whatever columns it is given. The format follows the file
+extension:
 
 - ``.csv``                       -> plain text, ``%.10e`` columns
 - ``.h5`` / ``.hdf5`` / ``.he5``  -> HDF5 binary (needs ``h5py``)
 
-Other extensions default to CSV. Writers take one batch at a time and flush
-per batch, so a crash loses at most the caller's still-buffered samples, and
-they append when the file exists, so a run can extend and re-read its own file
-(the warm-start round trip).
+Other extensions default to CSV. Writers flush after each batch and append to
+an existing file.
 """
 
 import os
@@ -32,24 +28,19 @@ __all__ = [
     "HDF5SampleWriter",
 ]
 
-# Default number of rows read/written per chunk during streaming operations.
+# Rows per chunk when streaming.
 DEFAULT_CHUNK_SIZE = 10000
 
-# Output precision for the text format (kept identical to the legacy writer).
 _CSV_FMT = "%.10e"
 _CSV_DELIMITER = ", "
 
-# HDF5 dataset name holding the (n_samples, n_dims + 1) sample matrix.
 _HDF5_DATASET = "samples"
 
 _HDF5_EXTENSIONS = (".h5", ".hdf5", ".he5")
 
 
 def infer_format(path):
-    """Return the format key (``'csv'`` or ``'hdf5'``) for ``path``, by extension.
-
-    Unknown or missing extensions fall back to ``'csv'``.
-    """
+    """Return ``'hdf5'`` for an HDF5 extension, else ``'csv'``."""
     ext = os.path.splitext(str(path))[1].lower()
     if ext in _HDF5_EXTENSIONS:
         return "hdf5"
@@ -73,11 +64,7 @@ def _import_h5py():
 # Writers
 # --------------------------------------------------------------------------- #
 class SampleWriter:
-    """Streaming writer base: write batches, then close (idempotent).
-
-    The file is opened lazily on the first non-empty batch, so a run that
-    records nothing leaves no file behind.
-    """
+    """Streaming writer base. The file is created on the first non-empty batch."""
 
     def write_batch(self, rows):
         """Append ``rows``, a 2D array of shape (n, n_dims + 1)."""
@@ -134,7 +121,6 @@ class HDF5SampleWriter(SampleWriter):
     def _ensure_open(self, n_cols):
         if self._file is not None:
             return
-        # Append mode: extend an existing dataset, else create a resizable one.
         self._file = self._h5py.File(self.path, "a")
         if _HDF5_DATASET in self._file:
             self._dset = self._file[_HDF5_DATASET]
@@ -231,11 +217,7 @@ def _iter_hdf5_batches(path, chunk_size):
 
 
 def iter_sample_batches(path, chunk_size=DEFAULT_CHUNK_SIZE, fmt=None):
-    """Yield 2D arrays of up to ``chunk_size`` rows from a sample file.
-
-    The streaming primitive behind warm-start loading and combination; lets
-    large files be processed without loading them whole.
-    """
+    """Yield 2D arrays of up to ``chunk_size`` rows from a sample file."""
     fmt = fmt or infer_format(path)
     if fmt == "hdf5":
         yield from _iter_hdf5_batches(path, chunk_size)
@@ -260,13 +242,10 @@ def read_samples(path, fmt=None):
 def write_samples(samples, path, fmt=None, overwrite=False, chunk_size=DEFAULT_CHUNK_SIZE):
     """Write a sample array to ``path`` in one call.
 
-    The one-shot inverse of :func:`read_samples`. ``samples`` is a 2D array of
-    shape (n_samples, n_dims + 1); format follows the extension unless ``fmt``
-    is given. Returns the number of samples written.
-
-    Refuses to clobber an existing file unless ``overwrite=True``, in which case
-    the file is replaced so it holds exactly ``samples`` (rather than the append
-    behaviour of the streaming writers). Raises FileExistsError otherwise.
+    ``samples`` has shape (n_samples, n_dims + 1); the format follows the
+    extension unless ``fmt`` is given. An existing file raises FileExistsError,
+    or is replaced with ``overwrite=True``. Returns the number of samples
+    written.
     """
     data = np.asarray(samples, dtype=float)
     if data.ndim != 2:
@@ -290,9 +269,8 @@ def write_samples(samples, path, fmt=None, overwrite=False, chunk_size=DEFAULT_C
 def combine_samples(inputs, output, chunk_size=DEFAULT_CHUNK_SIZE, fmt=None):
     """Concatenate sample files into ``output``, streaming chunk by chunk.
 
-    Scales to large files (nothing is held whole in memory) and may mix
-    formats, since each path is dispatched on its own extension -- e.g.
-    several CSVs into one HDF5. Missing inputs are skipped.
+    Each path's format follows its own extension, so formats can be mixed.
+    Missing inputs are skipped.
 
     Returns the number of samples written. Raises ValueError if ``output`` is
     also an input or the inputs disagree on column count.

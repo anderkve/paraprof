@@ -18,64 +18,52 @@ from .jobs.activation_job import ActivationJob
 from .jobs.de_job import DEGridPointJob
 
 
-# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). It is a safe
-# ceiling — the Bayesian stopping rule controls the actual spend — so it is
-# generous.
+# n_initial_optimizations default: min(MAX, MULTIPLIER * n_dims). A ceiling;
+# the Bayesian stopping rule sets the actual number of starts.
 DEFAULT_BASIN_CAP_MULTIPLIER = 50
 DEFAULT_BASIN_CAP_MAX = 400
 
-# Basin detection for the initial-optimization stage (always on; see the
-# ProfileProjector docstring). Online single-linkage clustering of converged
-# optima feeds a Boender-Rinnooy Kan Bayesian stopping rule over ROI optima.
+# Basin detection for the initial-optimization stage: online single-linkage
+# clustering of converged optima feeds a Boender-Rinnooy Kan Bayesian stopping
+# rule over ROI optima.
 DEFAULT_BASIN_BATCH_SIZE = None             # None -> FD-aware auto (see resolve_initial_opt_batch_size)
-# merge_tol is fixed, not a user knob: a sensitivity sweep showed a wide safe
-# plateau at/below 0.02, while larger values over-merge distinct optima and bias
-# the W count the rule depends on. The right value tracks internal scales
-# (bounds-normalization, L-BFGS-B tolerance), not the target.
+# Not a user knob: it tracks internal scales (bounds normalization, L-BFGS-B
+# tolerance), not the target. Larger values merge distinct optima.
 DEFAULT_BASIN_MERGE_TOL = 0.02              # RMS bounds-normalized param distance to merge optima
 DEFAULT_BASIN_UNDISCOVERED_THRESHOLD = 0.5  # stop when E[undiscovered ROI optima] < this
 DEFAULT_BASIN_MIN_STARTS_MULTIPLIER = 3     # min starts before the rule applies = mult * n_dims
 DEFAULT_BASIN_MIN_STARTS_FLOOR = 10         # ... floored at this many
 
 # Global solution pool size: clip(n_dims * PER_DIM, POOL_SIZE, POOL_MAX).
-# Floor keeps the 4-D default at 10 000 entries; ceiling caps master-side
-# memory and the per-projection proximity-cache rebuild cost.
+# The ceiling caps master memory and the proximity-cache rebuild cost.
 DEFAULT_GLOBAL_POOL_SIZE = 10000
 DEFAULT_GLOBAL_POOL_PER_DIM = 2500
 DEFAULT_GLOBAL_POOL_MAX = 100000
 
 MEMORY_SIZE_MULTIPLIER = 25  # DE memory size = max_grid_size * multiplier
 
-# DE per-cell convergence cutoff (mean logL improvement / generation over
-# `de.convergence_window` gens). 1e-6 cuts mean ROI grid error ~2.4x on
-# stiff projections (Rosenbrock-style narrow valleys) at negligible cost
-# vs the earlier roi_threshold/1000 default.
+# DE per-cell convergence cutoff: mean logL improvement per generation over
+# `de.convergence_window` generations.
 DEFAULT_CONVERGENCE_THRESHOLD = 1e-6
 
-# DE mutation knobs. Sensitivity benchmarks show all three supported
-# strategies give equivalent grid quality; defaults dominate, so these are
-# kept hidden from the public API.
+# DE mutation settings. Not user-tunable.
 DEFAULT_DE_MUTATION_STRATEGY = 'current-to-pbest/1'
 DEFAULT_DE_PBEST_FRACTION = 0.1
 DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
 DEFAULT_DE_NUM_GENERATIONS = 100000
 
-# allow_early_DE_exit: when a fresh cell's in-population neighbours
-# agree on the profiled argmax -- the local argmax field is smooth/single-valued
-# -- and the neighbour warm-start was the best activation seed, the cell runs a
-# single DE generation then goes straight to the L-BFGS-B polish instead of the
-# full `de.convergence_window`. The exit is measured (that one generation still
-# runs), so a cell that improves keeps evolving. On by default: a win on
-# smooth/unimodal-inner targets. Disable it when the profiled-out dimensions
-# enter a genuinely multimodal inner problem, where one generation
-# under-explores the modes. README/CHANGELOG carry the benchmark numbers.
+# allow_early_DE_exit: when a fresh cell's neighbours agree on the profiled
+# argmax and the neighbour warm start was the best activation seed, the cell
+# runs one DE generation and goes to the L-BFGS-B polish, instead of waiting out
+# `de.convergence_window`. A cell that improves in that generation keeps
+# evolving. Disable it when the profiled parameters have a multimodal inner
+# problem, where one generation under-explores the modes.
 DEFAULT_DE_ALLOW_EARLY_DE_EXIT = True
 # Reduced per-cell convergence window applied to skip-DE-eligible cells.
 SKIP_DE_WINDOW = 1
 # Max per-profiled-dim deviation of the neighbours' argmax from their mean (as a
 # fraction of the profiled-dim bounds extent) for a cell to be skip-DE-eligible.
-# Hidden constant, not a user knob.
 SKIP_DE_PHI_SPREAD = 0.05
 
 DEFAULT_LBFGSB_FTOL = 1e-9
@@ -110,7 +98,7 @@ DEFAULT_SUSPECT_SEEDS_FROM_POOL = 3
 DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-3  # min improvement over current to trigger LBFGSB
 
 # Activation-population mix ratios (neighbours / global pool / random LHS).
-# Hidden — defaults dominate; tuning only degraded benchmarks.
+# Not user-tunable.
 DEFAULT_ACTIVATION_MIX_RATIOS = {
     'neighbors': 0.5,
     'global':    0.25,
@@ -130,11 +118,10 @@ def _offsets_within(ndim, depth):
 
 class ProfileProjector:
     """
-    Profile Likelihood Projector for computing profile likelihood projections.
+    State and configuration of a grid-based profile likelihood scan.
 
-    This class primarily holds state and configuration for grid-based profile
-    likelihood computation. It supports differential evolution (DE) and L-BFGS-B
-    optimization. The execution logic is in the Job classes and master_main.
+    Cells are optimised with differential evolution (DE) or L-BFGS-B. The
+    execution logic is in the Job classes and master_main.
     """
     def __init__(self,
                  target_func,
@@ -167,8 +154,6 @@ class ProfileProjector:
                  # Parameters whose bounds span one period (optional)
                  periodic=None):
         """
-        Initializes the ProfileProjector with simplified interface.
-
         Parameters
         ----------
         target_func : callable
@@ -178,11 +163,8 @@ class ProfileProjector:
         projections : list of dict
             List of projection configurations, each with 'dims' and 'grid_points'
         grad_func : callable, optional
-            User-supplied gradient of ``target_func`` (default: None). Only
-            used in the L-BFGS-B paths; ignored by Differential Evolution.
-            Sign convention: returns ``∇target_func`` (gradient of the
-            function being MAXIMIZED). ParaProf negates internally for the
-            minimization objective. Accepts two return formats:
+            Gradient of ``target_func``, the function being maximised
+            (default: None). Used only by L-BFGS-B. Two return formats:
 
             - length-``n_dims`` array of floats; entries that are ``NaN``,
               ``+inf`` or ``-inf`` are treated as "not provided" and filled
@@ -190,10 +172,9 @@ class ProfileProjector:
             - ``{dim_index: value}`` dict of known components; any dim not
               in the dict is filled in by finite differences.
 
-            For components the user does provide, paraprof skips the
-            corresponding finite-difference target evaluations, cutting
-            target-call cost. See ``sampler.target_calls_saved_by_user_gradient``
-            for the savings counter.
+            Provided components replace finite-difference evaluations; the
+            saved calls are counted in
+            ``sampler.target_calls_saved_by_user_gradient``.
 
         Core Tuning Parameters
         ----------------------
@@ -202,46 +183,33 @@ class ProfileProjector:
             of the target (default: 4.0). For a log-likelihood this is half a
             chi-squared difference: 3 sigma for two degrees of freedom is 5.92.
         pop_per_grid_point : int, optional
-            Population size per grid point for DE (default: 3)
-            Typical values: 1-5. Lower = fewer evaluations per cell but
-            more cells need to be activated; higher = more thorough but
-            slower per cell.
+            DE population size per grid point (default: 3). Typical values: 1-5.
         max_patching_waves : int, optional
-            Maximum number of patching refinement waves (default: 10)
-            Typical values: 10-50. Higher = more refinement but more evaluations
+            Maximum number of patching waves (default: 10).
         lbfgsb_max_iter : int, optional
-            Maximum L-BFGS-B iterations per optimization (default: 50)
-            Typical values: 10-50. Higher = more thorough local optimization
+            Maximum L-BFGS-B iterations per optimization (default: 50).
         lbfgsb_polish : bool, optional
-            Apply L-BFGS-B polishing step after DE optimization (default: True)
-            Refines solutions found by DE using gradient-based optimization
+            Polish DE results with L-BFGS-B (default: True).
         n_initial_optimizations : int, optional
-            Number of global L-BFGS-B optimizations to find initial maxima (default: None).
-            With basin detection enabled (the default) this is a *cap*, not a fixed
-            spend: the Bayesian stopping rule halts early on easy targets and uses
-            the full budget only when optima remain, so set it generously. If None,
-            auto-configured as min(400, 50 * n_dims) with basin detection on, or the
-            modest min(100, 20 * n_dims) when it is off (where it is the fixed number
-            of starts). See ``advanced_config['basin_detection']``.
+            Maximum number of global L-BFGS-B optimizations that find the
+            initial maxima (default: None, which gives min(400, 50 * n_dims)).
+            The Bayesian stopping rule usually ends the stage earlier, so set
+            it generously. See ``advanced_config['basin_detection']``.
         n_optima : int or dict, optional
-            Prior on the number of optima the target has *globally*; use only
-            when confident it has one or a few (default: None). A known
-            **maximum** stops the initial multistart once that many distinct
-            optima are found (the global max is then among them, so the
-            ``basin_detection.min_starts`` floor is skipped -- ``n_optima=1``
-            stops after the first converged start); a known **minimum** keeps it
-            running until that many are found. Pass an ``int`` (exact) or
-            ``{'min': int, 'max': int}``. If the true count exceeds the maximum
-            the stage may stop before finding the global maximum, so set it only
-            when sure.
+            Known number of optima of the target over the full parameter
+            space (default: None). An ``int`` (exact) or
+            ``{'min': int, 'max': int}``. The initial multistart stops once
+            ``max`` distinct optima are found, skipping the
+            ``basin_detection.min_starts`` floor (``n_optima=1`` stops after the
+            first converged start), and runs until ``min`` are found. If the
+            true count exceeds ``max``, the stage can stop before finding the
+            global maximum.
         initial_points : array-like, shape (n_points, n_dims), optional
-            Initial points in full parameter space to activate corresponding grid points (default: None)
-            Each point will activate its nearest grid point, independent of optimization
-            Useful when you already know good regions of parameter space
-            Example: [[3.0, 0.0, -3.0, 0.0]] for a 4D problem
-            The points replace the global L-BFGS-B starts. They are evaluated,
-            not optimised: unless a grid point later exceeds it, the best of
-            them is the maximum the region of interest is measured from.
+            Points in the full parameter space (default: None), e.g.
+            ``[[3.0, 0.0, -3.0, 0.0]]`` in 4D. Each activates its nearest grid
+            point. The points replace the global L-BFGS-B starts. They are
+            evaluated, not optimised: unless a grid point later exceeds it, the
+            best of them is the maximum the region of interest is measured from.
         refine_initial_points : bool, optional
             Run one L-BFGS-B optimisation over all parameters from every
             entry of ``initial_points`` before the grid points are activated
@@ -252,49 +220,35 @@ class ProfileProjector:
         Feature Toggles
         ---------------
         use_clustering : bool, optional
-            Enable mode detection for multi-modal refinement (default: True)
-            Helps handle multiple basins during grid refinement
+            Cluster solutions into modes during grid refinement (default: True).
         refinement_direct_eval : bool, optional
-            Skip optimization during refinement, just evaluate interpolated points (default: False)
-            True = fast, False = thorough
+            During refinement, evaluate interpolated points instead of
+            optimising them (default: False).
 
         I/O
         ---
         samples_output_file : str, optional
-            Path to save all evaluated points (default: None). Write-only
-            during the scan. Each row is ``[params..., logL, phase]``, where
-            ``phase`` is an integer tagging the algorithm stage that produced
-            the point (see :mod:`paraprof.phases`); filtering on it recovers
-            any subset (e.g. the volume-sampling probes). Format follows the
-            extension: ``.csv`` (text) or ``.h5``/``.hdf5`` (HDF5 binary,
-            needs ``h5py``); anything else is treated as CSV.
+            Path to save all evaluated points (default: None). Each row is
+            ``[params..., logL, phase]``, where ``phase`` tags the stage that
+            produced the point (see :mod:`paraprof.phases`). ``.h5``/``.hdf5``
+            writes HDF5 (needs ``h5py``); anything else writes CSV.
         warm_start_file : str, optional
-            Path to a sample file produced by a previous run (any supported
-            format; the extension selects the reader). When set and warm-start
-            is allowed for the current projection, the master pre-populates
-            ``initial_maxima`` from this file and skips the global L-BFGS-B
-            starts that would normally seed activation. Default: None (no
-            warm start). To round-trip the current run's samples into the
-            next one, point ``warm_start_file`` at the same path as
-            ``samples_output_file``.
+            Sample file from a previous run (default: None). When set and
+            warm start is allowed for the projection, ``initial_maxima`` are
+            read from it and the global L-BFGS-B starts are skipped. It may be
+            the same path as ``samples_output_file``.
         volume_sampling : dict, optional
-            Configuration for the post-projection volume-sampling stage,
-            which collects a stratified, well-spread sample set inside the
-            stage's ROI ``{logL > global_max - roi_threshold}``. The stage's
-            ``roi_threshold`` defaults to the projection's but can be set
-            larger to also explore the shell outside the projection ROI.
-            Validated at construction; see ``volume.VOLUME_CONFIG_DEFAULTS``
-            for the keys and ``docs/volume_sampling_plan.md`` for the
-            design. Default: None (stage disabled).
+            Configuration of the volume-sampling stage after the projections
+            (default: None, disabled). It collects a stratified sample inside
+            ``{logL > global_max - roi_threshold}``, where the stage's
+            ``roi_threshold`` defaults to the projection's. See
+            ``volume.VOLUME_CONFIG_DEFAULTS`` for the keys.
 
         Parameter Naming
         ----------------
         parameter_names : list of str, optional
-            Names for each parameter dimension (default: None).
-            When provided, projection ``dims`` entries may be given as parameter
-            names (strings) and will be translated to integer indices. The list
-            must have length equal to the number of parameters. Mixing names
-            and indices within a single projection's ``dims`` is allowed.
+            One name per parameter (default: None). Projection ``dims`` may
+            then hold names, indices, or a mix.
 
         Periodic Parameters
         -------------------
@@ -321,7 +275,7 @@ class ProfileProjector:
         Advanced Configuration
         ----------------------
         advanced_config : dict, optional
-            Dictionary for expert-level parameter tuning. Structure:
+            Expert settings. Structure:
             {
                 'memory_size': int,                # Default: max(grid_sizes) * 25
                 'convergence_threshold': float,    # Default: 1e-6
@@ -393,24 +347,19 @@ class ProfileProjector:
         their evaluations are lost.
 
         The ``basin_detection`` sub-dict controls the initial-optimization
-        stage, where ``n_initial_optimizations`` is treated as a *maximum*:
-        paraprof runs a rolling Latin-hypercube multistart, clusters each
-        converged optimum online into distinct basins, and applies a
-        Boender-Rinnooy Kan Bayesian stopping rule restricted to ROI-competitive
-        optima. The stage halts once the expected number of undiscovered ROI
-        optima falls below ``undiscovered_threshold`` (after at least
-        ``min_starts`` starts), aborting any still-running optimizations; it also
-        halts at the ``n_initial_optimizations`` cap, where in-flight runs are
-        allowed to finish instead. ``batch_size`` (default ``None``) sets how
-        many optimizations run concurrently -- see
-        :meth:`resolve_initial_opt_batch_size`. Set ``undiscovered_threshold`` to
-        ``0`` to disable early stopping, running the full
-        ``n_initial_optimizations`` starts (set that cap explicitly when you do).
+        stage: a rolling Latin-hypercube multistart whose converged optima are
+        clustered into basins. A Boender-Rinnooy Kan Bayesian stopping rule
+        over the optima inside the region of interest ends the stage once the
+        expected number of undiscovered ones falls below
+        ``undiscovered_threshold`` (after at least ``min_starts`` starts),
+        aborting running optimizations. At the ``n_initial_optimizations``
+        cap, running optimizations finish instead. ``batch_size`` sets how
+        many run concurrently (see :meth:`resolve_initial_opt_batch_size`).
+        ``undiscovered_threshold=0`` disables early stopping; set
+        ``n_initial_optimizations`` explicitly then.
 
-        The ``cross_projection`` sub-dict toggles the two cross-projection
-        knowledge-transfer hooks. Both default to enabled; set either to
-        ``False`` to disable that hook (useful for A/B benchmarking or as a
-        safety valve if a target pathology surfaces).
+        The ``cross_projection`` sub-dict toggles the hooks that pass
+        results from one projection to the next. All default to ``True``.
 
         ``eager_start`` (default ``True``) starts the next projection on
         workers the current one leaves idle, once a tenth of the workers is
@@ -430,29 +379,19 @@ class ProfileProjector:
         projection ended. The projection listed last need not end last, so
         the total of the scan is the sampler's ``target_calls``.
 
-        Several DE knobs that did not show measurable effect on grid quality
-        in benchmarking (mutation_strategy, pbest_fraction,
-        neighbor_pull_probability, global_pool_size, patching.n_neighbors,
-        activation.mix_ratios) are now module-level constants in sampler.py
-        and are no longer user-tunable. The basin-clustering ``merge_tol`` is
-        likewise a fixed internal constant: a sensitivity sweep showed a wide
-        safe plateau at/below its value, with larger values only over-merging
-        distinct optima and biasing the stopping statistic.
+        The DE mutation settings, global pool size, patching neighbours,
+        activation mix ratios and basin ``merge_tol`` are module-level
+        constants, not options.
         """
-        # --- Input Validation ---
-
-        # Validate target function
         if not callable(target_func):
             raise ConfigurationError("target_func must be callable", parameter="target_func", value=target_func)
 
-        # Validate optional user gradient function
         if grad_func is not None and not callable(grad_func):
             raise ConfigurationError(
                 "grad_func must be callable or None",
                 parameter="grad_func", value=grad_func,
             )
 
-        # Validate and set bounds
         self.bounds = np.array(bounds)
         if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
             raise InvalidBoundsError(
@@ -469,7 +408,6 @@ class ProfileProjector:
         self.grad_func = grad_func
         self.dims = len(self.bounds)
 
-        # Validate parameter_names (optional) and store as a name->index map
         if parameter_names is not None:
             if (not isinstance(parameter_names, (list, tuple))
                     or len(parameter_names) != self.dims
@@ -499,12 +437,10 @@ class ProfileProjector:
         self._has_periodic = bool(self.periodic_dims)
         self._periodic_checked = False       # see PeriodicCheckJob
 
-        # Validate projections
         if not isinstance(projections, list) or len(projections) == 0:
             raise InvalidProjectionError("projections must be a non-empty list")
 
-        # Resolve any string dims using parameter_names. We rewrite the
-        # projection dicts in place so all downstream code sees integers.
+        # Rewrite string dims to indices in place.
         for i, proj in enumerate(projections):
             if isinstance(proj, dict) and 'dims' in proj:
                 resolved = self._resolve_dims(proj['dims'], context=f"projection {i}")
@@ -533,7 +469,6 @@ class ProfileProjector:
                     projection=proj
                 )
 
-            # Check dimension indices are valid
             for dim in dims:
                 if not isinstance(dim, int) or dim < 0 or dim >= self.dims:
                     raise InvalidProjectionError(
@@ -541,7 +476,6 @@ class ProfileProjector:
                         projection=proj
                     )
 
-            # Check grid points are positive integers
             for gp in grid_points:
                 if not isinstance(gp, int) or gp <= 0:
                     raise InvalidProjectionError(
@@ -551,7 +485,6 @@ class ProfileProjector:
 
         self.projections = projections
 
-        # Validate core parameters
         if not isinstance(pop_per_grid_point, int) or pop_per_grid_point < 1:
             raise ConfigurationError(
                 "pop_per_grid_point must be a positive integer",
@@ -566,11 +499,9 @@ class ProfileProjector:
                 value=roi_threshold
             )
 
-        # Validate and process initial_points
         if initial_points is not None:
             initial_points = np.array(initial_points)
             if initial_points.ndim == 1:
-                # Single point provided - reshape to (1, n_dims)
                 initial_points = initial_points.reshape(1, -1)
             if initial_points.ndim != 2 or initial_points.shape[1] != self.dims:
                 raise ConfigurationError(
@@ -578,7 +509,6 @@ class ProfileProjector:
                     parameter="initial_points",
                     value=initial_points
                 )
-            # Check that points are within bounds
             for i, point in enumerate(initial_points):
                 for j, (val, (lb, ub)) in enumerate(zip(point, self.bounds)):
                     if not (lb <= val <= ub):
@@ -588,7 +518,7 @@ class ProfileProjector:
                             value=initial_points
                         )
 
-        # --- Build configuration with smart defaults ---
+        # --- Defaults, overridden by advanced_config ---
         max_grid_size = max(max(proj['grid_points']) for proj in projections)
 
         config = {
@@ -640,27 +570,19 @@ class ProfileProjector:
             },
         }
 
-        # Merge with advanced_config if provided
         if advanced_config:
             self._deep_update(config, advanced_config)
 
-        # Default cap for the initial-optimization stage: a generous safe
-        # ceiling, since the Bayesian stopping rule normally halts the stage
-        # well before it. (If early stopping is disabled via
-        # undiscovered_threshold=0, set this explicitly.)
         if n_initial_optimizations is None:
             n_initial_optimizations = min(
                 DEFAULT_BASIN_CAP_MAX,
                 DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
             )
 
-        # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
         self.roi_threshold = roi_threshold
 
-        # Volume-sampling stage configuration: validated up front like the
-        # rest of the config; the stage itself runs after the projections
-        # (see volume.py and docs/volume_sampling_plan.md).
+        # Validated here; the stage runs after the projections (volume.py).
         if volume_sampling is not None:
             self.volume_sampling_config = normalize_volume_config(
                 volume_sampling, self.roi_threshold)
@@ -676,7 +598,6 @@ class ProfileProjector:
         self.refinement_direct_eval = refinement_direct_eval
         self.use_clustering = use_clustering
 
-        # Store advanced config values
         self.memory_size = config['memory_size']
         self.convergence_threshold = config['convergence_threshold']
 
@@ -717,9 +638,7 @@ class ProfileProjector:
         # lbfgsb_scale_hint). Those of cell runs are per projection.
         self._lbfgsb_global_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
 
-        # Hidden knobs (kept as instance attributes for read-site compatibility,
-        # sourced from module-level constants — see sensitivity benchmarks for
-        # rationale)
+        # Fixed settings, from module-level constants.
         self.global_pool_size = min(
             DEFAULT_GLOBAL_POOL_MAX,
             max(DEFAULT_GLOBAL_POOL_SIZE,
@@ -740,18 +659,13 @@ class ProfileProjector:
 
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
-        # Warm-start input is now a dedicated path. Set it equal to
-        # samples_output_file to round-trip across runs.
         self.warm_start_file = warm_start_file
-        # Always initialize buffer (unconditional - makes code robust)
         self.samples_buffer = []
         self.sample_buffer_size = 1000
 
-        # Format is picked from the file extension; the writer opens its file
-        # lazily on the first flush (see sample_io).
+        # The writer picks the format from the extension and opens the file on
+        # the first flush.
         if self.samples_output_file:
-            # Create the target directory up front so the first flush succeeds
-            # even when the user points at a not-yet-existing subdirectory.
             samples_dir = os.path.dirname(self.samples_output_file)
             if samples_dir:
                 os.makedirs(samples_dir, exist_ok=True)
@@ -764,38 +678,30 @@ class ProfileProjector:
         # --- Persistent State (across projections) ---
         self.target_calls = 0
         self.target_call_errors = 0
-        # Count of cells that skipped the DE global search via allow_early_DE_exit
-        # (cumulative across projections; for diagnostics).
+        # Cells that took the allow_early_DE_exit path (all projections).
         self.de_cells_skipped = 0
-        # Counters for the grad_func feature (cumulative across projections).
+        # grad_func counters (all projections).
         self.target_calls_saved_by_user_gradient = 0
         self.user_gradient_errors = 0
         self.global_max_target_val = -np.inf
         self.global_solution_pool = []  # Min-heap of (fitness, count, entry) tuples
         self.global_pool_counter = 0  # Unique counter for tiebreaking in heap
 
-        # Cross-projection knowledge transfer (configurable via
-        # advanced_config['cross_projection']; default on for both).
-        # Both reuse the existing in-memory global_solution_pool, which
-        # already accumulates across projections, so no new persistent
-        # state is introduced.
-        #
-        # 1. proximity_warm_start: per-cell activation pop swaps one
-        #    random LHS seed for the highest-fitness past evaluation whose
-        #    projection-dim coords are closest to the cell.
-        # 2. pool_seeded_initial_maxima: at the start of every projection
-        #    after the first, seed `initial_maxima` from the pool and skip
-        #    the n_initial_optimizations global L-BFGS-B starts that would
-        #    otherwise rediscover known maxima.
+        # Cross-projection hooks, all using global_solution_pool:
+        # 1. proximity_warm_start: a cell's activation population swaps one
+        #    random LHS seed for the best past evaluation closest to the cell
+        #    in the projection dims.
+        # 2. pool_seeded_initial_maxima: projections after the first seed
+        #    `initial_maxima` from the pool and skip the global L-BFGS-B starts.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
-        # 3. eager_start (default on): the next projection starts on workers
-        #    the current one leaves idle (run_all_projections, master_main).
+        # 3. eager_start: the next projection starts on workers the current
+        #    one leaves idle (run_all_projections, master_main).
         self.eager_projection_start = bool(config['cross_projection']['eager_start'])
 
-        # Suspect-cell recheck configuration. Runs after standard patching to
-        # catch grid cells (including contiguous strips) that converged to a
-        # wrong optimum but slipped past the fitness-only patching filter.
+        # Suspect-cell recheck: after patching, recheck cells (including
+        # contiguous strips) that converged to a wrong optimum but passed the
+        # fitness-only patching filter.
         sc = config['suspect_recheck']
         self.suspect_recheck_enabled = sc['enabled']
         self.max_suspect_waves = sc['max_waves']
@@ -805,11 +711,8 @@ class ProfileProjector:
         self.suspect_seeds_from_pool = sc['seeds_from_pool']
         self.suspect_polish_threshold = sc['polish_threshold']
 
-        # Basin-detection configuration for the initial-optimization stage.
         bd = config['basin_detection']
         self.basin_batch_size = bd['batch_size']
-        # merge_tol is a fixed internal constant (not a user knob); see the
-        # DEFAULT_BASIN_MERGE_TOL sensitivity note above.
         self.basin_merge_tol = DEFAULT_BASIN_MERGE_TOL
         self.basin_undiscovered_threshold = bd['undiscovered_threshold']
         if bd['min_starts'] is None:
@@ -820,17 +723,15 @@ class ProfileProjector:
             )
         else:
             self.basin_min_starts = int(bd['min_starts'])
-        # Optional global-optima-count prior, as (min, max) bounds that steer
-        # the stopping rule (see basin_detection_should_stop).
+        # n_optima as (min, max) bounds for basin_detection_should_stop.
         self.basin_min_optima, self.basin_max_optima = (
             self._parse_n_optima(n_optima)
         )
         # Pre-generated LHS start pool for rolling multistart (lazily filled).
         self._initial_opt_start_points = None
         self._initial_opt_lhs_idx = 0
-        # Lazy snapshot of (proj_coords, profiled_coords, extent) for the
-        # global pool, rebuilt at most once per projection. See
-        # _sample_proximity_from_global_pool for the invalidation rule.
+        # (proj_coords, profiled_coords, extent) of the global pool, rebuilt
+        # at most once per projection (see _sample_proximity_from_global_pool).
         self._proximity_pool_cache = None
 
         # --- Initial points tracking ---
@@ -852,10 +753,9 @@ class ProfileProjector:
         self.projection_dims = None
         self.grid_points_per_dim = None
         self.initial_maxima = []
-        # Registry of distinct optima found by the initial-optimization stage.
-        # Each entry: {'point', 'point_norm', 'target_val', 'count'}. Built up
-        # online by register_initial_optimum and consumed by the basin-detection
-        # stopping rule. Reset per projection alongside initial_maxima.
+        # Distinct optima of the initial-optimization stage, as
+        # {'point', 'point_norm', 'target_val', 'count'}; filled by
+        # register_initial_optimum.
         self.initial_optima_registry = []
         self.population = {}  # {grid_idx: state_dict}
         self.activated_grid_indices = set()
@@ -1002,8 +902,7 @@ class ProfileProjector:
 
     def _reset_for_new_projection(self, projection_config):
         """Resets the state for a new projection run."""
-        # Defensive: resolve string dims if a caller passes a fresh projection
-        # dict whose dims weren't normalized at construction time.
+        # For projection dicts not seen at construction.
         if 'dims' in projection_config:
             resolved = self._resolve_dims(projection_config['dims'],
                                           context="projection")
@@ -1028,10 +927,8 @@ class ProfileProjector:
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
 
-        # Read optimization method
         self.optimization_method = projection_config.get('optimization_method', 'de')
 
-        # Validate optimization method
         valid_methods = ['de', 'lbfgsb']
         if self.optimization_method not in valid_methods:
             raise ConfigurationError(
@@ -1041,11 +938,9 @@ class ProfileProjector:
                 value=self.optimization_method
             )
 
-        # Read patching configuration
         self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True)
         self.patch_refined_grid = projection_config.get('patch_refined_grid', False)
 
-        # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
         if self.optimization_method == 'de':
             self.logger.info(f"  L-BFGS-B polish after DE: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
@@ -1057,7 +952,7 @@ class ProfileProjector:
         self.n_proj_dims = len(self.projection_dims)
         self.n_prof_dims = len(self.profiled_dims)
 
-        # Detect direct evaluation mode (no profiled dimensions to optimize)
+        # No profiled dimensions: evaluate the grid points directly.
         self.direct_eval_mode = (self.n_prof_dims == 0)
 
         if self.direct_eval_mode:
@@ -1071,7 +966,6 @@ class ProfileProjector:
         self.grid_axes = [np.linspace(self.bounds[d, 0], self.bounds[d, 1], n) for d, n in zip(self.projection_dims, self.grid_points_per_dim)]
         self.profile_likelihood_grid = {} # Use a dict for sparse grid
 
-        # Reset state variables
         self.initial_maxima = []
         self.initial_optima_registry = []
         self._initial_opt_start_points = None
@@ -1089,13 +983,9 @@ class ProfileProjector:
         self._lbfgsb_cell_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
         self.lbfgsb_hessian_hint = None
 
-        # Performance optimizations: caches
         self._neighbor_cache = {}
-        # Invalidate the proximity-pool snapshot: projection_dims and
-        # profiled_dims have changed, so the cached column slices are stale.
         self._proximity_pool_cache = None
 
-        # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
         self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
 
@@ -1106,10 +996,8 @@ class ProfileProjector:
             n_transferred = 0
 
             for coarse_idx, solution in coarse_solutions.items():
-                # Map coarse grid index to fine grid index
                 fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.grid_refinement_factor)
 
-                # Verify the fine grid point is valid
                 if not all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
                     self.logger.warning(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
                     continue
@@ -1117,11 +1005,10 @@ class ProfileProjector:
                 likelihood = solution['likelihood']
                 profiled_params = solution['profiled_params']
 
-                # Store in profile likelihood grid for visualization
                 self.profile_likelihood_grid[fine_idx] = likelihood
 
-                # Create population state for this transferred point
-                # This ensures profiled parameter plots include coarse grid data
+                # Population entry, so profiled-parameter plots include the
+                # coarse grid.
                 self.population[fine_idx] = {
                     'profiled_params': np.array([profiled_params]),  # Shape: (1, n_prof_dims)
                     'fitnesses': np.array([likelihood]),
@@ -1182,7 +1069,6 @@ class ProfileProjector:
         self.coarse_grid_solution = coarse_solution
         self.refinement_method = refinement_method
 
-        # Create interpolator from coarse solution
         if refinement_method == 'linear':
             periodic_bounds = {
                 i: tuple(self.bounds[dim])
@@ -1196,16 +1082,13 @@ class ProfileProjector:
         # Restore global solution pool from coarse run
         if 'global_solution_pool' in coarse_solution:
             import heapq
-            # Convert list to heap structure (fitness, count, entry)
-            # Use enumeration as the count to maintain uniqueness and ordering
+            # Heap of (fitness, count, entry); the count breaks ties.
             self.global_solution_pool = [(entry['fitness'], i, entry)
                                          for i, entry in enumerate(coarse_solution['global_solution_pool'])]
             heapq.heapify(self.global_solution_pool)
-            # Update counter to continue from where we left off
             self.global_pool_counter = len(self.global_solution_pool)
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
-        # Perform clustering if enabled and we have profiled parameters
         if self.use_clustering and len(coarse_solution['profiled_dims']) > 0:
             from .interpolation import cluster_coarse_grid_by_modes
             self.logger.info("=" * 80)
@@ -1260,7 +1143,6 @@ class ProfileProjector:
         Near cluster boundaries: multiple candidates, one per nearby cluster.
         Elsewhere: a single interpolated candidate.
         """
-        # If clustering is not available or disabled, use standard interpolation
         if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
             profiled_params = self.refinement_interpolator.interpolate(grid_coords)
             return [{
@@ -1269,7 +1151,6 @@ class ProfileProjector:
                 'method': 'interpolated'
             }]
 
-        # Use cluster-based initialization
         from .interpolation import get_cluster_based_initialization
 
         candidates = get_cluster_based_initialization(
@@ -1281,7 +1162,6 @@ class ProfileProjector:
             self.refinement_interpolator
         )
 
-        # Log if multiple candidates near boundary
         if len(candidates) > 1:
             cluster_ids = [c['cluster_id'] for c in candidates if c['cluster_id'] is not None]
             self.logger.debug(f"Fine point at {grid_coords}: testing {len(candidates)} candidates "
@@ -1351,14 +1231,13 @@ class ProfileProjector:
             return
 
         try:
-            # Flush remaining samples, then release the writer's file.
             self._flush_samples_buffer()
             if self._sample_writer is not None:
                 self._sample_writer.close()
             self._file_closed = True
             self.logger.debug(f"Closed sample file: {self.samples_output_file}")
         except Exception as e:
-            # Use print instead of logger in case logger is already destroyed
+            # print: the logger may already be gone.
             print(f"Warning: Error closing sample file: {e}")
 
 
@@ -1506,9 +1385,8 @@ class ProfileProjector:
     def _update_global_pool(self, full_params, fitness, grid_idx):
         """Add a solution to the capped min-heap pool of best results across projections.
 
-        Stores FULL parameter vectors so the pool can be reused for any
-        future projection. The (fitness, counter, entry) tuple shape keeps
-        heapq from comparing dict/array entries when fitnesses tie.
+        Entries hold full parameter vectors, so any projection can use them.
+        The counter in (fitness, counter, entry) breaks fitness ties.
         """
         import heapq
 
@@ -1542,17 +1420,10 @@ class ProfileProjector:
         """Profiled-dim seeds from the past evaluations whose projection-dim
         coordinates are closest to ``target_proj_coords``.
 
-        Uses the existing ``global_solution_pool`` (which already accumulates
-        across projections), so no new persistent state is introduced. Distance
-        is Euclidean in projection-dim space, normalised by the projection-dim
-        bounds extent.
-
-        Caches the snapshot matrices per projection so the per-cell call
-        becomes a vectorised distance + argpartition; the first call after
-        ``_reset_for_new_projection`` rebuilds from the heap, and the cache
-        is also rebuilt when the pool has grown by more than 5% since last
-        snapshot (the heap reorders on push/replace, but stale snapshots
-        are still valid past evaluations).
+        Distance is Euclidean in the projection dims, normalised by their
+        bounds extent. The pool is copied into arrays once per projection and
+        again when it has grown by more than 5%; a stale copy still holds
+        valid past evaluations.
 
         Returns ``None`` when the pool is empty, in direct-evaluation mode, or
         when ``n_samples <= 0``.
@@ -1598,18 +1469,12 @@ class ProfileProjector:
 
 
     def _initialize_from_global_pool(self):
-        """In-memory analogue of ``_initialize_from_warm_start_file``.
+        """Seed ``initial_maxima`` from ``global_solution_pool``, so the global
+        L-BFGS-B starts can be skipped. In-memory analogue of
+        ``_initialize_from_warm_start_file``.
 
-        For projections after the first, seed ``initial_maxima`` from the
-        accumulated ``global_solution_pool`` so the master can skip the
-        ``n_initial_optimizations`` global L-BFGS-B starts that would
-        otherwise rediscover known maxima.
-
-        For each pool entry (already a high-fitness full N-D point), map it
-        onto the current projection's grid and keep the highest-fitness
-        entry per cell. Cells whose best known fitness is within
-        ``roi_threshold`` of the running global maximum become candidate
-        ``initial_maxima``.
+        The best pool entry per grid cell becomes an initial maximum if it lies
+        within ``roi_threshold`` of the global maximum.
         """
         if not self.global_solution_pool:
             return
@@ -1653,7 +1518,7 @@ class ProfileProjector:
 
 
     def _initialize_from_warm_start_file(self, warm_start_file):
-        """Seed initial_maxima from a previous run's sample CSV (skips initial opt)."""
+        """Seed initial_maxima from a previous run's sample file (skips initial opt)."""
         if not warm_start_file or not os.path.exists(warm_start_file):
             self.logger.info("  No warm-start file found or provided. Skipping warm start.")
             return
@@ -1710,11 +1575,9 @@ class ProfileProjector:
     def create_initial_points_eval_job(self, next_job_id):
         """Create a single job that evaluates every user-provided initial point.
 
-        Returns an empty job list if there are no points to evaluate or they
-        have already been processed. Routing the evaluations through a Job
-        (rather than a hand-rolled send/recv loop in the master) ensures they
-        flow through ``_register_target_call`` and ``_update_global_pool``
-        like every other target evaluation.
+        Returns an empty job list if there are no points or they have
+        already been evaluated. As a Job, the evaluations are registered and
+        pooled like any other.
         """
         from .jobs.initial_points_job import InitialPointEvalJob
 
@@ -1750,11 +1613,10 @@ class ProfileProjector:
         """Number of initial-optimization runs to keep in flight for the rolling
         multistart, given ``n_workers`` available workers.
 
-        ``basin_detection.batch_size`` overrides this. The ``None`` default is
-        FD-aware: one run's gradient phase already fans out ``fd_width`` parallel
-        evaluations (one per dim, two for central differences), so ~``n_workers /
-        fd_width`` concurrent runs keep the workers fed -- and fewer runs in
-        flight means less partial work discarded when the rule aborts the rest.
+        ``basin_detection.batch_size`` overrides this. By default it is
+        ``n_workers / fd_width``, where ``fd_width`` is the number of parallel
+        evaluations in one gradient (one per dim, two for central differences).
+        Fewer runs in flight lose less work when the stopping rule aborts them.
         Floored at 2, capped at ``n_workers`` and ``n_initial_optimizations``."""
         cap = self.n_initial_optimizations
         if self.basin_batch_size is not None:
@@ -1849,24 +1711,20 @@ class ProfileProjector:
     def basin_detection_should_stop(self, n_completed):
         """Whether the rolling multistart should stop.
 
-        The ``n_optima`` prior (global optima count) takes precedence: a known
-        max stops once that many distinct optima have been found -- the global
-        maximum is then necessarily among them, so the ``basin_min_starts``
-        floor is skipped -- and a known min blocks stopping until that many are
-        found. Failing a max prior, the Boender-Rinnooy Kan rule applies once
-        ``n_completed`` reaches ``basin_min_starts``: with ``W`` distinct ROI
-        optima over ``N`` ROI starts it stops once the expected undiscovered
-        ROI optima ``W**2/(N-W-1)`` fall below ``basin_undiscovered_threshold``.
+        The ``n_optima`` bounds come first: stop once ``max`` distinct optima
+        are found (skipping the ``basin_min_starts`` floor), never before
+        ``min`` are found. Otherwise, once ``n_completed`` reaches
+        ``basin_min_starts``, apply the Boender-Rinnooy Kan rule: with ``W``
+        distinct ROI optima over ``N`` ROI starts, stop once ``W**2/(N-W-1)``
+        falls below ``basin_undiscovered_threshold``.
         """
         n_distinct = len(self.initial_optima_registry)
 
-        # n_optima prior takes precedence (see docstring).
         if self.basin_min_optima is not None and n_distinct < self.basin_min_optima:
             return False
         if self.basin_max_optima is not None and n_distinct >= self.basin_max_optima:
             return True
 
-        # Otherwise the Bayesian rule, gated by the min-starts floor.
         if n_completed < self.basin_min_starts:
             return False
         W, n_roi = self.basin_detection_roi_stats()
@@ -2113,39 +1971,33 @@ class ProfileProjector:
         jobs = []
         activation_job_created_for_grid_points = set()
 
-        # Find all transferred coarse grid points (status='refined')
+        # Transferred coarse points inside the region of interest.
         transferred_points = [idx for idx, state in self.population.items()
                              if (state['status'] == 'optimized') and 
                                 (state['best_fitness'] >= (self.global_max_target_val - self.roi_threshold))]
 
         self.logger.info(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
 
-        # Activate all neighbors of transferred points
         for grid_idx in transferred_points:
             for neighbor_idx in self._get_valid_neighbors(grid_idx):
-                # Skip if already activated or pending
                 if (neighbor_idx in activation_job_created_for_grid_points) or \
                    (neighbor_idx in self.population) or \
                    (neighbor_idx in self.pending_activation_indices):
                     continue
 
-                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
                 candidates = self._get_refined_initialization_candidates(grid_coords)
 
-                # Use first candidate for activation jobs (optimization will explore from there)
+                # First candidate; NaN or no candidate falls back to the
+                # transferred point's parameters.
                 if len(candidates) > 0:
                     warm_start_params = candidates[0]['profiled_params']
-                    # Handle case where interpolation returns None (no profiled dims)
                     if warm_start_params is None:
                         warm_start_params = None
-                    # Check for NaN values
                     elif np.any(np.isnan(warm_start_params)):
-                        # Fallback: use nearest transferred point's parameters
                         nearest_state = self.population[grid_idx]
                         warm_start_params = nearest_state['profiled_params'][0]
                 else:
-                    # No candidates - use fallback
                     nearest_state = self.population[grid_idx]
                     warm_start_params = nearest_state['profiled_params'][0]
 
@@ -2179,7 +2031,6 @@ class ProfileProjector:
         jobs = []
         lbfgsb_job_created_for_grid_points = set()
 
-        # Find all transferred coarse grid points within ROI
         roi_cutoff = self.global_max_target_val - self.roi_threshold
         transferred_points = []
 
@@ -2195,8 +2046,7 @@ class ProfileProjector:
             self.logger.info("--- No transferred points found. No refinement jobs created. ---")
             return jobs, next_job_id
 
-        # === INTERPOLATION-BASED PRE-SCREENING ===
-        # Determine which coarse cells to process by predicting fine point likelihoods
+        # Pre-screen coarse cells by the interpolated likelihood of their fine points.
         self.logger.info("--- Performing interpolation-based pre-screening of coarse cells ---")
 
         coarse_cells_to_process = set()
@@ -2206,41 +2056,33 @@ class ProfileProjector:
         for coarse_idx, solution in self.coarse_grid_solution['solutions'].items():
             n_cells_screened += 1
 
-            # Check if the coarse point itself is in ROI (fast path)
             if solution['likelihood'] >= roi_cutoff:
                 coarse_cells_to_process.add(coarse_idx)
                 n_cells_accepted += 1
                 continue
 
-            # Coarse point is outside ROI - check if any fine points might be inside
-            # Sample fine grid points within this coarse cell and predict their likelihoods
+            # Coarse point outside the ROI: check the fine points of its cell.
             fine_start = tuple(ci * self.grid_refinement_factor for ci in coarse_idx)
             fine_end = tuple((ci + 1) * self.grid_refinement_factor for ci in coarse_idx)
-
-            # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
             fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
 
-            # Check all fine points in this cell
             cell_has_roi_point = False
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
 
             for fine_idx in itertools.product(*ranges):
-                # Skip coarse grid points (already checked above)
                 if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
 
-                # Get grid coordinates and interpolate likelihood
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
                 try:
                     interpolated_likelihood = self.refinement_interpolator.get_interpolated_likelihood(grid_coords)
 
-                    # Check if interpolated likelihood suggests this point is in ROI
                     if not np.isnan(interpolated_likelihood) and interpolated_likelihood >= roi_cutoff:
                         cell_has_roi_point = True
-                        break  # No need to check more points in this cell
+                        break
                 except Exception as e:
-                    # Interpolation failed - be conservative and include the cell
+                    # Include the cell if interpolation fails.
                     self.logger.debug(f"Interpolation failed for fine point {fine_idx}: {e}")
                     cell_has_roi_point = True
                     break
@@ -2251,37 +2093,25 @@ class ProfileProjector:
 
         self.logger.info(f"--- Pre-screening complete: {n_cells_accepted}/{n_cells_screened} coarse cells selected for processing ---")
 
-        # === PROCESS SELECTED COARSE CELLS ===
-        # For each selected coarse cell, activate all fine points in its cell
+        # A job for every fine point of the selected cells. Coarse point
+        # (ci, cj) spans the fine cell (ci*RF, cj*RF) to ((ci+1)*RF, (cj+1)*RF).
         for coarse_idx in coarse_cells_to_process:
-
-            # Define the cell boundaries in fine grid coordinates
-            # Coarse point (ci, cj) maps to fine cell: (ci*RF, cj*RF) to ((ci+1)*RF, (cj+1)*RF)
             fine_start = tuple(ci * self.grid_refinement_factor for ci in coarse_idx)
             fine_end = tuple((ci + 1) * self.grid_refinement_factor for ci in coarse_idx)
-
-            # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
             fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
 
-            # Iterate through all points in this cell
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
             for fine_idx in itertools.product(*ranges):
-                # Skip coarse grid points (already transferred)
+                # Coarse points were transferred already.
                 if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
-
-                # Skip if already processed
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
-                # Direct-evaluation mode: no profiled parameters to optimize,
-                # so refinement is just a single target evaluation at the fine
-                # grid point. ActivationJob handles this natively in
-                # direct_eval_mode (single eval at grid coords, status set to
-                # 'converged'). Bypass interpolation/LBFGSB entirely — an
-                # LBFGSBJob with n_opt_dims==0 hangs the master loop because
-                # its start() returns no tasks but stays in active_jobs.
+                # No profiled parameters: one ActivationJob evaluation per
+                # point. An LBFGSBJob with no opt dims would hang the master
+                # (start() returns no tasks but the job stays active).
                 if self.direct_eval_mode:
                     job = ActivationJob(
                         job_id=next_job_id,
@@ -2294,17 +2124,14 @@ class ProfileProjector:
                     next_job_id += 1
                     continue
 
-                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
                 candidates = self._get_refined_initialization_candidates(grid_coords)
-
-                # Handle edge cases
                 if len(candidates) == 0:
                     continue
 
-                # For direct evaluation mode with multiple candidates, evaluate all and pick best
+                # refinement_direct_eval with several candidates: evaluate all,
+                # keep the best.
                 if self.refinement_direct_eval and len(candidates) > 1:
-                    # Create a special multi-candidate evaluation job
                     all_prof_params = []
                     all_full_params = []
 
@@ -2313,24 +2140,23 @@ class ProfileProjector:
                         if prof_params is None:
                             prof_params = np.array([])
                         elif np.any(np.isnan(prof_params)):
-                            continue  # Skip NaN candidates
+                            continue
 
                         full_params = self._construct_params(fine_idx, prof_params)
                         all_prof_params.append(prof_params)
                         all_full_params.append(full_params)
 
                     if len(all_prof_params) == 0:
-                        continue  # All candidates were invalid
+                        continue
 
-                    # Create ActivationJob that evaluates all candidates
                     job = ActivationJob(
                         job_id=next_job_id,
                         sampler=self,
                         grid_idx=fine_idx,
-                        warm_start_params=all_prof_params[0],  # Initial params (will be overridden)
+                        warm_start_params=all_prof_params[0],
                         mark_converged=True
                     )
-                    # Override to evaluate all candidates
+                    # Evaluate the candidates instead of the default population.
                     job.pop_size = len(all_prof_params)
                     job.all_profiled_params = np.array(all_prof_params)
                     job.all_full_params = all_full_params
@@ -2342,22 +2168,16 @@ class ProfileProjector:
                     next_job_id += 1
 
                 else:
-                    # Single candidate or optimization mode: use first candidate
                     candidate = candidates[0]
                     start_params_partial = candidate['profiled_params']
-
-                    # Handle edge cases
                     if start_params_partial is None:
                         start_params_partial = np.array([])
                     elif np.any(np.isnan(start_params_partial)):
-                        continue  # Skip if NaN
+                        continue
 
-                    # Construct full parameter vector
                     start_params_full = self._construct_params(fine_idx, start_params_partial)
 
-                    # Create job based on refinement mode
                     if self.refinement_direct_eval:
-                        # Direct evaluation mode with single candidate
                         job = ActivationJob(
                             job_id=next_job_id,
                             sampler=self,
@@ -2365,14 +2185,13 @@ class ProfileProjector:
                             warm_start_params=start_params_partial,
                             mark_converged=True
                         )
-                        # Override to force single evaluation
+                        # A single evaluation.
                         job.pop_size = 1
                         job.all_profiled_params = np.array([start_params_partial])
                         job.all_full_params = [start_params_full]
                         job.fitnesses = np.full(1, -np.inf)
                         job.evals_remaining = 1
                     else:
-                        # Optimization mode: create L-BFGS-B refinement job
                         job = LBFGSBJob(
                             job_id=next_job_id,
                             job_type='REFINEMENT_LBFGSB',
@@ -2388,14 +2207,10 @@ class ProfileProjector:
                     lbfgsb_job_created_for_grid_points.add(fine_idx)
                     next_job_id += 1
 
-        # Count multi-candidate jobs
         n_multi_candidate = sum(1 for job in jobs if hasattr(job, 'pop_size') and job.pop_size > 1)
         n_single_candidate = len(jobs) - n_multi_candidate
 
         if self.direct_eval_mode:
-            # In direct_eval_mode the per-point jobs are ActivationJobs that
-            # simply evaluate the target at the fine grid point (no profiled
-            # params to optimize).
             opt_method = "direct evaluation"
         elif self.refinement_direct_eval:
             opt_method = "direct evaluation"
@@ -2410,18 +2225,16 @@ class ProfileProjector:
 
     def _is_de_skippable(self, grid_idx):
         """True if ``grid_idx``'s in-population neighbours agree on the profiled
-        argmax, so the local argmax field is smooth/single-valued and the cell
-        can confirm convergence on a reduced DE window.
+        argmax, so the cell can confirm convergence on a reduced DE window.
 
-        Reuses the neighbours' already-stored best profiled-params vectors --
-        no new target evaluations. Returns False whenever the evidence is thin
-        (fewer than two neighbours), so the safe default is the full window.
+        Uses the neighbours' stored best profiled parameters; no target
+        evaluations. False with fewer than two neighbours.
         """
         if self.n_prof_dims == 0:
             return False
 
-        # Multimodality guard: if a cold random/pool seed beat the neighbour
-        # warm-start at activation, a better inner mode sits nearby -- keep DE.
+        # If a random or pool seed beat the neighbour warm start at activation,
+        # a better inner mode is nearby: keep DE.
         if not self.population[grid_idx].get('warm_start_best', False):
             return False
 
@@ -2625,7 +2438,6 @@ class ProfileProjector:
         new_jobs = []
         roi_cutoff = self.global_max_target_val - self.roi_threshold
 
-        # Iterate over a copy as population might be modified
         candidates = self.population.keys() if around is None else [
             idx for idx in around if idx in self.population]
         active_points_in_roi = [
@@ -2639,7 +2451,7 @@ class ProfileProjector:
             for neighbor_idx in targets:
                 if neighbor_idx not in self.population and neighbor_idx not in self.pending_activation_indices:
 
-                    # Find best warm_start_params from neighbor's neighbors (incl. self)
+                    # Warm start from the best activated cell next to the new one.
                     best_warm_start_params = None
                     best_warm_start_fitness = -np.inf
 
@@ -2686,7 +2498,6 @@ class ProfileProjector:
             neighbor_state = self.population[neighbor_idx]
             neighbor_fitness = neighbor_state['best_fitness']
 
-            # Get best profiled params from neighbor
             best_idx = np.argmax(neighbor_state['fitnesses'])
             profiled_params = neighbor_state['profiled_params'][best_idx]
 
@@ -2695,7 +2506,6 @@ class ProfileProjector:
         if not neighbor_info:
             return None
 
-        # Sort by fitness (descending) and take top n_neighbors
         neighbor_info.sort(key=lambda x: x[2], reverse=True)
         return neighbor_info[:n_neighbors]
 
@@ -2709,19 +2519,15 @@ class ProfileProjector:
         """
         from .jobs.patching_test_job import PatchingTestJob
 
-        # Determine candidate grid points for this wave
         if wave_number == 0:
-            # Wave 0: Test all ROI points AND border points
             roi_cutoff = self.global_max_target_val - self.roi_threshold
             candidates = []
 
             for idx, state in self.population.items():
                 if state['best_fitness'] >= roi_cutoff:
-                    # Point is within ROI - definitely test it
                     candidates.append(idx)
                 else:
-                    # Point is below ROI - check if it borders the ROI
-                    # (i.e., has neighbors within ROI)
+                    # Border cell: more than half its neighbours in the ROI.
                     neighbor_count = 0
                     roi_neighbor_count = 0
                     for neighbor_idx in self._get_valid_neighbors(idx):
@@ -2730,13 +2536,11 @@ class ProfileProjector:
                             if self.population[neighbor_idx]['best_fitness'] >= roi_cutoff:
                                 roi_neighbor_count += 1
 
-                    # Include if >50% of neighbors are in ROI
                     if neighbor_count > 0 and (roi_neighbor_count / neighbor_count) > 0.5:
                         candidates.append(idx)
 
             self.logger.info(f"--- Patching Wave 0: Testing {len(candidates)} ROI and border points ---")
         else:
-            # Wave 1+: Test neighbors of recently updated points
             candidates = set()
             for updated_idx in updated_points_last_wave:
                 for neighbor_idx in self._get_valid_neighbors(updated_idx):
@@ -2754,7 +2558,6 @@ class ProfileProjector:
         for grid_idx in candidates:
             current_fitness = self.population[grid_idx]['best_fitness']
 
-            # Get best neighbor(s) profiled parameters
             neighbor_info = self._get_best_neighbor_profiled_params(
                 grid_idx, n_neighbors=self.patching_n_neighbors
             )
@@ -2762,13 +2565,10 @@ class ProfileProjector:
             if neighbor_info is None:
                 continue
 
-            # For each neighbor to test
             for neighbor_idx, test_params, neighbor_fitness in neighbor_info:
-                # Optimization: only test if neighbor has better likelihood
                 if neighbor_fitness <= current_fitness:
                     continue
 
-                # Create test job
                 job = PatchingTestJob(
                     job_id=next_job_id,
                     sampler=self,

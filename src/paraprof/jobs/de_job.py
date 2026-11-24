@@ -22,19 +22,17 @@ class DEGridPointJob(Job):
         self.grid_idx = grid_idx
         self.grid_state = self.sampler.population[self.grid_idx]
 
-        # Shared resources from master
         self.parent_pool = parent_pool
         self.pbest_archive = pbest_archive
 
-        # Shared lists to append successful mutations to
+        # Successful F and CR values are appended to these shared lists.
         self.successful_F_list = successful_F_list
         self.successful_CR_list = successful_CR_list
 
         self.pop_size = self.sampler.pop_per_grid_point
         self.evals_remaining = self.pop_size
 
-        # Store trial info to process results
-        self.trial_info = {} # {point_idx: (trial_params, F_i, CR_i)}
+        self.trial_info = {}  # {point_idx: (trial_params, F_i, CR_i)}
 
 
     def start(self):
@@ -209,9 +207,8 @@ class DEGridPointJob(Job):
             full_params = self.sampler._construct_params(self.grid_idx, best_profiled_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
-        # Effective convergence window: allow_early_DE_exit cells use a reduced
-        # one (set in create_de_generation_jobs). `>=` + slice matches the old
-        # `==`/full-deque for the default window (capped at convergence_window).
+        # allow_early_DE_exit cells use a shorter window (set in
+        # create_de_generation_jobs).
         eff_window = grid_state.get('conv_window') or self.sampler.convergence_window
         if grid_state['status'] == 'active' and \
            len(grid_state['improvement_history']) >= eff_window:
