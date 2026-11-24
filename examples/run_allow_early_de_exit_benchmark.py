@@ -109,6 +109,9 @@ def main():
     if myrank == 0:
         advanced_config = dict(cfg['advanced_config'] or {})
         advanced_config['de'] = {'allow_early_DE_exit': (args.mode == 'certify')}
+        # Projections run one after another, so the call count of the last
+        # projection is the total of the scan.
+        advanced_config['cross_projection'] = {'eager_start': False}
 
         t0 = time.time()
         with ProfileProjector(

@@ -107,6 +107,8 @@ A scan proceeds roughly as follows:
 8. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seed points. This breaks contiguous wrong-optimum strips that the fitness-only filter of the patching step cannot fix.
 9. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
 
+With several projections, the next one starts while the current one is still running, on workers the current one leaves idle. This happens once a tenth of the workers is idle and the newest projection has finished its first cell optimisation or DE generation. Earlier projections are served first. Projections with `grid_refinement_factor` or without profiled parameters are not overlapped. While projections overlap, log lines are prefixed with the projection number (`[P2]`), and the call count in a projection's `metrics` is that of the whole scan when the projection ended; `sampler.target_calls` holds the total. Set `cross_projection.eager_start` to `False` to run the projections one after another.
+
 Key code paths: `ProfileProjector` (`sampler.py`) holds state and configuration, `master_main()` (`master.py`) is the state machine, `worker_main()` (`worker.py`) is the evaluation loop, and `jobs/` contains the asynchronous optimization jobs.
 
 ## Configuration
@@ -270,7 +272,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `clustering.*`                     | auto-DBSCAN                    | Mode detection during refinement                                 |
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
-| `cross_projection.eager_start`                | `False`            | Start the next projection while the current one runs, on workers it leaves idle. Work is handed out in the order the projections were started. Not for projections with `grid_refinement_factor`. Same cells in the result; see the changelog for measurements. |
+| `cross_projection.eager_start`                | `True`             | Start the next projection while the current one runs, on workers it leaves idle. Work is handed out in the order the projections were started. Not for projections with `grid_refinement_factor`. Set `False` to run the projections one after another. |
 | `suspect_recheck.enabled`                     | `True`             | Run the suspect-cell recheck pass after patching. |
 | `suspect_recheck.max_waves`                   | `10`               | Cap on suspect-recheck waves. |
 | `suspect_recheck.param_k`                     | `3.0`              | MAD multiplier for the discontinuity threshold. Lower flags more cells. |

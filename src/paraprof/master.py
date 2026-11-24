@@ -278,8 +278,12 @@ def run_all_projections(comm, sampler, projections,
                         myrank=0):
     """Run a list of projections with automatic cross-projection warm-start.
 
-    With ``cross_projection`` ``eager_start`` a projection may start while an
-    earlier one is running (see ``master_main``).
+    With ``cross_projection`` ``eager_start`` (the default) a projection may
+    start while an earlier one is running (see ``master_main``). The call
+    counts and ``global_max`` in its ``metrics`` are then those of the scan
+    when that projection ended. The projection listed last need not end last,
+    so read the totals of the scan from ``sampler.target_calls`` and
+    ``sampler.global_max_target_val``.
 
     See :func:`run_projection` for the per-projection config and result shape.
     Returns a list of per-projection result dicts, in the order of

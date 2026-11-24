@@ -109,9 +109,13 @@ def main():
         # that distinguishes baseline from proximity.
         on = (args.mode == 'proximity')
         advanced_config = dict(cfg['advanced_config'] or {})
+        # Projections run one after another in both modes: eager_start needs
+        # pool_seeded_initial_maxima, and the per-projection call counts of
+        # the report are differences of cumulative counts.
         advanced_config['cross_projection'] = {
             'proximity_warm_start': on,
             'pool_seeded_initial_maxima': on,
+            'eager_start': False,
         }
 
         t0 = time.time()

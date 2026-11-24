@@ -351,7 +351,7 @@ class ProfileProjector:
                 'cross_projection': {
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
-                    'eager_start': bool,                 # Default: False
+                    'eager_start': bool,                 # Default: True
                 },
 
                 'suspect_recheck': {
@@ -412,14 +412,23 @@ class ProfileProjector:
         ``False`` to disable that hook (useful for A/B benchmarking or as a
         safety valve if a target pathology surfaces).
 
-        ``eager_start`` (default ``False``) starts the next projection on
+        ``eager_start`` (default ``True``) starts the next projection on
         workers the current one leaves idle, once a tenth of the workers is
         idle and the projection started before it has finished its first
         cell optimisation (or DE generation). It needs
         ``pool_seeded_initial_maxima``. Earlier projections are served
         first. Projections with ``grid_refinement_factor`` or without
-        profiled parameters are not overlapped. The results hold the same
-        cells as a sequential run.
+        profiled parameters are not overlapped. A projection that starts
+        early is seeded from a smaller pool than in a sequential run. On a
+        target with several optima single cells can then end at a different
+        optimum, as they do between two random seeds. Set it to ``False``
+        to run the projections one after another.
+
+        While projections overlap, log lines are prefixed with the number
+        of the projection they belong to (``[P2]``). The call counts in the
+        result of a projection are those of the whole scan at the time that
+        projection ended. The projection listed last need not end last, so
+        the total of the scan is the sampler's ``target_calls``.
 
         Several DE knobs that did not show measurable effect on grid quality
         in benchmarking (mutation_strategy, pbest_fraction,
@@ -611,7 +620,7 @@ class ProfileProjector:
             'cross_projection': {
                 'proximity_warm_start': True,
                 'pool_seeded_initial_maxima': True,
-                'eager_start': False,
+                'eager_start': True,
             },
 
             'suspect_recheck': {
@@ -780,8 +789,8 @@ class ProfileProjector:
         #    otherwise rediscover known maxima.
         self.proximity_warm_start = config['cross_projection']['proximity_warm_start']
         self.pool_seeded_initial_maxima = config['cross_projection']['pool_seeded_initial_maxima']
-        # 3. eager_start: the next projection starts on workers the current
-        #    one leaves idle (run_all_projections, master_main).
+        # 3. eager_start (default on): the next projection starts on workers
+        #    the current one leaves idle (run_all_projections, master_main).
         self.eager_projection_start = bool(config['cross_projection']['eager_start'])
 
         # Suspect-cell recheck configuration. Runs after standard patching to
