@@ -142,7 +142,8 @@ A projection that profiles the parameter is then run once per sub-range (a branc
 
 - The noise estimate, the initial points and the global L-BFGS-B starts are shared. The cost of a branch is its grid run. The branches share the workers.
 - The region of interest is measured from the maximum over all branches. A branch whose best known point lies outside it is not followed.
-- A branch needs a start. It takes the initial maxima inside its sub-range. If none of them is inside the region of interest, one L-BFGS-B run over all parameters, confined to the branch, starts from the best known point with the split parameter mirrored about the split point. This run is made once per scan.
+- A branch needs a start. It takes the initial maxima inside its sub-range. If none of them is inside the region of interest, paraprof evaluates the target at 17 values of the split parameter inside the sub-range, with the other parameters as in the best known point, and runs one L-BFGS-B optimisation over all parameters, confined to the branch, from the highest local maximum along that line. Without a local maximum it starts from the best known point mirrored about the split point. This is done once per scan. A solution that only appears when other parameters change as well is not seen on the line: give an initial point inside the sub-range then.
+- A warning is logged if the best start of a branch lies on the split point. The branch then has no optimum of its own that paraprof found, and its cells follow the split point.
 - Put the split point between the two solutions. Several split points give several sub-ranges, several parameters give one branch per combination of sub-ranges.
 - In the exported solution each cell has a `branch` index, and `branches` lists per branch its `ranges` and its own `solutions`, so the profile of each branch can be plotted.
 - A `branches` key in a projection replaces the setting for that projection; `{}` turns it off.

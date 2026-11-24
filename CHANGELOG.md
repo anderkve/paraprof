@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   although the plugin's docstring said physical coordinates.
 
 ### Fixed
+- A scan did not end when a quarter of `pop_per_grid_point` was more than the
+  number of points in the pool, e.g. a population of 12 with one initial
+  point: the activation of a cell waited for samples it had not created. The
+  missing samples are now drawn at random.
 - A projection over all parameters (no profiled parameters) raised
   `AttributeError` in `ActivationJob.on_finish`, for both optimisation methods.
 - `grid_points` were paired with the wrong parameters when `dims` was not given
@@ -70,10 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no cell is low, at 3 990. The branches share the initial stages and the
   workers; each is one more `_ProjectionRun` in `master_main` with its own
   projection state. A branch without a known point inside the region of
-  interest gets one L-BFGS-B run over all parameters confined to it (new job
-  type `BRANCH_SEED`), started from the best known point mirrored about the
-  split point; a branch whose best point stays outside the region of interest
-  is not followed. The exported solution names the `branch` of each cell and
+  interest gets one L-BFGS-B optimisation over all parameters confined to it
+  (new job type `BRANCH_SEED`). It starts from the highest local maximum of
+  the target along the split parameter inside the sub-range (17 evaluations),
+  or else from the best known point mirrored about the split point. A branch
+  whose best point stays outside the region of interest is not followed; one
+  whose best point lies on the split point is followed with a warning. The exported solution names the `branch` of each cell and
   lists the solutions of every branch under `branches`. A projection can set
   its own `branches`. With `grid_refinement_factor` the branches are refined
   one after the other. A projection with the split parameter as an axis, and

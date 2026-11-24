@@ -15,6 +15,7 @@ from .phases import PHASE_UNKNOWN
 from .volume import normalize_volume_config
 from .jobs.lbfgsb_job import LBFGSBJob
 from .jobs.activation_job import ActivationJob
+from .jobs.branch_scan_job import BranchScanJob
 from .jobs.de_job import DEGridPointJob
 
 
@@ -113,6 +114,10 @@ DEFAULT_ACTIVATION_MIX_RATIOS = {
     'global':    0.25,
     'random':    0.25,
 }
+
+# A branch's confined optimisation that runs out of iterations below the
+# region of interest is continued, up to this many runs in all.
+BRANCH_SEED_MAX_RUNS = 5
 
 DEFAULT_CLUSTERING_EPS_MULTIPLIER = 3.0
 DEFAULT_CLUSTERING_PROJECTION_WEIGHT = 1.0
@@ -1271,11 +1276,9 @@ class ProfileProjector:
         look for one where there is none.
 
         A branch without a known point inside the region of interest gets one
-        L-BFGS-B run over all parameters, confined to the branch. It starts
-        from the best known point with each split parameter mirrored into
-        the branch at the nearest end of its sub-range, which is the other
-        solution if the two are symmetric about the split point. A branch is
-        tried once per scan.
+        L-BFGS-B optimisation over all parameters, confined to the branch.
+        Its start is chosen from evaluations along the split parameter
+        inside the branch (BranchScanJob). A branch is tried once per scan.
         """
         self.branch_seeds = self._collect_branch_seeds(from_pool, from_file)
         if not self.initial_maxima:
@@ -1291,39 +1294,64 @@ class ProfileProjector:
             if key in self._branch_optima:
                 continue
             self._branch_optima[key] = None
-            start = np.array(best['point'], dtype=float)
-            for d, (lo, hi) in branch['ranges'].items():
-                if start[d] < lo:
-                    start[d] = min(hi, 2.0 * lo - start[d])
-                elif start[d] > hi:
-                    start[d] = max(lo, 2.0 * hi - start[d])
-            job = LBFGSBJob(
-                job_id=next_job_id,
-                job_type='BRANCH_SEED',
-                sampler=self,
-                opt_dims=tuple(range(self.dims)),
-                start_params=start,
-                grid_idx=None,
-                start_params_full=start,
-                seed_history=None,
-                bounds=branch['bounds'],
-            )
-            job.branch_index = branch['index']
-            jobs.append(job)
+            jobs.append(BranchScanJob(next_job_id, self, branch, best['point']))
             next_job_id += 1
             self.logger.info(f"--- No known point inside the region of interest in "
                              f"{self._describe_branch(branch)}: optimising within it ---")
         return jobs, next_job_id
 
-    def add_branch_seed(self, index, point, target_val):
-        """Record the endpoint of a branch's confined optimisation."""
+    def branch_seed_run(self, job_id, branch, start, start_fitness=-np.inf, history=None, run=1):
+        """L-BFGS-B job over all parameters, confined to ``branch``."""
+        start = np.array(start, dtype=float)
+        job = LBFGSBJob(
+            job_id=job_id,
+            job_type='BRANCH_SEED',
+            sampler=self,
+            opt_dims=tuple(range(self.dims)),
+            start_params=start,
+            grid_idx=None,
+            start_params_full=start,
+            seed_history=history,
+            start_fitness=start_fitness,
+            bounds=branch['bounds'],
+        )
+        job.branch_index = branch['index']
+        job.branch_run = run
+        return job
+
+    def finish_branch_seed(self, job, next_job_id):
+        """Take the endpoint of a branch's confined optimisation as an initial
+        maximum of the branch. A run that ran out of iterations below the
+        region of interest is continued instead: its endpoint would drop the
+        branch. Returns ``(job, next_job_id)`` then, else None."""
+        branch = self.projection_branches[job.branch_index]
+        point = job._construct_full_params_for_task(job.current_params)
+        target_val = job.current_fitness
+        if (not job.converged and job.branch_run < BRANCH_SEED_MAX_RUNS
+                and target_val < self.global_max_target_val - self.roi_threshold):
+            history = {'s': list(job.s_hist), 'y': list(job.y_hist), 'Hinv': job.Hinv}
+            return (self.branch_seed_run(next_job_id, branch, point, start_fitness=target_val,
+                                         history=history, run=job.branch_run + 1),
+                    next_job_id + 1)
+
         seed = {'point': point, 'target_val': target_val}
-        self._branch_optima[self._branch_key(self.projection_branches[index])] = seed
-        self.branch_seeds[index].append(seed)
-        self.branch_seeds[index].sort(key=lambda m: m['target_val'], reverse=True)
+        self._branch_optima[self._branch_key(branch)] = seed
+        self.branch_seeds[job.branch_index].append(seed)
+        self.branch_seeds[job.branch_index].sort(key=lambda m: m['target_val'], reverse=True)
         if target_val > self.global_max_target_val:
             self.global_max_target_val = target_val
         self._update_global_pool(point, target_val, grid_idx=None)
+        return None
+
+    def _split_point_under(self, branch, point):
+        """``(dim, split point)`` if ``point`` lies on a split point that
+        bounds ``branch``, else None."""
+        for d, sub_range in branch['ranges'].items():
+            span = float(self.bounds[d, 1] - self.bounds[d, 0])
+            for edge, outer in zip(sub_range, self.bounds[d]):
+                if edge != outer and abs(point[d] - edge) <= 1e-6 * span:
+                    return d, edge
+        return None
 
     def branch_states(self):
         """One projection state per branch that is followed, in branch order.
@@ -1346,6 +1374,18 @@ class ProfileProjector:
                 continue
             self.logger.info(f"--- Following {name}: {len(seeds)} initial maxima, "
                              f"best {seeds[0]['target_val']:.4f} ---")
+            on_edge = self._split_point_under(branch, seeds[0]['point'])
+            if on_edge is not None:
+                # The best start is the tail of an optimum of the neighbouring
+                # sub-range. Cells started from it stay on the split point
+                # unless an activation sample finds an optimum further in.
+                d, edge = on_edge
+                param = self.parameter_names[d] if self.parameter_names else f"parameter {d}"
+                self.logger.warning(
+                    f"The best known point of {name} lies on the split point {edge:.6g} of "
+                    f"{param}: no optimum was found inside the sub-range. If there is one, "
+                    f"move the split point towards it or give an initial point inside the "
+                    f"sub-range.")
             state = dict(base)
             state.update({
                 'branch': branch,
@@ -1381,6 +1421,10 @@ class ProfileProjector:
         ``states`` are the states of the finished branches of the projection
         the sampler is set up for. A finished cell is preferred over an
         unfinished one; between equal values the first branch is kept.
+
+        The merged state is a result. Its cells keep the optimiser state of
+        their branch, whose curvature refers to the bounds of that branch, so
+        it is not a state to go on optimising from.
         """
         done = ('converged', 'optimized')
         population = {}
@@ -1508,6 +1552,18 @@ class ProfileProjector:
         Near cluster boundaries: multiple candidates, one per nearby cluster.
         Elsewhere: a single interpolated candidate.
         """
+        candidates = self._interpolated_candidates(grid_coords)
+        if self.branch is not None:
+            # Interpolation between cells of the branch can leave its
+            # sub-range by a rounding error.
+            for candidate in candidates:
+                if candidate['profiled_params'] is not None:
+                    candidate['profiled_params'] = self._ensure_bounds(
+                        np.asarray(candidate['profiled_params'], dtype=float), self.profiled_dims)
+        return candidates
+
+    def _interpolated_candidates(self, grid_coords):
+        """The candidates of _get_refined_initialization_candidates, as interpolated."""
         # If clustering is not available or disabled, use standard interpolation
         if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
             profiled_params = self.refinement_interpolator.interpolate(grid_coords)

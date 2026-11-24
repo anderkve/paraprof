@@ -400,8 +400,8 @@ CELL_JOB_TYPES = ('ACTIVATE_GRID_POINT', 'DE_GRID_POINT', 'LBFGSB', 'LBFGSB_LOOP
                   'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB')
 
 
-def make_twin(offset=-0.4):
-    """Target with two modes in x3, at 0.30 and at 0.70, and maximum -10.
+def make_twin(offset=-0.4, second_at=0.70, second_width=0.05):
+    """Target with two modes in x3, at 0.30 and at `second_at`, and maximum -10.
 
     At x0 = 0.5 the second mode is `-offset` below the first, and it gains 5 per unit of x0:
     with the default offset it is the higher one for x0 above 0.58.
@@ -409,7 +409,8 @@ def make_twin(offset=-0.4):
     def twin(x):
         x0, x1, x2, x3 = np.asarray(x, dtype=float)
         first = -0.5 * (((x3 - 0.30) / 0.05) ** 2 + ((x2 - 0.50 - 0.3 * (x0 - 0.5)) / 0.06) ** 2)
-        second = (-0.5 * (((x3 - 0.70) / 0.05) ** 2 + ((x2 - 0.45 + 0.2 * (x1 - 0.5)) / 0.06) ** 2)
+        second = (-0.5 * (((x3 - second_at) / second_width) ** 2
+                          + ((x2 - 0.45 + 0.2 * (x1 - 0.5)) / 0.06) ** 2)
                   + offset + 5.0 * (x0 - 0.5))
         level = -0.5 * (((x0 - 0.45) / 0.12) ** 2 + ((x1 - 0.55) / 0.15) ** 2)
         return -10.0 + level + float(np.logaddexp(first, second))
@@ -538,6 +539,122 @@ def test_branch_without_a_known_point_gets_its_own_optimisation():
     err = branch_errors(split['results'][0]['coarse_solution'])
     assert err.min() > -1e-4 and err.max() < 1e-6
     assert 0 < split['timeline'][3].count('BRANCH_SEED') < 100
+
+
+@pytest.mark.parametrize('split', [0.4, 0.5, 0.8])
+def test_branch_start_does_not_rely_on_the_mirrored_point(split):
+    """The second mode is narrow and not where the first one mirrors to. From the mirrored
+    point an optimisation runs back to the split point, so the start is taken from the
+    values along x3 instead."""
+    target = make_twin(second_at=0.90, second_width=0.02)
+    out = virtual_scan([plane()], 40, target=target, branches={3: [split]},
+                       initial_points=[TWIN_FIRST])
+    sol = out['results'][0]['coarse_solution']
+    ref = numeric_profile(target, sol, [TWIN_FIRST, [0.52, 0.55, 0.45, 0.90]])
+    err = branch_errors(sol, ref=ref)
+    assert len(err) > 50 and err.min() > -1e-4 and err.max() < 1e-6
+    assert all(len(b['solutions']) > 20 for b in sol['branches'])
+    assert out['timeline'][3].count('BRANCH_SEED') < 100
+
+
+def test_line_scan_picks_a_local_maximum_away_from_the_near_end():
+    from paraprof.jobs.branch_scan_job import BranchScanJob, LINE_POINTS
+    sampler = ProfileProjector(target_func=twin, bounds=[(0.0, 1.0)] * 4, branches=SPLIT,
+                               projections=[{'dims': [0, 1], 'grid_points': [4, 4]}])
+    upper = sampler.projection_branches[1]
+
+    def scan(profile):
+        job = BranchScanJob(0, sampler, upper, TWIN_FIRST)
+        tasks = job.start()
+        assert len(tasks) == LINE_POINTS + 1                 # the mirrored value is one of them
+        for task in tasks:
+            x = task['params']
+            assert 0.5 <= x[3] <= 1.0 and np.array_equal(x[:3], TWIN_FIRST[:3])
+            job.process_result({'target_val': profile(x[3]), 'context': task['context']})
+        assert job.is_finished()
+        return job.choose_start()
+
+    # A bump inside the sub-range wins over the higher values next to the split point.
+    point, value = scan(lambda t: max(-100.0 * (t - 0.3) ** 2, -8.0 - 400.0 * (t - 0.86) ** 2))
+    assert abs(point[3] - 0.86) < 0.5 / LINE_POINTS and -8.1 < value <= -8.0
+    # Falling all the way: the mirrored point.
+    point, value = scan(lambda t: -100.0 * (t - 0.3) ** 2)
+    assert point[3] == pytest.approx(0.7) and value == pytest.approx(-16.0)
+    # Rising to the far end counts as a maximum there.
+    point, value = scan(lambda t: 3.0 * t)
+    assert point[3] == pytest.approx(1.0 - 0.25 / LINE_POINTS)
+    sampler.close()
+
+
+def test_confined_run_below_the_region_of_interest_is_continued():
+    from paraprof.sampler import BRANCH_SEED_MAX_RUNS
+    sampler = ProfileProjector(target_func=twin, bounds=[(0.0, 1.0)] * 4, branches=SPLIT,
+                               projections=[{'dims': [0, 1], 'grid_points': [4, 4]}],
+                               lbfgsb_max_iter=1, roi_threshold=0.5,
+                               advanced_config={'lbfgsb': {'fd_step': 1e-6}})
+    sampler.global_max_target_val = -10.0
+    sampler.initial_maxima = [{'point': TWIN_FIRST, 'target_val': -10.0}]
+    sampler.create_branch_seed_jobs(0)
+    upper = sampler.projection_branches[1]
+
+    # One iteration from far away ends below the region of interest (-10.5), not converged.
+    job = sampler.branch_seed_run(0, upper, [0.95, 0.05, 0.95, 0.98])
+    values = []
+    while job is not None:
+        first_tasks = job.start()
+        if values:                                           # a continuation knows its start value
+            assert all(t['context']['sub_type'] != 'LBFGS_INITIAL_F' for t in first_tasks)
+            assert job.current_fitness == values[-1]
+        pending = list(first_tasks)
+        while not job.is_finished():
+            pending.extend(job.process_result(
+                evaluate_task(pending.pop(0), twin, None, 1, get_logger())))
+        values.append(job.current_fitness)
+        spawned = job.on_finish(job.id + 1)
+        job = spawned[0] if spawned else None
+    assert 2 <= len(values) <= BRANCH_SEED_MAX_RUNS
+    assert values == sorted(values) and values[0] < -10.5 < values[-1]
+    # The last endpoint is the initial maximum of the branch.
+    assert [m['target_val'] for m in sampler.branch_seeds[1]] == [values[-1]]
+    assert sampler.branch_seeds[0][0]['target_val'] == -10.0
+    sampler.close()
+
+
+def test_split_point_as_the_best_start_of_a_branch_is_reported(capsys):
+    # No mode above x3 = 0.2 except the one at 0.30, and none below: the lower branch can
+    # only start on the split point.
+    out = virtual_scan([plane()], 40, target=make_twin(offset=-30.0), branches={3: [0.2]},
+                       log_level='WARNING')
+    assert 'lies on the split point 0.2 of parameter 3' in capsys.readouterr().err
+    assert branch_errors(out['results'][0]['coarse_solution'],
+                         make_twin(offset=-30.0)).min() > -1e-4
+
+
+def test_population_larger_than_the_pool():
+    # A quarter of the population comes from the pool. With fewer points in it, or in the
+    # part of it inside a branch, the rest are random samples.
+    out = virtual_scan([plane(grid=6)], 10, initial_points=[CENTRE], pop_per_grid_point=12)
+    assert roi_errors(out).min() > -1e-5
+    out = virtual_scan([plane()], 40, target=twin, branches={3: [0.5], 2: [0.5]},
+                       pop_per_grid_point=8)
+    assert branch_errors(out['results'][0]['coarse_solution']).min() > -1e-4
+
+
+def test_refinement_start_points_are_kept_inside_the_branch():
+    sampler = ProfileProjector(target_func=twin, bounds=[(0.0, 1.0)] * 4, branches=SPLIT,
+                               projections=[{'dims': [0, 1], 'grid_points': [4, 4]}])
+    just_outside = np.array([0.4, np.nextafter(0.5, 0.0)])   # (x2, x3) one rounding step low
+
+    class Interpolator:
+        def interpolate(self, coords):
+            return just_outside
+    sampler.refinement_interpolator = Interpolator()
+    plain = sampler._get_refined_initialization_candidates(np.array([0.5, 0.5]))
+    assert plain[0]['profiled_params'][1] < 0.5              # no branch: taken as it is
+    sampler.enter_branch(1)
+    confined = sampler._get_refined_initialization_candidates(np.array([0.5, 0.5]))
+    np.testing.assert_array_equal(confined[0]['profiled_params'], [0.4, 0.5])
+    sampler.close()
 
 
 def test_confined_optimisation_runs_once_per_scan():
@@ -675,10 +792,11 @@ def test_branch_seeds_are_read_per_branch_from_the_pool_and_the_file(tmp_path):
         best = [seeds[0] for seeds in sampler.branch_seeds]
         assert [m['target_val'] for m in best] == [-10.0, -10.5]
         np.testing.assert_array_equal(best[1]['point'], second)
-        # Without the second read the branch has no start, and gets an optimisation.
+        # Without the second read the branch has no start, and one is looked for: around
+        # the best point mirrored about the split point.
         jobs, _ = sampler.create_branch_seed_jobs(0)
-        assert [job.type for job in jobs] == ['BRANCH_SEED'] and jobs[0].branch_index == 1
-        np.testing.assert_allclose(jobs[0].start_params_full, [0.50, 0.50, 0.50, 0.70])
+        assert [job.type for job in jobs] == ['BRANCH_SEED'] and jobs[0].branch['index'] == 1
+        np.testing.assert_allclose(jobs[0].reference, [0.50, 0.50, 0.50, 0.70])
         sampler.close()
 
 

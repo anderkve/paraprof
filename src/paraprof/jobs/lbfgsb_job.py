@@ -37,7 +37,7 @@ HESSIAN_EIG_FLOOR = 1e-4
 GRID_JOB_TYPES = ('LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB',
                   'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB')
 # Runs over all parameters: a start of the multistart, and the optimisation
-# confined to a branch (see ProfileProjector.create_branch_seed_jobs).
+# confined to a branch (see ProfileProjector.branch_seed_run).
 GLOBAL_JOB_TYPES = ('INITIAL_OPTIMIZATION', 'BRANCH_SEED')
 # In a run confined to part of a parameter's range, a finite-difference step
 # is at most this fraction of that part, so the probes fit inside it.
@@ -788,7 +788,9 @@ class LBFGSBJob(Job):
         usable = np.isfinite(self.current_fitness)
         if usable:
             self.improvement = self.current_fitness - self.start_fitness
-        if self.last_gamma is not None:
+        # The scale of a run confined to a branch is in units of that branch's
+        # bounds and is not passed on.
+        if self.last_gamma is not None and self.type != 'BRANCH_SEED':
             sampler.note_lbfgsb_scale(self.type, self.last_gamma)
 
         if self.type == 'INITIAL_OPTIMIZATION':
@@ -811,9 +813,8 @@ class LBFGSBJob(Job):
 
         elif self.type == 'BRANCH_SEED':
             if usable:
-                sampler.add_branch_seed(
-                    self.branch_index, self._construct_full_params_for_task(self.current_params),
-                    self.current_fitness)
+                # May continue the run in a new job.
+                return sampler.finish_branch_seed(self, next_job_id)
 
         elif self.type in GRID_JOB_TYPES:
             grid_idx = self.grid_idx

@@ -64,6 +64,9 @@ class ActivationJob(Job):
         global_samples = self.sampler._sample_from_global_pool(n_from_global)
         if global_samples is not None:
             samples_list.extend(global_samples)
+            # The pool, or its part inside the branch, may hold fewer points
+            # than asked for. Random samples fill the rest.
+            n_from_random += n_from_global - len(global_samples)
         else:
             n_from_random += n_from_global
 

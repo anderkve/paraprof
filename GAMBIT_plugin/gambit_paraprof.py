@@ -305,7 +305,9 @@ only the loglike value, so L-BFGS-B uses finite differences.
 
         The inverse prior transform takes a full point, so the other
         parameters are set to the centre of the hypercube. The split
-        parameter's prior must not depend on them.
+        parameter's prior must not depend on them: the mapping is repeated
+        with the other parameters at a quarter and at three quarters of
+        their unit ranges and has to give the same position.
         """
         if not branches:
             return {}
@@ -318,8 +320,12 @@ only the loglike value, so L-BFGS-B uses finite differences.
         short = {}
         for full in names:
             short.setdefault(full.split("::")[-1], []).append(full)
-        centre = self.transform_to_vec(np.full(len(names), 0.5))
-        reference = {name: float(value) for name, value in zip(names, centre)}
+        # Physical points with every parameter at the same unit coordinate;
+        # the centre first.
+        references = [
+            {name: float(value)
+             for name, value in zip(names, self.transform_to_vec(np.full(len(names), u)))}
+            for u in (0.5, 0.25, 0.75)]
         unit_branches = {}
         for key, splits in branches.items():
             if key in names:
@@ -331,17 +337,21 @@ only the loglike value, so L-BFGS-B uses finite differences.
                     f"{self.print_prefix} {option}: '{key}' is not a scanned "
                     f"parameter (or is ambiguous without its model prefix). "
                     f"Scanned parameters: {names}")
+            if full in unit_branches:
+                raise RuntimeError(
+                    f"{self.print_prefix} {option} lists '{full}' twice.")
             index = names.index(full)
             unit_splits = []
             for value in np.atleast_1d(splits):
-                unit = np.asarray(self.inverse_transform(dict(reference, **{full: float(value)})),
-                                  dtype=float)
-                if not np.allclose(np.delete(unit, index), 0.5, atol=1e-6):
+                positions = [
+                    float(self.inverse_transform(dict(reference, **{full: float(value)}))[index])
+                    for reference in references]
+                if max(positions) - min(positions) > 1e-6:
                     raise RuntimeError(
                         f"{self.print_prefix} {option}: the prior of '{full}' depends on "
                         f"other parameters, so a split point has no single position in "
                         f"the unit hypercube.")
-                unit_splits.append(float(unit[index]))
+                unit_splits.append(positions[0])
             print(f"{self.print_prefix} {option}: '{full}' split at "
                   + ", ".join(f"{float(v):g}" for v in np.atleast_1d(splits))
                   + " (unit hypercube: " + ", ".join(f"{u:.6f}" for u in unit_splits) + ")",

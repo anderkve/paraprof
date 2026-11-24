@@ -100,16 +100,31 @@ def test_bad_branches_are_errors(plugin):
         plugin._branches_to_unit([0.5], "branches")
     with pytest.raises(RuntimeError, match="not a scanned parameter"):
         plugin._branches_to_unit({"delta": 0.5}, "branches")
-    # A prior that mixes parameters: the split point has no single unit coordinate.
+    with pytest.raises(RuntimeError, match="twice"):
+        plugin._branches_to_unit({"alpha": 1.0, "Model::alpha": 2.0}, "branches")
+
+
+def test_split_parameter_whose_prior_depends_on_another_is_rejected(plugin):
     plain = plugin.inverse_transform
 
-    def mixed(physical):
+    def alpha_depends_on_beta(physical):
+        unit = plain(physical)
+        unit[0] += 0.4 * (unit[1] - 0.5)
+        return unit
+
+    def beta_depends_on_alpha(physical):
         unit = plain(physical)
         unit[1] += 0.1 * (unit[0] - 0.5)
         return unit
-    plugin.inverse_transform = mixed
+
+    # The split point of alpha has no single unit coordinate.
+    plugin.inverse_transform = alpha_depends_on_beta
     with pytest.raises(RuntimeError, match="depends on other parameters"):
         plugin._branches_to_unit({"alpha": 1.0}, "projections[0] branches")
+    # Here it has one: only the position of beta moves with alpha.
+    plugin.inverse_transform = beta_depends_on_alpha
+    out = plugin._branches_to_unit({"alpha": 1.0}, "branches")
+    np.testing.assert_allclose(out["Model::alpha"], [0.25])
 
 
 def test_the_mapped_split_is_accepted_by_paraprof(plugin):
