@@ -248,7 +248,7 @@ Pass an `advanced_config` dict for the knobs that actually move solution quality
 | `clustering.*`                     | auto-DBSCAN                    | Mode detection during refinement                                 |
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
-| `cross_projection.eager_start`                | `True`             | Start the next projection while the current one runs, on workers it leaves idle. Work is handed out in the order the projections were started. Not for projections with `grid_refinement_factor`. A projection that starts early is seeded from a smaller pool, so on a target with several optima single cells can differ from a sequential run; see the changelog for measurements. Set `False` to run the projections one after another. |
+| `cross_projection.eager_start`                | `True`             | Start the next projection while the current one runs, on workers it leaves idle. Work is handed out in the order the projections were started. Not for projections with `grid_refinement_factor`. Set `False` to run the projections one after another. |
 | `suspect_recheck.enabled`                     | `True`             | Run the suspect-cell recheck pass after patching. |
 | `suspect_recheck.max_waves`                   | `10`               | Cap on suspect-recheck waves. |
 | `suspect_recheck.param_k`                     | `3.0`              | MAD multiplier for the discontinuity threshold. Lower flags more cells. |
