@@ -132,7 +132,7 @@ Common constructor arguments:
 
 ### Periodic parameters
 
-For a parameter whose bounds span exactly one period, such as an angle on `[0, 2π]`, the lower and the upper bound are the same point. List it in `periodic` and paraprof treats it that way: a region of interest that reaches one bound is followed from the other, and the optimisers step through the bound instead of stopping at it. A warning is logged if the target differs between the two bounds.
+To tell paraprof that a parameter should be treated as periodic, list it in the `periodic` option. In this case the provided parameter bounds should span exactly one period.
 
 ```python
 sampler = ProfileProjector(
