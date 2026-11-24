@@ -50,6 +50,7 @@ def plugin(monkeypatch):
         return (x - LOWER) / (UPPER - LOWER)
 
     obj.inverse_transform = inverse_transform
+    obj.transform_to_vec = lambda unit: LOWER + np.asarray(unit) * (UPPER - LOWER)
     obj.calls = calls
     return obj
 
@@ -81,3 +82,14 @@ def test_short_name_shared_by_two_models_is_ambiguous(plugin):
     plugin.parameter_names = ("A::x", "B::x", "A::y")
     with pytest.raises(RuntimeError, match="ambiguous"):
         plugin._initial_points_to_unit([{"x": 0.5, "y": 0.5}])
+
+
+def test_periodic_names_are_resolved_to_full_names(plugin, capsys):
+    assert plugin._periodic_parameters(["alpha", "Model::gamma"]) == ["Model::alpha", "Model::gamma"]
+    assert plugin._periodic_parameters("gamma") == ["Model::gamma"]
+    assert ("Model::gamma is treated as periodic over its prior range [-2, 2]."
+            in capsys.readouterr().out)
+    with pytest.raises(RuntimeError, match="periodic: 'delta' is not a scanned parameter"):
+        plugin._periodic_parameters(["delta"])
+    with pytest.raises(RuntimeError, match="list of parameter names"):
+        plugin._periodic_parameters([0])

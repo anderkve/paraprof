@@ -84,6 +84,10 @@ Scanner:
         # initial_points:
         #   - {x1: 1.0, x2: 1.0, x3: 1.0, x4: 1.0, x5: 1.0}
         # refine_initial_points: true
+        # Parameters that are periodic over their prior range (with or
+        # without the model prefix). The range must be exactly one period,
+        # e.g. [0, 6.283185307179586] for an angle. None in this example.
+        # periodic: [delta13]
         max_patching_waves: 15
         lbfgsb_max_iter: 50
         lbfgsb_polish: true

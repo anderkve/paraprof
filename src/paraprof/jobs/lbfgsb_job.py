@@ -44,6 +44,10 @@ class LBFGSBJob(Job):
     Works in bound-normalised coordinates z = (x - lower) / (upper - lower):
     gradients, curvature pairs and step lengths refer to z.
 
+    A periodic parameter (``ProfileProjector(periodic=...)``) has no bounds
+    to stop at. A trial point that leaves its range is wrapped to the other
+    side when it is evaluated or accepted; the step is measured before that.
+
     The line search tries a fixed ladder of steps alpha_0 * factor**j and
     accepts the first rung that passes the Armijo test, so the master may
     evaluate later rungs early (see `speculate`) without changing the result.
@@ -83,6 +87,8 @@ class LBFGSBJob(Job):
         self._lo = b[:, 0]
         self._hi = b[:, 1]
         self._scale = self._hi - self._lo
+        self._periodic = sampler._periodic_mask[list(opt_dims)]
+        self._any_periodic = bool(self._periodic.any())
 
         # start_params are the partial parameters corresponding to opt_dims;
         # start_params_full is the full vector for the initial eval.
@@ -151,9 +157,15 @@ class LBFGSBJob(Job):
         """Slice a full parameter vector down to opt_dims."""
         return np.asarray(full_params, dtype=float)[list(self.opt_dims)]
 
+    def _into_bounds(self, x):
+        """``x`` (opt-dim slice) clipped to the bounds; periodic parameters are wrapped."""
+        if self._any_periodic:
+            x = np.where(self._periodic, self._lo + np.mod(x - self._lo, self._scale), x)
+        return np.clip(x, self._lo, self._hi)
+
     def _construct_full_params_for_task(self, partial_params_to_eval):
         """Full bounded parameter vector for a worker task (global or grid-anchored)."""
-        bounded = np.clip(partial_params_to_eval, self._lo, self._hi)
+        bounded = self._into_bounds(partial_params_to_eval)
         if self.grid_idx is None:
             return bounded
         return self.sampler._construct_params(self.grid_idx, bounded)
@@ -236,7 +248,7 @@ class LBFGSBJob(Job):
         return []
 
     def _set_current(self, params_partial, fitness):
-        self.current_params = np.clip(params_partial, self._lo, self._hi)
+        self.current_params = self._into_bounds(params_partial)
         self.current_fitness = fitness
         self.current_objective = -fitness
 
@@ -294,7 +306,8 @@ class LBFGSBJob(Job):
 
         A probe steps into the box: a forward step that would leave it is
         replaced by a backward one, so a parameter on its upper bound still
-        gets a derivative and no probe coincides with x.
+        gets a derivative and no probe coincides with x. A periodic parameter
+        has room on both sides.
         """
         h = self.fd_step * self._scale
         ug = self._user_grad_opt(user_grad_full)
@@ -304,8 +317,8 @@ class LBFGSBJob(Job):
             if np.isfinite(ug[i]):
                 self.sampler.target_calls_saved_by_user_gradient += per_dim_cost
                 continue
-            up_ok = x[i] + h[i] <= self._hi[i]
-            dn_ok = x[i] - h[i] >= self._lo[i]
+            up_ok = self._periodic[i] or x[i] + h[i] <= self._hi[i]
+            dn_ok = self._periodic[i] or x[i] - h[i] >= self._lo[i]
             if self.lbfgsb_gradient_method == "central" and up_ok and dn_ok:
                 signs = (1, -1)
             elif up_ok or not dn_ok:
@@ -328,14 +341,14 @@ class LBFGSBJob(Job):
         x = g['x']
         n = self.n_opt_dims
         h = self.hessian_step * self._scale
-        sign = np.where(x + h <= self._hi, 1.0, -1.0)
+        sign = np.where(self._periodic | (x + h <= self._hi), 1.0, -1.0)
         offsets = {}
         for i in range(n):
             e = np.zeros(n)
             e[i] = sign[i] * h[i]
             offsets[('d', i, 1)] = e
             far = x[i] - sign[i] * h[i]
-            central = self._lo[i] <= far <= self._hi[i]
+            central = self._periodic[i] or self._lo[i] <= far <= self._hi[i]
             offsets[('d', i, -1 if central else 2)] = (-e if central else 2 * e)
         for i in range(n):
             for j in range(i + 1, n):
@@ -528,7 +541,7 @@ class LBFGSBJob(Job):
         """
         if self.Hinv is None:
             return None
-        held = ((z <= 0.0) & (g > 0.0)) | ((z >= 1.0) & (g < 0.0))
+        held = (((z <= 0.0) & (g > 0.0)) | ((z >= 1.0) & (g < 0.0))) & ~self._periodic
         if not held.any():
             return None
         free = ~held
@@ -544,8 +557,8 @@ class LBFGSBJob(Job):
     def _project(self, d, z):
         """Zero the components that push a parameter sitting on a bound outward."""
         d = d.copy()
-        d[(z <= 0.0) & (d < 0.0)] = 0.0
-        d[(z >= 1.0) & (d > 0.0)] = 0.0
+        d[(z <= 0.0) & (d < 0.0) & ~self._periodic] = 0.0
+        d[(z >= 1.0) & (d > 0.0) & ~self._periodic] = 0.0
         return d
 
     def _start_line_search(self):
@@ -589,6 +602,9 @@ class LBFGSBJob(Job):
         # the clipped trial point no longer changes.
         with np.errstate(divide='ignore', invalid='ignore'):
             room = np.where(d > 0, (1.0 - z0) / d, np.where(d < 0, -z0 / d, 0.0))
+        if self._any_periodic:
+            # A periodic parameter that moves never reaches a bound.
+            room = np.where(self._periodic & (d != 0), np.inf, room)
         alpha_cap = float(np.max(room))
         if alpha_cap > 0.0:
             alpha0 = min(alpha0, alpha_cap)
@@ -612,9 +628,15 @@ class LBFGSBJob(Job):
         return [self._rung_task(0)]
 
     def _rung_point(self, j):
+        """Trial point of rung j. A periodic parameter is not stopped at its
+        bound and may lie outside its range here (see _into_bounds)."""
         ls = self._ls
-        z = np.clip(ls['z0'] + ls['alphas'][j] * ls['d'], 0.0, 1.0)
-        return np.clip(self._lo + z * self._scale, self._lo, self._hi)
+        z_free = ls['z0'] + ls['alphas'][j] * ls['d']
+        z = np.clip(z_free, 0.0, 1.0)
+        x = np.clip(self._lo + z * self._scale, self._lo, self._hi)
+        if self._any_periodic:
+            x = np.where(self._periodic, self._lo + z_free * self._scale, x)
+        return x
 
     def _rung_task(self, j):
         """Task for rung j of the current ladder.
@@ -668,6 +690,8 @@ class LBFGSBJob(Job):
         f_old = ls['f0']
         g_old = ls['g']
         self.iteration += 1
+        # dz is the step as it was taken; from here on the point is in range.
+        x_new = self._into_bounds(x_new)
         self.current_params = x_new
         self.current_fitness = -f_new
         self.current_objective = f_new
@@ -690,9 +714,13 @@ class LBFGSBJob(Job):
                 and self._hessian_refreshes < HESSIAN_MAX_REFRESH
                 and np.abs(f_old - f_new) > HESSIAN_REFRESH_GAIN * self.ftol_eff):
             z_new = (x_new - self._lo) / self._scale
+            if self._hessian_z is not None:
+                moved = z_new - self._hessian_z
+                if self._any_periodic:
+                    moved = np.where(self._periodic, moved - np.round(moved), moved)
             measure_hessian = (
                 self._hessian_z is None
-                or float(np.max(np.abs(z_new - self._hessian_z))) > HESSIAN_REFRESH_DISTANCE)
+                or float(np.max(np.abs(moved))) > HESSIAN_REFRESH_DISTANCE)
             if measure_hessian:
                 self._hessian_refreshes += 1
 
@@ -733,7 +761,7 @@ class LBFGSBJob(Job):
             elif ls['decided'] == 0 and not self.has_user_grad:
                 if ls['probe_gid'] is None:
                     ls['probe_gid'] = self._new_gid()
-                    self._make_gradient(ls['probe_gid'], self._rung_point(0))
+                    self._make_gradient(ls['probe_gid'], self._into_bounds(self._rung_point(0)))
                 g = self._grads[ls['probe_gid']]
                 for key in g['probes']:
                     if key not in g['sent']:

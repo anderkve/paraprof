@@ -84,6 +84,17 @@ YAML options:
     refine_initial_points:   Optimise all parameters from every initial point
                              before grid points are activated (default false).
                              Without it the points are evaluated only.
+    periodic:                Optional list of parameters that are periodic over
+                             their prior range, with or without the model
+                             prefix, e.g. [delta13]. The range must be exactly
+                             one period (for an angle: [0, 6.283185307179586])
+                             and the prior flat. The two ends of the range are
+                             then treated as the same point: a region of
+                             interest that reaches one end is followed from
+                             the other, and when the parameter is profiled the
+                             optimisers step through the ends. paraprof logs a
+                             warning if the likelihood differs between the
+                             two ends.
     samples_output_file:     Optional CSV path; written by rank 0 only. Note that
                              GAMBIT's printers already record every evaluation,
                              so this is purely a paraprof-side diagnostic file.
@@ -195,7 +206,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
             "lbfgsb_max_iter", "lbfgsb_polish", "n_initial_optimizations",
             "n_optima", "initial_points", "refine_initial_points", "use_clustering",
             "refinement_direct_eval", "samples_output_file", "warm_start_file",
-            "volume_sampling", "advanced_config",
+            "volume_sampling", "advanced_config", "periodic",
         ):
             if key in ra:
                 self.projector_kwargs[key] = ra[key]
@@ -247,6 +258,10 @@ only the loglike value, so L-BFGS-B uses finite differences.
             self.projector_kwargs["initial_points"] = self._initial_points_to_unit(
                 self.projector_kwargs["initial_points"])
 
+        if "periodic" in self.projector_kwargs:
+            self.projector_kwargs["periodic"] = self._periodic_parameters(
+                self.projector_kwargs["periodic"])
+
         if self.mpi_rank == 0:
             print(f"{self.print_prefix} Starting paraprof scan with "
                   f"{len(self.projections)} projection(s) on {self.mpi_size - 1} "
@@ -276,13 +291,49 @@ only the loglike value, so L-BFGS-B uses finite differences.
         return 0
 
 
+    def _full_parameter_name(self, key, context):
+        """Full name of a scanned parameter given with or without its model prefix."""
+        names = list(self.parameter_names)
+        if key in names:
+            return key
+        matches = [full for full in names if full.split("::")[-1] == key]
+        if len(matches) == 1:
+            return matches[0]
+        raise RuntimeError(
+            f"{self.print_prefix} {context}: '{key}' is not a scanned "
+            f"parameter (or is ambiguous without its model prefix). "
+            f"Scanned parameters: {names}")
+
+
+    def _periodic_parameters(self, entries):
+        """Full names of the parameters listed under 'periodic'."""
+        if isinstance(entries, str):
+            entries = [entries]
+        if not isinstance(entries, (list, tuple)) or not all(isinstance(e, str) for e in entries):
+            raise RuntimeError(
+                f"{self.print_prefix} periodic must be a list of parameter names.")
+        full = [self._full_parameter_name(e, "periodic") for e in entries]
+        names = list(self.parameter_names)
+        for name in full:
+            line = f"{self.print_prefix} {name} is treated as periodic over its prior range"
+            try:
+                # The two ends of the range, the other parameters mid-range.
+                unit = np.full(len(names), 0.5)
+                ends = []
+                for u in (0.0, 1.0):
+                    unit[names.index(name)] = u
+                    ends.append(float(self.transform_to_vec(unit)[names.index(name)]))
+                line += f" [{ends[0]:.12g}, {ends[1]:.12g}]"
+            except Exception:
+                pass          # the range is printed for information only
+            print(line + ".", flush=True)
+        return full
+
+
     def _initial_points_to_unit(self, points):
         """Unit-hypercube coordinates of the user's initial points (mappings
         {parameter name: physical value})."""
         names = list(self.parameter_names)
-        short = {}
-        for full in names:
-            short.setdefault(full.split("::")[-1], []).append(full)
         unit_points = []
         for i, point in enumerate(points):
             if not isinstance(point, dict):
@@ -292,15 +343,8 @@ only the loglike value, so L-BFGS-B uses finite differences.
                     f"entry {i} is not a mapping.")
             physical = {}
             for key, value in point.items():
-                if key in names:
-                    physical[key] = float(value)
-                elif len(short.get(key, [])) == 1:
-                    physical[short[key][0]] = float(value)
-                else:
-                    raise RuntimeError(
-                        f"{self.print_prefix} initial_points[{i}]: '{key}' is not a scanned "
-                        f"parameter (or is ambiguous without its model prefix). "
-                        f"Scanned parameters: {names}")
+                full = self._full_parameter_name(key, f"initial_points[{i}]")
+                physical[full] = float(value)
             missing = [n for n in names if n not in physical]
             if missing:
                 raise RuntimeError(

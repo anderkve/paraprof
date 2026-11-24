@@ -56,6 +56,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation for the whole scan. Completed sends are now dropped as it goes.
 
 ### Added
+- **Periodic parameters** (`periodic`, a list of parameter indices or names).
+  For a parameter whose bounds span one period, the lower and the upper bound
+  are the same point. Without the option a region of interest that runs
+  through such a bound was found only on the side the scan started from,
+  unless a global start happened to end on the other side: cells are activated
+  from their grid neighbours, and the first and the last grid point were not
+  neighbours. On a test target seeded with its best-fit point the scan held
+  121 of 178 cells of the region of interest; with `periodic` it holds all
+  178. As a profiled parameter, a periodic one is wrapped at its bounds
+  instead of clipped (L-BFGS-B, differential evolution, activation samples,
+  volume-sampling walkers), and differences between two values are taken the
+  short way round (curvature pairs, mutation vectors, suspect-cell detection,
+  merging of initial optima, interpolation in grid refinement). A run used to
+  stop at the bound when the optimum lay just beyond it; on a test target that
+  left 7 to 14 of 425 cells up to 0.16 below the profile after patching, and
+  none with `periodic`. Both grid points on the bound are still evaluated, so
+  the exported grid keeps its shape. Before the scan the target is compared at
+  the two bounds of each periodic parameter (new `PERIODIC_CHECK` stage, 6
+  evaluations per parameter) and a difference is logged as a warning. Scans
+  without `periodic` are unchanged.
+- GAMBIT plugin: `periodic`, a list of parameter names with or without the
+  model prefix. The prior range of such a parameter must be one period.
 - **Evaluations ahead of time on idle workers.** The trial steps of a line
   search form a fixed ladder and the step accepted is the first that passes
   the Armijo test, so later rungs can be evaluated before earlier ones return;
