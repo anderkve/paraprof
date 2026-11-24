@@ -132,26 +132,17 @@ Common constructor arguments:
 
 ### Periodic parameters
 
-By default every parameter lives on a closed interval. Cells are activated from their grid neighbours and optimisers stop at the bounds. For an angle that is wrong at the ends of the range: `0` and `2π` are the same point, but the first and the last grid point are not neighbours. A region of interest that runs through the bound is then found only on the side the scan started from, unless a global start happens to end on the other side.
+For a parameter whose bounds span exactly one period, such as an angle on `[0, 2π]`, the lower and the upper bound are the same point. List it in `periodic` and paraprof treats it that way: a region of interest that reaches one bound is followed from the other, and the optimisers step through the bound instead of stopping at it. A warning is logged if the target differs between the two bounds.
 
 ```python
 sampler = ProfileProjector(
     target_func=log_likelihood,
-    bounds=[(0.0, 2 * np.pi), (0.0, 1.0), ...],
-    periodic=[0],          # or names, with parameter_names
-    ...
+    bounds=[(0.0, 2 * np.pi), (0.0, 1.0), (-1.0, 1.0)],
+    parameter_names=['delta', 'theta', 'nuisance'],
+    periodic=['delta'],        # or by index: periodic=[0]
+    projections=[{'dims': ['delta', 'theta'], 'grid_points': [50, 50]}],
 )
 ```
-
-The bounds of a periodic parameter must span exactly one period. What changes:
-
-- As a projection dimension, the two grid points on the bound are neighbours of each other and of the grid points next to either. Both are still evaluated, so the exported grid keeps its shape.
-- As a profiled parameter, a value that leaves the bounds is wrapped to the other side instead of clipped. This holds for L-BFGS-B steps and finite-difference probes, differential-evolution trial points, activation samples and volume-sampling walkers.
-- Differences between two values are taken the short way round: L-BFGS-B curvature pairs, differential-evolution mutation vectors, the discontinuity measure of the suspect recheck, merging of initial optima, and interpolation in grid refinement.
-
-Before the scan the target is evaluated at the lower and the upper bound of each periodic parameter, at three base points (six evaluations per parameter). A difference is logged as a warning and the scan continues. With bounds that are not one period the scan still returns true target values, but cells and optimisers are continued from a point that is not the same point, and the profile near the bound can come out too low.
-
-Limits: the clustering used in grid refinement compares raw parameter values, so a periodic profiled parameter that crosses its bound inside the region of interest can be split into two clusters there. The profile plots of such a parameter show a jump from one bound to the other where it crosses.
 
 ### User-supplied gradients
 
