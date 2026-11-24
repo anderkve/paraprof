@@ -149,6 +149,7 @@ A projection that profiles the parameter is then run once per sub-range (a branc
 - Put the split point between the two solutions. Several split points give several sub-ranges, several parameters give one branch per combination of sub-ranges.
 - In the exported solution each cell has a `branch` index, and `branches` lists per branch its `ranges` and its own `solutions`, so the profile of each branch can be plotted.
 - A `branches` key in a projection replaces the setting for that projection; `{}` turns it off.
+- While the branches of a projection run, log lines are prefixed with the branch number (`[B2]`, or `[P2 B2]` while projections overlap).
 - With `grid_refinement_factor` each branch is refined from its own coarse cells, one branch after the other.
 
 paraprof does not find the cut itself: a two-solution parameter that is not declared is handled as before.
