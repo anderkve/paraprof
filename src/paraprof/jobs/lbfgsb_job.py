@@ -202,6 +202,7 @@ class LBFGSBJob(Job):
             for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
                 if neighbor_idx in self.sampler.population:
                     neighbor_state = self.sampler.population[neighbor_idx]
+                    # Neighbour must be optimized or converged and have an optimizer state
                     if (neighbor_state['status'] in ['optimized', 'converged']) and \
                        (neighbor_state.get('optimizer_state') is not None):
 
@@ -210,10 +211,12 @@ class LBFGSBJob(Job):
                             best_neighbor_state = neighbor_state
 
             if best_neighbor_state:
+                # Seed the history
                 self.s_hist.clear()
                 self.y_hist.clear()
                 self._seed_curvature(best_neighbor_state['optimizer_state'])
 
+                # Neighbour's best params to test
                 neighbor_best_idx = np.argmax(best_neighbor_state['fitnesses'])
                 self.neighbor_params_to_test = best_neighbor_state['profiled_params'][neighbor_best_idx]
 

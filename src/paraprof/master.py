@@ -71,10 +71,12 @@ def terminate_workers(comm, myrank=0):
     n_workers = comm.Get_size() - 1
 
     logger.debug("terminate_workers: Sending TASK_TERMINATE to workers.")
+    # Use non-blocking sends to terminate all workers simultaneously
     requests = []
     for rank in range(1, n_workers + 1):
         requests.append(comm.isend(TASK_TERMINATE, dest=rank))
 
+    # Wait for all sends to complete
     MPI.Request.Waitall(requests)
     logger.debug("terminate_workers: All workers terminated.")
 
@@ -163,11 +165,14 @@ def run_projection(comm, sampler, projection_config,
     ``refined_target_calls`` if applicable, ``total_target_calls``,
     ``global_max``).
     """
+    # Extract refinement configuration
     refinement_factor = projection_config.get('grid_refinement_factor', None)
+    # Auto-determine if refinement should be enabled based on refinement_factor
     use_grid_refinement = refinement_factor is not None and refinement_factor > 1
 
     logger = setup_logger(rank=myrank)
 
+    # Initialize results structure
     results = {
         'coarse_solution': None,
         'refined_solution': None,
@@ -203,16 +208,20 @@ def run_projection(comm, sampler, projection_config,
         logger.info("=== Starting Grid Refinement ===")
         logger.info("=" * 80)
 
+        # Setup refined projection config
         refined_config = projection_config.copy()
         refined_config['grid_points'] = [
             n * refinement_factor for n in projection_config['grid_points']
         ]
 
+        # Get refinement method from config (default to 'linear')
         refinement_method = projection_config.get('refinement_method', 'linear')
 
+        # Configure sampler for refinement
         sampler.setup_refinement_run(coarse_solution, refinement_factor, refinement_method)
         sampler._reset_for_new_projection(refined_config)
 
+        # Run refinement workflow
         master_main(
             comm=comm,
             sampler=sampler,
@@ -225,8 +234,10 @@ def run_projection(comm, sampler, projection_config,
             sampler, projection_config, save_plots, plot_settings, myrank, grid='refined')
         results['metrics']['refined_target_calls'] = sampler.target_calls
 
+        # Clean up refinement state for next projection
         sampler._cleanup_refinement_state()
 
+    # Record final metrics
     results['metrics']['total_target_calls'] = sampler.target_calls
     results['metrics']['global_max'] = sampler.global_max_target_val
 
@@ -293,6 +304,7 @@ def run_all_projections(comm, sampler, projections,
         logger.info(f"=== Dimensions: {projection_config['dims']} ===")
         logger.info("=" * 80)
 
+        # Reset sampler for new projection (except first)
         if proj_idx > 0:
             sampler._reset_for_new_projection(projection_config)
 
@@ -313,6 +325,7 @@ def run_all_projections(comm, sampler, projections,
                 eager = _EagerProjections(proj_idx, following, projections,
                                           save_plots, plot_settings, myrank)
 
+        # Run projection (handles coarse + refinement automatically)
         results = run_projection(
             comm=comm,
             sampler=sampler,
@@ -326,6 +339,7 @@ def run_all_projections(comm, sampler, projections,
         if eager is not None:
             done_eagerly.update(eager.results)
 
+        # Add projection config to results for reference
         results['projection_config'] = projection_config
         all_results.append(results)
 
@@ -688,6 +702,7 @@ def master_main(comm, sampler,
 
     def _build_stages():
         """Workflow stages of the projection the sampler is set up for."""
+        # Define the workflow stages (different for refinement runs only)
         if sampler.is_refinement_run:
             stages = ['REFINEMENT_LBFGSB']
             # No patching in direct evaluation mode (no profiled params to share).
@@ -697,6 +712,7 @@ def master_main(comm, sampler,
                     stages.append('SUSPECT_RECHECK_WAVES')
             logger.info("--- Refinement mode: Using direct LBFGSB optimization ---")
         else:
+            # Normal mode: workflow depends on optimization method
             stages = []
             # fd_step 'auto': measure the noise before anything is optimised.
             if sampler.needs_noise_estimate():
@@ -711,11 +727,13 @@ def master_main(comm, sampler,
                 stages.append('INITIAL_POINTS_EVAL')
             stages += ['INITIAL_OPTIMIZATION', 'ACTIVATION']
 
+            # Add optimization stage based on configured method
             if sampler.optimization_method == 'de':
                 stages.append('DE_LOOP')
             elif sampler.optimization_method == 'lbfgsb':
                 stages.append('LBFGSB_LOOP')
 
+            # Add patching if enabled (applies to all optimization methods)
             if sampler.patch_coarse_grid and not sampler.direct_eval_mode:
                 stages.append('PATCHING_WAVES')
                 if sampler.suspect_recheck_enabled:
@@ -756,6 +774,7 @@ def master_main(comm, sampler,
     def _is_ahead(job):
         return getattr(job, 'grid_idx', None) in sampler.ahead_cells
 
+    # Helper function to queue tasks
     def _queue_tasks(tasks, job_type, job=None):
         """Add tasks to appropriate priority queue based on job type."""
         if job is not None and _is_ahead(job):
@@ -920,6 +939,7 @@ def master_main(comm, sampler,
             R.current_stage = 'WAITING_FOR_INITIAL_OPT'
 
         elif R.current_stage == 'ACTIVATION':
+            # Use refinement activation for refinement runs
             if sampler.is_refinement_run:
                 new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
                 if not new_jobs:
@@ -951,9 +971,11 @@ def master_main(comm, sampler,
                 next_job_id, sampler.de_max_num_to_evolve
             )
 
+            # --- Add dynamic activation jobs ---
             new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
             new_jobs = new_de_jobs + new_act_jobs
 
+            # --- Print Generation Summary ---
             total_grid_points = len(sampler.population)
             active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
             converged_count = total_grid_points - active_count
@@ -974,9 +996,11 @@ def master_main(comm, sampler,
             # neighbours of cells inside the region of interest.
             new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
 
+            # Create dynamic activation jobs for neighbors of high-likelihood points
             new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
             new_jobs = new_lbfgsb_jobs + new_act_jobs
 
+            # --- Print iteration summary ---
             total_grid_points = len(sampler.population)
             active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
             converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
@@ -988,18 +1012,21 @@ def master_main(comm, sampler,
                   f"New Activations: {newly_activated_count:3d} | "
                   f"L-BFGS-B Jobs: {len(new_lbfgsb_jobs):3d}")
 
+            # Check convergence: no active jobs and no new activations
             if not new_jobs:
                 logger.info("--- Master: LBFGSB_LOOP converged (no active points, no new activations). ---")
                 R.next_stage()
                 return True
 
         elif R.current_stage == 'PATCHING_WAVES':
+            # Check appropriate flag based on run type
             patching_enabled = sampler.patch_refined_grid if sampler.is_refinement_run else sampler.patch_coarse_grid
             if not patching_enabled:
                 logger.info("--- Master: Patching disabled for this stage. Skipping. ---")
                 R.next_stage()
                 return True
 
+            # Check if max waves reached
             if R.patching_wave_number >= sampler.max_patching_waves:
                 logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
                 R.next_stage()
@@ -1007,6 +1034,7 @@ def master_main(comm, sampler,
 
             logger.info(f"--- Master: Starting Patching Wave {R.patching_wave_number} ---")
 
+            # Create jobs for this wave
             new_jobs, next_job_id = sampler.create_patching_wave_jobs(
                 wave_number=R.patching_wave_number,
                 updated_points_last_wave=R.patching_updated_last_wave,
@@ -1024,9 +1052,11 @@ def master_main(comm, sampler,
                 for idx, state in sampler.population.items()
             }
 
+            # Track test job IDs
             R.patching_wave_test_jobs = {j.id for j in new_jobs}
             R.patching_wave_lbfgsb_jobs = set()
 
+            # Transition to waiting state
             R.current_stage = 'WAITING_FOR_PATCHING_WAVE'
 
         elif R.current_stage == 'WAITING_FOR_PATCHING_WAVE':
@@ -1087,6 +1117,7 @@ def master_main(comm, sampler,
                 return True
 
 
+        # --- Add new jobs to active pool and queue initial tasks ---
         _start_jobs(new_jobs)
 
         # Looping and waiting stages stay current; the others advance.
@@ -1115,6 +1146,7 @@ def master_main(comm, sampler,
 
         # --- 2. Check for and process ALL available results ---
         while comm.Iprobe(source=MPI.ANY_SOURCE):
+            # A message is waiting, so this receive returns at once
             result = comm.recv(source=MPI.ANY_SOURCE)
             worker_rank = result['context']['worker_rank']
             free_workers.append(worker_rank)
@@ -1141,12 +1173,14 @@ def master_main(comm, sampler,
             job = R.active_jobs[job_id]
             new_tasks = job.process_result(result)
 
+            # Add to correct priority queue
             _queue_tasks(new_tasks, job.type, job)
             _offer_speculation(job)
 
             if job.is_finished():
                 job_id_finished = job.id
 
+                # Track wave-based patching jobs
                 is_patch_test_job = job_id_finished in R.patching_wave_test_jobs
                 is_patch_lbfgsb_job = job_id_finished in R.patching_wave_lbfgsb_jobs
                 is_suspect_test_job = job_id_finished in R.suspect_wave_test_jobs
@@ -1177,6 +1211,7 @@ def master_main(comm, sampler,
                     if is_suspect_test_job and new_job.type == 'SUSPECT_RECHECK_LBFGSB':
                         R.suspect_wave_lbfgsb_jobs.add(new_job.id)
 
+                    # Add to correct priority queue
                     _queue_tasks(initial_tasks, new_job.type)
                     _offer_speculation(new_job)
 
@@ -1241,6 +1276,7 @@ def master_main(comm, sampler,
                 if R.current_stage == 'WAITING_FOR_PATCHING_WAVE' and \
                    not R.patching_wave_test_jobs and not R.patching_wave_lbfgsb_jobs:
 
+                    # Determine which grid points were updated (fitness improved)
                     updated_points = []
                     for idx, state in sampler.population.items():
                         baseline_fitness = R.patching_wave_baseline_fitness.get(idx, -np.inf)
@@ -1255,6 +1291,7 @@ def master_main(comm, sampler,
                         R.patching_wave_number += 1
                         R.current_stage = 'PATCHING_WAVES'
                     else:
+                        # No updates, patching converged
                         logger.info("--- Master: No updates in wave. Patching converged. ---")
                         R.next_stage()
 
@@ -1371,6 +1408,7 @@ def master_main(comm, sampler,
             owner.inflight += 1
             worker_rank = free_workers.pop(0)
 
+            # Use non-blocking send to overlap communication
             req = comm.isend(task, dest=worker_rank)
             pending_sends.append(req)
             tasks_sent += 1
@@ -1418,6 +1456,7 @@ def master_main(comm, sampler,
 
         # The loop polls with Iprobe and does not sleep.
 
+    # Wait for all pending non-blocking sends to complete
     if pending_sends:
         logger.debug(f"Waiting for {len(pending_sends)} pending sends to complete...")
         MPI.Request.Waitall(pending_sends)
@@ -1429,8 +1468,10 @@ def master_main(comm, sampler,
     if label is not None:
         logger.removeFilter(label)
 
+    # Final flush of sample buffer
     sampler._flush_samples_buffer()
 
+    # --- Print Final Summary ---
     logger.info("=" * 80)
     logger.info("--- Master: Workflow Complete ---")
     logger.info(f"  Total Target Function Calls: {sampler.target_calls}")

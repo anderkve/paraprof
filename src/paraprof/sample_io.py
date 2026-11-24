@@ -31,9 +31,11 @@ __all__ = [
 # Rows per chunk when streaming.
 DEFAULT_CHUNK_SIZE = 10000
 
+# Output precision for the text format.
 _CSV_FMT = "%.10e"
 _CSV_DELIMITER = ", "
 
+# HDF5 dataset name holding the (n_samples, n_dims + 1) sample matrix.
 _HDF5_DATASET = "samples"
 
 _HDF5_EXTENSIONS = (".h5", ".hdf5", ".he5")
@@ -121,6 +123,7 @@ class HDF5SampleWriter(SampleWriter):
     def _ensure_open(self, n_cols):
         if self._file is not None:
             return
+        # Append mode: extend an existing dataset, else create a resizable one.
         self._file = self._h5py.File(self.path, "a")
         if _HDF5_DATASET in self._file:
             self._dset = self._file[_HDF5_DATASET]

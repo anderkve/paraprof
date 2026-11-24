@@ -12,6 +12,7 @@ class PatchingTestJob(Job):
         self.test_profiled_params = test_profiled_params
         self.wave_number = wave_number
 
+        # Store current best for comparison
         self.current_best_fitness = self.sampler.population[self.grid_idx]['best_fitness']
         self.test_fitness = None
         self.will_update = False
@@ -33,6 +34,7 @@ class PatchingTestJob(Job):
         self.success = True
         self._is_finished = True
 
+        # Check if we found an improvement
         if self.test_fitness > self.current_best_fitness:
             self.will_update = True
 
@@ -46,10 +48,12 @@ class PatchingTestJob(Job):
         # Import here to avoid circular dependency
         from .lbfgsb_job import LBFGSBJob
 
+        # Construct full parameter vector for initial evaluation
         start_params_full = self.sampler._construct_params(
             self.grid_idx, self.test_profiled_params
         )
 
+        # L-BFGS-B job from the improved starting point, tagged as part of the patching wave
         job = LBFGSBJob(
             job_id=next_job_id,
             job_type='PATCHING_LBFGSB',
@@ -62,6 +66,7 @@ class PatchingTestJob(Job):
             start_fitness=self.test_fitness
         )
 
+        # Store wave context in the job for tracking
         job.wave_number = self.wave_number
         job.grid_idx = self.grid_idx
 

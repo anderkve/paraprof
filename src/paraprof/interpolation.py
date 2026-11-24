@@ -40,6 +40,7 @@ class GridInterpolator:
         self.n_proj_dims = len(self.projection_dims)
         self.n_prof_dims = len(self.profiled_dims)
 
+        # Build interpolators for each profiled parameter
         self._build_interpolators()
         self._likelihood_interpolator = None  # built on first use
 
@@ -431,6 +432,7 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     coarse_coords_list = []
     coarse_indices = []
 
+    # Use cache if provided, otherwise compute
     if coords_cache is not None:
         for grid_idx, proj_coords in coords_cache.items():
             coarse_coords_list.append(proj_coords)
@@ -438,6 +440,7 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     else:
         grid_axes = coarse_solution['grid_axes']
         for grid_idx in coarse_solution['solutions'].keys():
+            # Get projection coordinates of this coarse grid point
             proj_coords = np.array([grid_axes[i][grid_idx[i]] for i in range(len(grid_axes))])
             coarse_coords_list.append(proj_coords)
             coarse_indices.append(grid_idx)
@@ -448,8 +451,10 @@ def _find_k_nearest_coarse_points(fine_coords, coarse_solution, k=6, coords_cach
     coarse_coords_array = np.array(coarse_coords_list)
     fine_coords = np.asarray(fine_coords)
 
+    # Compute distances
     distances = np.linalg.norm(coarse_coords_array - fine_coords, axis=1)
 
+    # Get k nearest (or all if fewer than k)
     k_actual = min(k, len(distances))
     k_nearest_mask = np.argsort(distances)[:k_actual]
     k_nearest_indices = [coarse_indices[i] for i in k_nearest_mask]

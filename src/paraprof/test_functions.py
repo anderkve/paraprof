@@ -228,6 +228,7 @@ _FUNCTION_REGISTRY = {
 
     "beale_2d": (beale_2d, [-4.5, 4.5], [np.array([3.0, 0.5])]),
 
+    # Eggholder (even dimensions; peak at (512, 404.2319) for each pair)
     "eggholder_2d": (eggholder_nd, [-512, 512],
                      [np.array([512.0, 404.2319])]),
     "eggholder_4d": (eggholder_nd, [-512, 512],

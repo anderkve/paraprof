@@ -22,6 +22,7 @@ class DEGridPointJob(Job):
         self.grid_idx = grid_idx
         self.grid_state = self.sampler.population[self.grid_idx]
 
+        # Shared resources from master
         self.parent_pool = parent_pool
         self.pbest_archive = pbest_archive
 

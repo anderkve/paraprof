@@ -201,6 +201,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
             if key in ra:
                 self.projector_kwargs[key] = ra[key]
 
+        # Plot and output controls (paraprof side, not the GAMBIT printers).
         self.save_plots = bool(ra.get("save_plots", False))
         self.plot_settings = ra.get("plot_settings", None)
 

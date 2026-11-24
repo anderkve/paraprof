@@ -383,15 +383,20 @@ class ProfileProjector:
         activation mix ratios and basin ``merge_tol`` are module-level
         constants, not options.
         """
+        # --- Input validation ---
+
+        # Validate target function
         if not callable(target_func):
             raise ConfigurationError("target_func must be callable", parameter="target_func", value=target_func)
 
+        # Validate optional user gradient function
         if grad_func is not None and not callable(grad_func):
             raise ConfigurationError(
                 "grad_func must be callable or None",
                 parameter="grad_func", value=grad_func,
             )
 
+        # Validate and set bounds
         self.bounds = np.array(bounds)
         if self.bounds.ndim != 2 or self.bounds.shape[1] != 2:
             raise InvalidBoundsError(
@@ -408,6 +413,7 @@ class ProfileProjector:
         self.grad_func = grad_func
         self.dims = len(self.bounds)
 
+        # Validate parameter_names (optional) and store as a name->index map
         if parameter_names is not None:
             if (not isinstance(parameter_names, (list, tuple))
                     or len(parameter_names) != self.dims
@@ -437,6 +443,7 @@ class ProfileProjector:
         self._has_periodic = bool(self.periodic_dims)
         self._periodic_checked = False       # see PeriodicCheckJob
 
+        # Validate projections
         if not isinstance(projections, list) or len(projections) == 0:
             raise InvalidProjectionError("projections must be a non-empty list")
 
@@ -469,6 +476,7 @@ class ProfileProjector:
                     projection=proj
                 )
 
+            # Check dimension indices are valid
             for dim in dims:
                 if not isinstance(dim, int) or dim < 0 or dim >= self.dims:
                     raise InvalidProjectionError(
@@ -476,6 +484,7 @@ class ProfileProjector:
                         projection=proj
                     )
 
+            # Check grid points are positive integers
             for gp in grid_points:
                 if not isinstance(gp, int) or gp <= 0:
                     raise InvalidProjectionError(
@@ -485,6 +494,7 @@ class ProfileProjector:
 
         self.projections = projections
 
+        # Validate core parameters
         if not isinstance(pop_per_grid_point, int) or pop_per_grid_point < 1:
             raise ConfigurationError(
                 "pop_per_grid_point must be a positive integer",
@@ -499,9 +509,11 @@ class ProfileProjector:
                 value=roi_threshold
             )
 
+        # Validate and process initial_points
         if initial_points is not None:
             initial_points = np.array(initial_points)
             if initial_points.ndim == 1:
+                # Single point provided - reshape to (1, n_dims)
                 initial_points = initial_points.reshape(1, -1)
             if initial_points.ndim != 2 or initial_points.shape[1] != self.dims:
                 raise ConfigurationError(
@@ -509,6 +521,7 @@ class ProfileProjector:
                     parameter="initial_points",
                     value=initial_points
                 )
+            # Check that points are within bounds
             for i, point in enumerate(initial_points):
                 for j, (val, (lb, ub)) in enumerate(zip(point, self.bounds)):
                     if not (lb <= val <= ub):
@@ -570,6 +583,7 @@ class ProfileProjector:
             },
         }
 
+        # Merge with advanced_config if provided
         if advanced_config:
             self._deep_update(config, advanced_config)
 
@@ -579,6 +593,7 @@ class ProfileProjector:
                 DEFAULT_BASIN_CAP_MULTIPLIER * self.dims,
             )
 
+        # --- Store configuration as instance variables ---
         self.pop_per_grid_point = pop_per_grid_point
         self.roi_threshold = roi_threshold
 
@@ -598,6 +613,7 @@ class ProfileProjector:
         self.refinement_direct_eval = refinement_direct_eval
         self.use_clustering = use_clustering
 
+        # Store advanced config values
         self.memory_size = config['memory_size']
         self.convergence_threshold = config['convergence_threshold']
 
@@ -660,12 +676,14 @@ class ProfileProjector:
         # --- File I/O setup ---
         self.samples_output_file = samples_output_file
         self.warm_start_file = warm_start_file
+        # Always initialize the buffer
         self.samples_buffer = []
         self.sample_buffer_size = 1000
 
         # The writer picks the format from the extension and opens the file on
         # the first flush.
         if self.samples_output_file:
+            # Create the directory up front so the first flush succeeds.
             samples_dir = os.path.dirname(self.samples_output_file)
             if samples_dir:
                 os.makedirs(samples_dir, exist_ok=True)
@@ -711,6 +729,7 @@ class ProfileProjector:
         self.suspect_seeds_from_pool = sc['seeds_from_pool']
         self.suspect_polish_threshold = sc['polish_threshold']
 
+        # Basin-detection configuration for the initial-optimization stage.
         bd = config['basin_detection']
         self.basin_batch_size = bd['batch_size']
         self.basin_merge_tol = DEFAULT_BASIN_MERGE_TOL
@@ -927,8 +946,10 @@ class ProfileProjector:
         if any(d >= self.dims for d in self.projection_dims):
             raise ValueError("projection_dims contains an index out of bounds.")
 
+        # Read optimization method
         self.optimization_method = projection_config.get('optimization_method', 'de')
 
+        # Validate optimization method
         valid_methods = ['de', 'lbfgsb']
         if self.optimization_method not in valid_methods:
             raise ConfigurationError(
@@ -938,9 +959,11 @@ class ProfileProjector:
                 value=self.optimization_method
             )
 
+        # Read patching configuration
         self.patch_coarse_grid = projection_config.get('patch_coarse_grid', True)
         self.patch_refined_grid = projection_config.get('patch_refined_grid', False)
 
+        # Print configuration
         self.logger.info(f"  Optimization method: {self.optimization_method}")
         if self.optimization_method == 'de':
             self.logger.info(f"  L-BFGS-B polish after DE: {'Enabled' if self.lbfgsb_polish else 'Disabled'}")
@@ -966,6 +989,7 @@ class ProfileProjector:
         self.grid_axes = [np.linspace(self.bounds[d, 0], self.bounds[d, 1], n) for d, n in zip(self.projection_dims, self.grid_points_per_dim)]
         self.profile_likelihood_grid = {} # Use a dict for sparse grid
 
+        # Reset state variables
         self.initial_maxima = []
         self.initial_optima_registry = []
         self._initial_opt_start_points = None
@@ -983,9 +1007,12 @@ class ProfileProjector:
         self._lbfgsb_cell_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
         self.lbfgsb_hessian_hint = None
 
+        # Performance optimizations: caches
         self._neighbor_cache = {}
+        # projection_dims and profiled_dims have changed, so the proximity-pool snapshot is stale.
         self._proximity_pool_cache = None
 
+        # Cache bounds arrays for profiled and projection dimensions
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
         self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
 
@@ -996,8 +1023,10 @@ class ProfileProjector:
             n_transferred = 0
 
             for coarse_idx, solution in coarse_solutions.items():
+                # Map coarse grid index to fine grid index
                 fine_idx = self._map_coarse_to_fine_index(coarse_idx, self.grid_refinement_factor)
 
+                # Verify the fine grid point is valid
                 if not all(0 <= i < s for i, s in zip(fine_idx, self.grid_shape)):
                     self.logger.warning(f"Warning: Coarse point {coarse_idx} maps to out-of-bounds fine point {fine_idx}. Skipping.")
                     continue
@@ -1005,6 +1034,7 @@ class ProfileProjector:
                 likelihood = solution['likelihood']
                 profiled_params = solution['profiled_params']
 
+                # Store in profile likelihood grid for visualization
                 self.profile_likelihood_grid[fine_idx] = likelihood
 
                 # Population entry, so profiled-parameter plots include the
@@ -1069,6 +1099,7 @@ class ProfileProjector:
         self.coarse_grid_solution = coarse_solution
         self.refinement_method = refinement_method
 
+        # Create interpolator from coarse solution
         if refinement_method == 'linear':
             periodic_bounds = {
                 i: tuple(self.bounds[dim])
@@ -1086,9 +1117,11 @@ class ProfileProjector:
             self.global_solution_pool = [(entry['fitness'], i, entry)
                                          for i, entry in enumerate(coarse_solution['global_solution_pool'])]
             heapq.heapify(self.global_solution_pool)
+            # Update counter to continue from where we left off
             self.global_pool_counter = len(self.global_solution_pool)
             self.logger.info(f"Restored {len(self.global_solution_pool)} solutions from coarse run's global pool")
 
+        # Perform clustering if enabled and we have profiled parameters
         if self.use_clustering and len(coarse_solution['profiled_dims']) > 0:
             from .interpolation import cluster_coarse_grid_by_modes
             self.logger.info("=" * 80)
@@ -1143,6 +1176,7 @@ class ProfileProjector:
         Near cluster boundaries: multiple candidates, one per nearby cluster.
         Elsewhere: a single interpolated candidate.
         """
+        # If clustering is not available or disabled, use standard interpolation
         if self.cluster_labels is None or self.cluster_info is None or self.boundary_points is None:
             profiled_params = self.refinement_interpolator.interpolate(grid_coords)
             return [{
@@ -1151,6 +1185,7 @@ class ProfileProjector:
                 'method': 'interpolated'
             }]
 
+        # Use cluster-based initialization
         from .interpolation import get_cluster_based_initialization
 
         candidates = get_cluster_based_initialization(
@@ -1162,6 +1197,7 @@ class ProfileProjector:
             self.refinement_interpolator
         )
 
+        # Log if multiple candidates near boundary
         if len(candidates) > 1:
             cluster_ids = [c['cluster_id'] for c in candidates if c['cluster_id'] is not None]
             self.logger.debug(f"Fine point at {grid_coords}: testing {len(candidates)} candidates "
@@ -1231,6 +1267,7 @@ class ProfileProjector:
             return
 
         try:
+            # Flush remaining samples, then release the writer's file.
             self._flush_samples_buffer()
             if self._sample_writer is not None:
                 self._sample_writer.close()
@@ -1720,11 +1757,13 @@ class ProfileProjector:
         """
         n_distinct = len(self.initial_optima_registry)
 
+        # n_optima prior takes precedence (see docstring).
         if self.basin_min_optima is not None and n_distinct < self.basin_min_optima:
             return False
         if self.basin_max_optima is not None and n_distinct >= self.basin_max_optima:
             return True
 
+        # Otherwise the Bayesian rule, gated by the min-starts floor.
         if n_completed < self.basin_min_starts:
             return False
         W, n_roi = self.basin_detection_roi_stats()
@@ -1978,13 +2017,16 @@ class ProfileProjector:
 
         self.logger.info(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
 
+        # Activate all neighbors of transferred points
         for grid_idx in transferred_points:
             for neighbor_idx in self._get_valid_neighbors(grid_idx):
+                # Skip if already activated or pending
                 if (neighbor_idx in activation_job_created_for_grid_points) or \
                    (neighbor_idx in self.population) or \
                    (neighbor_idx in self.pending_activation_indices):
                     continue
 
+                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
                 candidates = self._get_refined_initialization_candidates(grid_coords)
 
@@ -1992,12 +2034,16 @@ class ProfileProjector:
                 # transferred point's parameters.
                 if len(candidates) > 0:
                     warm_start_params = candidates[0]['profiled_params']
+                    # Handle case where interpolation returns None (no profiled dims)
                     if warm_start_params is None:
                         warm_start_params = None
+                    # Check for NaN values
                     elif np.any(np.isnan(warm_start_params)):
+                        # Fallback: use nearest transferred point's parameters
                         nearest_state = self.population[grid_idx]
                         warm_start_params = nearest_state['profiled_params'][0]
                 else:
+                    # No candidates - use fallback
                     nearest_state = self.population[grid_idx]
                     warm_start_params = nearest_state['profiled_params'][0]
 
@@ -2031,6 +2077,7 @@ class ProfileProjector:
         jobs = []
         lbfgsb_job_created_for_grid_points = set()
 
+        # Find all transferred coarse grid points within ROI
         roi_cutoff = self.global_max_target_val - self.roi_threshold
         transferred_points = []
 
@@ -2056,6 +2103,7 @@ class ProfileProjector:
         for coarse_idx, solution in self.coarse_grid_solution['solutions'].items():
             n_cells_screened += 1
 
+            # Check if the coarse point itself is in ROI (fast path)
             if solution['likelihood'] >= roi_cutoff:
                 coarse_cells_to_process.add(coarse_idx)
                 n_cells_accepted += 1
@@ -2067,17 +2115,21 @@ class ProfileProjector:
             fine_start = tuple(max(0, fs) for fs in fine_start)
             fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
 
+            # Check all fine points in this cell
             cell_has_roi_point = False
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
 
             for fine_idx in itertools.product(*ranges):
+                # Skip coarse grid points (already checked above)
                 if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
 
+                # Get grid coordinates and interpolate likelihood
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
                 try:
                     interpolated_likelihood = self.refinement_interpolator.get_interpolated_likelihood(grid_coords)
 
+                    # Check if interpolated likelihood suggests this point is in ROI
                     if not np.isnan(interpolated_likelihood) and interpolated_likelihood >= roi_cutoff:
                         cell_has_roi_point = True
                         break
@@ -2098,14 +2150,19 @@ class ProfileProjector:
         for coarse_idx in coarse_cells_to_process:
             fine_start = tuple(ci * self.grid_refinement_factor for ci in coarse_idx)
             fine_end = tuple((ci + 1) * self.grid_refinement_factor for ci in coarse_idx)
+
+            # Ensure cell boundaries are within fine grid bounds
             fine_start = tuple(max(0, fs) for fs in fine_start)
             fine_end = tuple(min(fe, self.grid_shape[i] - 1) for i, fe in enumerate(fine_end))
 
+            # Iterate through all points in this cell
             ranges = [range(fine_start[i], fine_end[i] + 1) for i in range(self.n_proj_dims)]
             for fine_idx in itertools.product(*ranges):
-                # Coarse points were transferred already.
+                # Skip coarse grid points (already transferred)
                 if self._is_coarse_grid_point(fine_idx, self.grid_refinement_factor):
                     continue
+
+                # Skip if already processed
                 if fine_idx in lbfgsb_job_created_for_grid_points:
                     continue
 
@@ -2124,6 +2181,7 @@ class ProfileProjector:
                     next_job_id += 1
                     continue
 
+                # Get candidate parameters (using clustering if available)
                 grid_coords = self._get_grid_coords_from_indices(fine_idx)
                 candidates = self._get_refined_initialization_candidates(grid_coords)
                 if len(candidates) == 0:
@@ -2132,6 +2190,7 @@ class ProfileProjector:
                 # refinement_direct_eval with several candidates: evaluate all,
                 # keep the best.
                 if self.refinement_direct_eval and len(candidates) > 1:
+                    # Create a special multi-candidate evaluation job
                     all_prof_params = []
                     all_full_params = []
 
@@ -2149,6 +2208,7 @@ class ProfileProjector:
                     if len(all_prof_params) == 0:
                         continue
 
+                    # Create ActivationJob that evaluates all candidates
                     job = ActivationJob(
                         job_id=next_job_id,
                         sampler=self,
@@ -2168,6 +2228,7 @@ class ProfileProjector:
                     next_job_id += 1
 
                 else:
+                    # Single candidate or optimization mode: use first candidate
                     candidate = candidates[0]
                     start_params_partial = candidate['profiled_params']
                     if start_params_partial is None:
@@ -2175,9 +2236,12 @@ class ProfileProjector:
                     elif np.any(np.isnan(start_params_partial)):
                         continue
 
+                    # Construct full parameter vector
                     start_params_full = self._construct_params(fine_idx, start_params_partial)
 
+                    # Create job based on refinement mode
                     if self.refinement_direct_eval:
+                        # Direct evaluation mode with single candidate
                         job = ActivationJob(
                             job_id=next_job_id,
                             sampler=self,
@@ -2192,6 +2256,7 @@ class ProfileProjector:
                         job.fitnesses = np.full(1, -np.inf)
                         job.evals_remaining = 1
                     else:
+                        # Optimization mode: create L-BFGS-B refinement job
                         job = LBFGSBJob(
                             job_id=next_job_id,
                             job_type='REFINEMENT_LBFGSB',
@@ -2207,10 +2272,12 @@ class ProfileProjector:
                     lbfgsb_job_created_for_grid_points.add(fine_idx)
                     next_job_id += 1
 
+        # Count multi-candidate jobs
         n_multi_candidate = sum(1 for job in jobs if hasattr(job, 'pop_size') and job.pop_size > 1)
         n_single_candidate = len(jobs) - n_multi_candidate
 
         if self.direct_eval_mode:
+            # In direct_eval_mode the per-point jobs only evaluate the target.
             opt_method = "direct evaluation"
         elif self.refinement_direct_eval:
             opt_method = "direct evaluation"
@@ -2438,6 +2505,7 @@ class ProfileProjector:
         new_jobs = []
         roi_cutoff = self.global_max_target_val - self.roi_threshold
 
+        # Iterate over a copy as population might be modified
         candidates = self.population.keys() if around is None else [
             idx for idx in around if idx in self.population]
         active_points_in_roi = [
@@ -2498,6 +2566,7 @@ class ProfileProjector:
             neighbor_state = self.population[neighbor_idx]
             neighbor_fitness = neighbor_state['best_fitness']
 
+            # Get best profiled params from neighbor
             best_idx = np.argmax(neighbor_state['fitnesses'])
             profiled_params = neighbor_state['profiled_params'][best_idx]
 
@@ -2506,6 +2575,7 @@ class ProfileProjector:
         if not neighbor_info:
             return None
 
+        # Sort by fitness (descending) and take top n_neighbors
         neighbor_info.sort(key=lambda x: x[2], reverse=True)
         return neighbor_info[:n_neighbors]
 
@@ -2519,12 +2589,15 @@ class ProfileProjector:
         """
         from .jobs.patching_test_job import PatchingTestJob
 
+        # Determine candidate grid points for this wave
         if wave_number == 0:
+            # Wave 0: Test all ROI points AND border points
             roi_cutoff = self.global_max_target_val - self.roi_threshold
             candidates = []
 
             for idx, state in self.population.items():
                 if state['best_fitness'] >= roi_cutoff:
+                    # Point is within ROI - definitely test it
                     candidates.append(idx)
                 else:
                     # Border cell: more than half its neighbours in the ROI.
@@ -2536,11 +2609,13 @@ class ProfileProjector:
                             if self.population[neighbor_idx]['best_fitness'] >= roi_cutoff:
                                 roi_neighbor_count += 1
 
+                    # Include if >50% of neighbors are in ROI
                     if neighbor_count > 0 and (roi_neighbor_count / neighbor_count) > 0.5:
                         candidates.append(idx)
 
             self.logger.info(f"--- Patching Wave 0: Testing {len(candidates)} ROI and border points ---")
         else:
+            # Wave 1+: Test neighbors of recently updated points
             candidates = set()
             for updated_idx in updated_points_last_wave:
                 for neighbor_idx in self._get_valid_neighbors(updated_idx):
@@ -2558,6 +2633,7 @@ class ProfileProjector:
         for grid_idx in candidates:
             current_fitness = self.population[grid_idx]['best_fitness']
 
+            # Get best neighbor(s) profiled parameters
             neighbor_info = self._get_best_neighbor_profiled_params(
                 grid_idx, n_neighbors=self.patching_n_neighbors
             )
@@ -2565,10 +2641,13 @@ class ProfileProjector:
             if neighbor_info is None:
                 continue
 
+            # For each neighbor to test
             for neighbor_idx, test_params, neighbor_fitness in neighbor_info:
+                # Only test if the neighbour has a better likelihood
                 if neighbor_fitness <= current_fitness:
                     continue
 
+                # Create test job
                 job = PatchingTestJob(
                     job_id=next_job_id,
                     sampler=self,

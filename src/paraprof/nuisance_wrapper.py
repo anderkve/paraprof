@@ -306,6 +306,7 @@ def register_nuisance_wrapped_test_functions():
             constraint_sigma=sigma
         )
 
+        # Create descriptive name
         registry_name = f"{base_name}_{coupling}_{n_nuis}nuis_sigma{sigma}"
         registry[registry_name] = (func, bounds, wrapper, base_peaks)
 
