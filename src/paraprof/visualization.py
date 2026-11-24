@@ -13,11 +13,18 @@ logger = get_logger()
 def plot_profiles(sampler, filename, plot_settings=None):
     """Save profile-likelihood plots for any projection dimensionality.
 
+    Parameters are labelled with the sampler's ``parameter_names`` if it has
+    them, and by index otherwise. The axes are in the coordinates of the
+    sampler's ``bounds``.
+
     ``plot_settings`` keys (all optional): ``dpi`` (300), ``filetype`` ('png'),
     ``slice_mode`` ('max' or 'all', 3D+), ``vmin``/``vmax`` (colorbar range
     relative to best-fit log L; -4.0/0.0), ``contour_levels``
     (default ``[-3.0, -1.0]``), ``plot_profiled_params`` (True),
-    ``output_dir`` (default ``'.'``; created automatically if missing).
+    ``output_dir`` (default ``'.'``; created automatically if missing),
+    ``coordinate_note`` (text added in parentheses to the parameter labels and
+    the best-fit coordinates, e.g. ``'relative to bounds'`` when ``bounds`` is
+    the unit hypercube; default none).
     """
     try:
         import matplotlib
@@ -50,6 +57,43 @@ def _resolve_output_path(filename, plot_settings):
     output_dir = plot_settings.get('output_dir', '.')
     os.makedirs(output_dir, exist_ok=True)
     return os.path.join(output_dir, filename)
+
+
+def _param_label(sampler, dim, unnamed='Parameter {}'):
+    """Name of parameter ``dim``, or ``unnamed`` filled with its index if the
+    sampler has no ``parameter_names``."""
+    names = getattr(sampler, 'parameter_names', None)
+    return names[dim] if names else unnamed.format(dim)
+
+
+def _dims_text(sampler, dims):
+    """The parameters ``dims`` as text: their names, or the list of indices."""
+    if getattr(sampler, 'parameter_names', None):
+        return ', '.join(sampler.parameter_names[d] for d in dims)
+    return str(dims)
+
+
+def _with_note(label, plot_settings, *notes):
+    """``label`` followed in parentheses by ``notes`` and ``plot_settings['coordinate_note']``."""
+    notes = [n for n in (*notes, plot_settings.get('coordinate_note')) if n]
+    return f"{label} ({', '.join(notes)})" if notes else label
+
+
+def _best_fit_text(sampler, coords, loglike, plot_settings, width):
+    """'Best fit: ...' for a title, broken between entries into lines of at
+    most ``width`` characters."""
+    entries = [f"{_param_label(sampler, d, 'param {}')} = {c:.3e}"
+               for d, c in zip(sampler.projection_dims, coords)]
+    entries[-1] = _with_note(entries[-1], plot_settings)
+    entries.append(f'log L = {loglike:.3e}')
+    lines = ['Best fit: ' + entries[0]]
+    for entry in entries[1:]:
+        if len(lines[-1]) + len(entry) + 2 <= width:
+            lines[-1] += ', ' + entry
+        else:
+            lines[-1] += ','
+            lines.append(entry)
+    return '\n'.join(lines)
 
 
 def _plot_1d_profile(sampler, filename, plot_settings):
@@ -104,12 +148,12 @@ def _plot_1d_profile(sampler, filename, plot_settings):
             level = best_fit_loglike + delta
             ax.axhline(y=level, color='gray', linestyle='--', alpha=0.7, label=label)
 
-    title = f'1D Profile Likelihood for Parameter {dim}'
+    title = f'1D Profile Likelihood for {_param_label(sampler, dim)}'
     if best_fit_x is not None:
-        title += (f'\nBest fit: param {dim} = {best_fit_x:.3e}, '
-                  f'log L = {best_fit_loglike:.3e}')
+        title += '\n' + _best_fit_text(sampler, [best_fit_x], best_fit_loglike,
+                                       plot_settings, width=80)
     ax.set_title(title, fontsize=20)
-    ax.set_xlabel(f'Parameter {dim}', fontsize=24)
+    ax.set_xlabel(_with_note(_param_label(sampler, dim), plot_settings), fontsize=24)
     ax.set_ylabel('Log Likelihood', fontsize=24)
     ax.legend(fontsize=18)
     ax.grid(True, linestyle='--', alpha=0.5)
@@ -187,14 +231,13 @@ def _plot_2d_profile(sampler, filename, plot_settings):
                    c='white', s=120, marker='*', edgecolor='black',
                    linewidth=1.0, label='Best fit', zorder=11)
 
-    title = f'Profile likelihood for parameters {sampler.projection_dims}'
+    title = f'Profile likelihood for parameters {_dims_text(sampler, sampler.projection_dims)}'
     if best_fit_coords is not None:
-        title += (f'\nBest fit: param {dim1} = {best_fit_coords[0]:.3e}, '
-                  f'param {dim2} = {best_fit_coords[1]:.3e}, '
-                  f'log L = {best_fit_loglike:.3e}')
+        title += '\n' + _best_fit_text(sampler, best_fit_coords, best_fit_loglike,
+                                       plot_settings, width=75)
     ax.set_title(title, fontsize=15)
-    ax.set_xlabel(f'Parameter {dim1}', fontsize=15)
-    ax.set_ylabel(f'Parameter {dim2}', fontsize=15)
+    ax.set_xlabel(_with_note(_param_label(sampler, dim1), plot_settings), fontsize=15)
+    ax.set_ylabel(_with_note(_param_label(sampler, dim2), plot_settings), fontsize=15)
     ax.legend(fontsize=13)
     ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -283,8 +326,8 @@ def _plot_nd_profile(sampler, filename, plot_settings):
                   c='white', s=120, marker='*', edgecolor='black',
                   linewidth=1.0, label='Best fit', zorder=10)
 
-        ax.set_xlabel(f'Param {dims[dim_i]}')
-        ax.set_ylabel(f'Param {dims[dim_j]}')
+        ax.set_xlabel(_with_note(_param_label(sampler, dims[dim_i], 'Param {}'), plot_settings))
+        ax.set_ylabel(_with_note(_param_label(sampler, dims[dim_j], 'Param {}'), plot_settings))
         ax.set_title(f'Dims {dims[dim_i]}-{dims[dim_j]}')
         ax.grid(True, linestyle='--', alpha=0.3)
 
@@ -297,11 +340,10 @@ def _plot_nd_profile(sampler, filename, plot_settings):
 
     mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
     max_coords = sampler._get_grid_coords_from_indices(max_grid_idx)
-    best_fit_str = ', '.join(f'param {dims[k]} = {max_coords[k]:.3e}'
-                             for k in range(n_dims))
+    best_fit_str = _best_fit_text(sampler, max_coords, max_likelihood, plot_settings, width=150)
     fig.suptitle(f'{n_dims}D Profile Likelihood - {mode_str} Projections\n'
-                 f'Dimensions: {dims}\n'
-                 f'Best fit: {best_fit_str}, log L = {max_likelihood:.3e}',
+                 f'Dimensions: {_dims_text(sampler, dims)}\n'
+                 f'{best_fit_str}',
                  fontsize=12, y=0.995)
     fig.tight_layout()
 
@@ -413,9 +455,12 @@ def _plot_1d_profiled_params(sampler, base_filename, plot_settings):
         ax.axhline(y=param_bounds[0], color='red', linestyle='--', alpha=0.5, label='Bounds')
         ax.axhline(y=param_bounds[1], color='red', linestyle='--', alpha=0.5)
 
-        ax.set_xlabel(f'Parameter {proj_dim} (projection)', fontsize=12)
-        ax.set_ylabel(f'Optimal parameter {prof_dim}', fontsize=12)
-        ax.set_title(f'Optimal profiled parameter {prof_dim} vs projection dimension', fontsize=12)
+        prof_name = _param_label(sampler, prof_dim, '{}')
+        ax.set_xlabel(_with_note(_param_label(sampler, proj_dim), plot_settings, 'projection'),
+                      fontsize=12)
+        ax.set_ylabel(_with_note('Optimal ' + _param_label(sampler, prof_dim, 'parameter {}'),
+                                 plot_settings), fontsize=12)
+        ax.set_title(f'Optimal profiled parameter {prof_name} vs projection dimension', fontsize=12)
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -477,14 +522,16 @@ def _plot_2d_profiled_params(sampler, base_filename, plot_settings):
             ax.scatter(active_points[:, 0], active_points[:, 1], c='cyan', s=3,
                        edgecolor='black', lw=0.5, label='Active DE Points')
 
-        ax.set_title(f'Optimal profiled parameter {prof_dim}')
-        ax.set_xlabel(f'Parameter {dim1}')
-        ax.set_ylabel(f'Parameter {dim2}')
+        ax.set_title(f"Optimal profiled parameter {_param_label(sampler, prof_dim, '{}')}")
+        ax.set_xlabel(_with_note(_param_label(sampler, dim1), plot_settings))
+        ax.set_ylabel(_with_note(_param_label(sampler, dim2), plot_settings))
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.5)
 
         cax = axes[1]
-        fig.colorbar(im, cax=cax, orientation='vertical', label=f'Parameter {prof_dim} Value')
+        fig.colorbar(im, cax=cax, orientation='vertical',
+                     label=_with_note(_param_label(sampler, prof_dim, 'Parameter {} Value'),
+                                      plot_settings))
 
         fig.tight_layout()
 
@@ -566,20 +613,26 @@ def _plot_nd_profiled_params(sampler, base_filename, plot_settings):
                           c='red', s=100, marker='*', edgecolor='white',
                           linewidth=1.5, label='Global Max', zorder=10)
 
-            ax.set_xlabel(f'Param {dims[dim_i]}')
-            ax.set_ylabel(f'Param {dims[dim_j]}')
+            ax.set_xlabel(_with_note(_param_label(sampler, dims[dim_i], 'Param {}'),
+                                     plot_settings))
+            ax.set_ylabel(_with_note(_param_label(sampler, dims[dim_j], 'Param {}'),
+                                     plot_settings))
             ax.set_title(f'Dims {dims[dim_i]}-{dims[dim_j]}')
             ax.grid(True, linestyle='--', alpha=0.3)
 
             fig.colorbar(im, ax=ax, orientation='vertical',
-                        label=f'Param {prof_dim}', fraction=0.046)
+                         label=_with_note(_param_label(sampler, prof_dim, 'Param {}'),
+                                          plot_settings),
+                         fraction=0.046)
 
         for idx in range(n_pairs, len(axes)):
             axes[idx].set_visible(False)
 
         mode_str = "Max Slice" if slice_mode == 'max' else "Marginalized"
-        fig.suptitle(f'Optimal profiled parameter {prof_dim} - {mode_str} projections\n'
-                     f'Projection dimensions: {dims}', fontsize=14, y=0.995)
+        fig.suptitle(f"Optimal profiled parameter {_param_label(sampler, prof_dim, '{}')}"
+                     f' - {mode_str} projections\n'
+                     f'Projection dimensions: {_dims_text(sampler, dims)}',
+                     fontsize=14, y=0.995)
         fig.tight_layout()
 
         output_filename = f"{base_filename}_profiled_param_{prof_dim}.{filetype}"
@@ -639,7 +692,8 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
 
     ``plot_settings`` keys (all optional): ``dpi`` (300), ``filetype``
     ('png'), ``vmin``/``vmax`` (background range relative to best-fit
-    log L; -4.0/0.0), ``output_dir`` ('.').
+    log L; -4.0/0.0), ``output_dir`` ('.'), ``coordinate_note`` (text added
+    in parentheses to the axis labels; default none).
     """
     try:
         import matplotlib
@@ -699,10 +753,10 @@ def plot_volume_samples(volume_result, dims, filename, plot_settings=None,
         fig.colorbar(sc, ax=ax, label=r'$\ln L$ (volume samples)')
 
     names = parameter_names or {}
-    ax.set_xlabel(names.get(d0, f"$x_{{{d0}}}$") if isinstance(names, dict)
-                  else names[d0])
-    ax.set_ylabel(names.get(d1, f"$x_{{{d1}}}$") if isinstance(names, dict)
-                  else names[d1])
+    xlabel, ylabel = (names.get(d, f"$x_{{{d}}}$") if isinstance(names, dict) else names[d]
+                      for d in (d0, d1))
+    ax.set_xlabel(_with_note(xlabel, plot_settings))
+    ax.set_ylabel(_with_note(ylabel, plot_settings))
     ax.set_title(f"Volume samples ({len(samples)} in-band)")
 
     fig.tight_layout()

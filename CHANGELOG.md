@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hypercube with ScannerBit's inverse prior transform. A point written as a
   list is rejected. Lists used to be passed on as unit-hypercube coordinates,
   although the plugin's docstring said physical coordinates.
+- Plots label parameters with `parameter_names` when the sampler has them,
+  instead of "Parameter 0", "Parameter 1". Without names the labels are
+  unchanged. New `plot_settings` key `coordinate_note`: text added in
+  parentheses to the parameter labels and to the best-fit coordinates in the
+  titles. The GAMBIT plugin sets it to "relative to bounds", since its plots
+  are drawn in the unit hypercube and not in physical units. A best-fit line
+  too long for the title is broken over several lines.
 
 ### Fixed
 - A projection over all parameters (no profiled parameters) raised

@@ -143,10 +143,15 @@ YAML options:
                              the working directory after each projection. When
                              volume_sampling is enabled, it also plots the
                              collected volume samples on top of each 2D
-                             projection map.
+                             projection map. The plots are labelled with the
+                             parameter names. Their axes are in the unit
+                             hypercube: 0 is the lower end of a parameter's
+                             prior range and 1 the upper end.
     plot_settings:           Dict forwarded to paraprof's plotting helpers.
                              Common keys: dpi, filetype, vmin, vmax,
                              contour_levels, slice_mode, plot_profiled_params.
+                             coordinate_note is the text added to the
+                             parameter labels (default 'relative to bounds').
 
 paraprof's ``grad_func`` is not exposed: ScannerBit's Python API surfaces
 only the loglike value, so L-BFGS-B uses finite differences.
@@ -226,6 +231,9 @@ only the loglike value, so L-BFGS-B uses finite differences.
             self.plot_settings.setdefault(
                 "output_dir", get_directory(self.__plugin_name__, **kwargs)
             )
+            # paraprof scans the unit hypercube, so that is what the plot
+            # axes show. Say so next to the parameter names.
+            self.plot_settings.setdefault("coordinate_note", "relative to bounds")
 
 
     @copydoc(paraprof_ProfileProjector)

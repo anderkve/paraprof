@@ -310,8 +310,11 @@ plot_settings = {
     'vmax': 0.0,
     'plot_profiled_params': True,
     'output_dir': '.',  # created automatically if missing
+    'coordinate_note': None,  # text added in parentheses to the parameter labels
 }
 ```
+
+Parameters are labelled with `parameter_names` if the sampler has them, and by index otherwise. The axes are in the coordinates of `bounds`. If those are not the coordinates a reader expects, say what they are with `coordinate_note`: the GAMBIT plugin scans the unit hypercube and sets it to `'relative to bounds'`.
 
 ## Testing
 

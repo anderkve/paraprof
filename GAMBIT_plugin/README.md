@@ -72,7 +72,12 @@ See `paraprof_example.yaml` for a complete worked example.
   seeding step. Set equal to `samples_output_file` to round-trip samples
   from one run into the next.
 - `save_plots: true` enables paraprof's built-in 1D/2D profile plots
-  alongside the GAMBIT outputs, written to the working directory.
+  alongside the GAMBIT outputs, written to the working directory. The plots
+  are labelled with the parameter names. Their axes are in the unit
+  hypercube, not in physical units: 0 is the lower end of a parameter's prior
+  range and 1 the upper end. The labels say so with the text
+  "(relative to bounds)", which `plot_settings: {coordinate_note: ...}`
+  replaces.
 - Everything under `advanced_config:` is forwarded verbatim to
   `ProfileProjector`, so every expert knob in the
   [paraprof README](https://github.com/anderkve/paraprof) is reachable.
