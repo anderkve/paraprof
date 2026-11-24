@@ -65,7 +65,7 @@ YAML options:
                             patch_coarse_grid:      bool (default true)
                             patch_refined_grid:     bool (default false)
                         Optional ProfileProjector tuning keys:
-    roi_threshold:           ROI cutoff in chi^2 units (default 4.0).
+    roi_threshold:           ROI cutoff in log-likelihood units (default 4.0).
     pop_per_grid_point:      DE population size per grid cell (default 3).
     n_initial_optimizations: Cap on the global L-BFGS-B starts that seed the
                              initial maxima before grid optimization. With basin
@@ -102,8 +102,9 @@ YAML options:
                              full parameter space. Runs once and writes its own
                              output files. Keys (all optional):
                                roi_threshold:        depth of the band to sample,
-                                                     in chi^2 units (default: the
-                                                     projection's roi_threshold)
+                                                     in log-likelihood units 
+                                                     (default: the projection's 
+                                                     roi_threshold)
                                n_walkers:            ensemble size (default 1000)
                                n_steps:              steps per walker (default 30)
                                eval_budget:          cap on loglike evaluations
