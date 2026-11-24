@@ -56,6 +56,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation for the whole scan. Completed sends are now dropped as it goes.
 
 ### Added
+- `branches` (default `None`): `{parameter: [split points]}` cuts the range of
+  a profiled parameter, and a projection that profiles it is run once per
+  sub-range, with the parameter confined to it. The result holds per cell the
+  highest value. This is for a profiled parameter with two separate local
+  optima whose order changes across the grid: a cell starts from its
+  neighbour's profiled parameters, so one grid run can stay on the lower
+  optimum in part of the grid, and patching, the suspect recheck and
+  `use_clustering` only choose between solutions the grid already holds. On
+  `fit6` of `tools/bench_scheduling.py` (plane (`m32`, `t12`), 25 x 25, 40
+  virtual workers) the plain scan is low in 17 of 72 cells inside the region
+  of interest, by up to 1.43, at 2 500 evaluations; with `branches={5: [0.51]}`
+  no cell is low, at 3 990. The branches share the initial stages and the
+  workers; each is one more `_ProjectionRun` in `master_main` with its own
+  projection state. A branch without a known point inside the region of
+  interest gets one L-BFGS-B run over all parameters confined to it (new job
+  type `BRANCH_SEED`), started from the best known point mirrored about the
+  split point; a branch whose best point stays outside the region of interest
+  is not followed. The exported solution names the `branch` of each cell and
+  lists the solutions of every branch under `branches`. A projection can set
+  its own `branches`. With `grid_refinement_factor` the branches are refined
+  one after the other. A projection with the split parameter as an axis, and
+  any scan without `branches`, evaluates the same points in the same order as
+  before. The GAMBIT plugin forwards the option and takes the split points in
+  physical coordinates.
 - **Evaluations ahead of time on idle workers.** The trial steps of a line
   search form a fixed ladder and the step accepted is the first that passes
   the Armijo test, so later rungs can be evaluated before earlier ones return;

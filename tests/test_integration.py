@@ -622,3 +622,81 @@ def test_two_islands_multimodal_coverage():
     assert result['n_samples'] > 50
     assert result['n_pos_island'] >= 1
     assert result['n_neg_island'] >= 1
+
+
+# Two modes in the profiled x1 (at 0.3 and at 0.7); the second gains on the first with x0
+# and is the higher one above x0 = 0.575. The only initial point lies in the first.
+BRANCH_RUNNER = textwrap.dedent("""
+    import json
+    import sys
+    import numpy as np
+    from mpi4py import MPI
+
+    from paraprof import (
+        ProfileProjector, run_all_projections, terminate_workers, worker_main,
+        set_log_level,
+    )
+    set_log_level('WARNING')
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+
+    def target(p):
+        x0, x1, x2 = p
+        first = -0.5 * ((x1 - 0.3) / 0.05) ** 2
+        second = -0.3 + 4.0 * (x0 - 0.5) - 0.5 * ((x1 - 0.7) / 0.05) ** 2
+        return float(-0.5 * ((x0 - 0.4) / 0.15) ** 2 - 0.5 * ((x2 - 0.5) / 0.1) ** 2
+                     + np.logaddexp(first, second))
+
+    branches = {1: [0.5]} if sys.argv[1] == 'branches' else None
+    projections = [{'dims': [0], 'grid_points': [20], 'optimization_method': 'lbfgsb'}]
+
+    np.random.seed(20260513)
+
+    if rank == 0:
+        with ProfileProjector(
+            target_func=target,
+            bounds=[(0.0, 1.0)] * 3,
+            projections=projections,
+            branches=branches,
+            initial_points=[[0.4, 0.3, 0.5]],
+            roi_threshold=4.0,
+            max_patching_waves=2,
+            lbfgsb_max_iter=20,
+        ) as sampler:
+            comm.bcast(sampler.target_func, root=0)
+            results = run_all_projections(
+                comm=comm, sampler=sampler, projections=projections,
+                save_plots=False, myrank=rank,
+            )
+            sol = results[0]['coarse_solution']
+            errors, used = [], set()
+            for (i,), entry in sol['solutions'].items():
+                x0 = sol['grid_axes'][0][i]
+                exact = -0.5 * ((x0 - 0.4) / 0.15) ** 2 + max(0.0, -0.3 + 4.0 * (x0 - 0.5))
+                if exact > -4.0:
+                    errors.append(entry['likelihood'] - exact)
+                    used.add(entry.get('branch'))
+            print('RESULT', json.dumps({
+                'n_roi': len(errors),
+                'worst': float(min(errors)),
+                'highest': float(max(errors)),
+                'branches_used': sorted(b for b in used if b is not None),
+                'calls': sampler.target_calls,
+            }), flush=True)
+        terminate_workers(comm, rank)
+    else:
+        worker_main(comm, rank)
+""")
+
+
+def test_branches_follow_both_modes():
+    """A profiled parameter with two modes: one grid run stays in the mode it starts in, a
+    run per declared sub-range reports the higher mode in every cell."""
+    single = _run_runner(BRANCH_RUNNER, 'single')
+    split = _run_runner(BRANCH_RUNNER, 'branches')
+    assert single['worst'] < -0.5, single
+    assert split['n_roi'] >= 8, split
+    assert split['worst'] > -1e-4 and split['highest'] < 1e-6, split
+    assert split['branches_used'] == [0, 1], split
+    assert split['calls'] < 3 * single['calls'], split

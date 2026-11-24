@@ -58,6 +58,15 @@ See `paraprof_example.yaml` for a complete worked example.
   every initial point before it activates grid points. Without it the points
   are evaluated only, and the best of them stands as the maximum unless a
   grid point exceeds it.
+- `branches` is a mapping `{parameter name: split point or list of split
+  points}` in physical coordinates, for a parameter with two solutions that is
+  profiled, such as `theta23` with its two octants (split at pi/4). A
+  projection that profiles the parameter is run once per sub-range and reports
+  per cell the highest value; see the paraprof README. The plugin maps each
+  split point to the unit hypercube with the inverse prior transform, with the
+  other parameters at the centre of the hypercube, and prints the result. It
+  stops if the prior of the parameter depends on other parameters. A
+  projection may carry its own `branches` key.
 - `samples_output_file` is forwarded to paraprof and only written by rank 0.
   This is purely a paraprof-side diagnostic: GAMBIT's printers already
   capture every evaluation, so it defaults to off.

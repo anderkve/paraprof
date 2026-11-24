@@ -147,6 +147,7 @@ class ProfileProjector:
                  n_optima=None,
                  initial_points=None,
                  refine_initial_points=False,
+                 branches=None,
                  # Optional user-supplied gradient
                  grad_func=None,
                  # Feature toggles
@@ -243,6 +244,20 @@ class ProfileProjector:
             (default: False). The endpoints join the initial maxima. Use it
             when the points are near the maximum but not known to be at it,
             e.g. the best fit of an earlier run with a different target.
+        branches : dict, optional
+            Sub-ranges of profiled parameters that are followed separately
+            (default: None). ``{parameter: [split points]}`` cuts the range
+            of a parameter (index, or name with ``parameter_names``) at the
+            given values. A projection that profiles the parameter runs its
+            grid once per sub-range, with the parameter confined to it, and
+            reports per cell the highest value. Use it for a parameter with
+            separate local optima whose order changes over the grid: a single
+            grid run follows one of them and reports its value also where
+            the other is higher. The cost is one grid run per sub-range. A
+            projection with the parameter as an axis is not affected. With
+            several parameters there is one branch per combination of
+            sub-ranges. A ``'branches'`` key in a projection replaces this
+            setting for that projection (``{}`` turns it off).
 
         Feature Toggles
         ---------------
@@ -507,6 +522,14 @@ class ProfileProjector:
                     )
 
         self.projections = projections
+
+        # Branches: the global setting, and those of projections that set
+        # their own. Both are stored as {dim index: sorted split points}.
+        self.branches = self._normalise_branches(branches, "branches")
+        for i, proj in enumerate(projections):
+            if 'branches' in proj:
+                proj['branches'] = self._normalise_branches(
+                    proj['branches'], f"projection {i} 'branches'", projection_dims=proj['dims'])
 
         # Validate core parameters
         if not isinstance(pop_per_grid_point, int) or pop_per_grid_point < 1:
@@ -790,6 +813,11 @@ class ProfileProjector:
         # _sample_proximity_from_global_pool for the invalidation rule.
         self._proximity_pool_cache = None
 
+        # Endpoint of the optimisation confined to a branch, by the branch's
+        # sub-ranges (see create_branch_seed_jobs). None while it is running
+        # or if it failed.
+        self._branch_optima = {}
+
         # --- Initial points tracking ---
         self._initial_points_evaluated = False
         self._initial_points_refined = False
@@ -873,8 +901,104 @@ class ProfileProjector:
             else:
                 base_dict[key] = value
 
+    def _normalise_branches(self, spec, context, projection_dims=None):
+        """A ``branches`` setting as ``{dim index: sorted split points}``.
+
+        ``projection_dims`` are the axes of the projection the setting was
+        given for, if any: a split parameter must not be one of them.
+        """
+        if spec is None:
+            return {}
+        if not isinstance(spec, dict):
+            raise ConfigurationError(
+                f"{context} must be a dict {{parameter: [split points]}}",
+                parameter="branches", value=spec)
+        out = {}
+        for key, splits in spec.items():
+            if isinstance(key, str):
+                if self._name_to_dim is None or key not in self._name_to_dim:
+                    raise ConfigurationError(
+                        f"{context} names the unknown parameter {key!r}"
+                        + (f"; known names: {self.parameter_names}" if self.parameter_names
+                           else " (no parameter_names were given)"),
+                        parameter="branches", value=spec)
+                dim = self._name_to_dim[key]
+            elif (isinstance(key, (int, np.integer)) and not isinstance(key, bool)
+                  and 0 <= key < self.dims):
+                dim = int(key)
+            else:
+                raise ConfigurationError(
+                    f"{context} has the invalid parameter {key!r} "
+                    f"(a name, or an index 0-{self.dims - 1})",
+                    parameter="branches", value=spec)
+            if projection_dims is not None and dim in projection_dims:
+                raise InvalidProjectionError(
+                    f"{context} splits parameter {key!r}, which is an axis of the projection",
+                    projection={'dims': list(projection_dims), 'branches': spec})
+            try:
+                values = sorted({float(v) for v in np.atleast_1d(splits)})
+            except (TypeError, ValueError):
+                values = None
+            lo, hi = float(self.bounds[dim, 0]), float(self.bounds[dim, 1])
+            if values is None or not all(lo < v < hi for v in values):
+                raise ConfigurationError(
+                    f"{context}: the split points of parameter {key!r} must be numbers "
+                    f"strictly inside its bounds ({lo}, {hi}), got {splits!r}",
+                    parameter="branches", value=spec)
+            if dim in out:
+                raise ConfigurationError(
+                    f"{context} lists parameter {key!r} twice",
+                    parameter="branches", value=spec)
+            if values:
+                out[dim] = values
+        return out
+
+    def _branch_boxes(self, spec):
+        """The branches of the current projection for the setting ``spec``:
+        one per combination of sub-ranges of the split parameters that the
+        projection profiles. None if it profiles none of them.
+
+        A branch is a dict with its ``index``, its ``ranges``
+        ``{dim: (lower, upper)}`` and the ``bounds`` array of all parameters
+        with those ranges in place.
+        """
+        dims = [d for d in sorted(spec) if d in self.profiled_dims]
+        if not dims:
+            return None
+        per_dim = []
+        for d in dims:
+            edges = [float(self.bounds[d, 0]), *spec[d], float(self.bounds[d, 1])]
+            per_dim.append(list(zip(edges[:-1], edges[1:])))
+        branches = []
+        for index, combo in enumerate(itertools.product(*per_dim)):
+            bounds = np.array(self.bounds, dtype=float)
+            for d, (lo, hi) in zip(dims, combo):
+                bounds[d] = (lo, hi)
+            branches.append({'index': index, 'ranges': dict(zip(dims, combo)), 'bounds': bounds})
+        return branches
+
+    @staticmethod
+    def _inside(points, bounds):
+        """Whether a point (or each row of an array of points) lies within ``bounds``."""
+        points = np.asarray(points, dtype=float)
+        return np.all((points >= bounds[:, 0]) & (points <= bounds[:, 1]), axis=-1)
+
+    @property
+    def active_bounds(self):
+        """Bounds the grid points are optimised in: those of the branch being
+        followed, or the full ones."""
+        return self.bounds if self.branch is None else self.branch['bounds']
+
+    def _describe_branch(self, branch):
+        """A branch for the log, e.g. ``branch 2 (theta23 in [0.51, 1])``."""
+        names = self.parameter_names
+        parts = [f"{names[d] if names else f'parameter {d}'} in [{lo:.6g}, {hi:.6g}]"
+                 for d, (lo, hi) in branch['ranges'].items()]
+        return f"branch {branch['index'] + 1} ({', '.join(parts)})"
+
     # Everything _reset_for_new_projection sets. With eager_start the master
-    # swaps these in before it works on a projection.
+    # swaps these in before it works on a projection, and a projection with
+    # branches has one such state per branch.
     PROJECTION_STATE_ATTRS = (
         'projection_dims', 'grid_points_per_dim', 'optimization_method',
         'patch_coarse_grid', 'patch_refined_grid', 'profiled_dims', 'n_proj_dims',
@@ -885,6 +1009,7 @@ class ProfileProjector:
         'current_generation', 'memory_F', 'memory_CR', 'memory_idx',
         '_lbfgsb_cell_scales', 'lbfgsb_hessian_hint', '_neighbor_cache',
         '_proximity_pool_cache', '_profiled_bounds', '_projection_bounds',
+        'projection_branches', 'branch', 'branch_seeds', 'branch_results',
     )
 
     def capture_projection_state(self):
@@ -995,6 +1120,25 @@ class ProfileProjector:
         self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
         self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
 
+        # Branches of this projection (None: it is run once, over the full
+        # ranges). The projection's own setting replaces the global one.
+        if 'branches' in projection_config:
+            spec = self._normalise_branches(projection_config['branches'], "projection 'branches'",
+                                            projection_dims=self.projection_dims)
+        else:
+            spec = self.branches
+        self.projection_branches = self._branch_boxes(spec)
+        # The branch the state belongs to, the initial maxima collected per
+        # branch before the projection is split, and the per-branch results
+        # once the branches have been merged.
+        self.branch = None
+        self.branch_seeds = None
+        self.branch_results = None
+        if self.projection_branches:
+            self.logger.info(f"  Branches: {len(self.projection_branches)}")
+            for branch in self.projection_branches:
+                self.logger.info(f"    {self._describe_branch(branch)}")
+
         # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
             self.logger.info("--- Transferring coarse grid solutions to fine grid (for visualization) ---")
@@ -1036,10 +1180,10 @@ class ProfileProjector:
             self.logger.info("=" * 80)
 
 
-    def export_grid_solution(self):
-        """Export the current grid state (axes, dims, solutions, pool) as a dict."""
+    def _solutions(self, population):
+        """The finished cells of ``population`` as ``{grid_idx: solution}``."""
         solutions = {}
-        for grid_idx, state in self.population.items():
+        for grid_idx, state in population.items():
             if state['status'] not in ['converged', 'optimized']:
                 continue
             if self.direct_eval_mode:
@@ -1058,8 +1202,18 @@ class ProfileProjector:
                     'likelihood': likelihood,
                     'full_params': full_params.copy()
                 }
+        return solutions
 
-        return {
+    def export_grid_solution(self):
+        """Export the current grid state (axes, dims, solutions, pool) as a dict.
+
+        For a projection run in branches, each solution also names the
+        ``branch`` it comes from (the one with the highest value in that
+        cell), and ``branches`` lists, per branch, its ``ranges`` and all
+        its ``solutions``.
+        """
+        solutions = self._solutions(self.population)
+        exported = {
             'grid_axes': [ax.copy() for ax in self.grid_axes],
             'projection_dims': self.projection_dims.copy(),
             'profiled_dims': self.profiled_dims.copy(),
@@ -1067,6 +1221,208 @@ class ProfileProjector:
             'grid_shape': self.grid_shape,
             'global_solution_pool': [entry.copy() for fitness, count, entry in self.global_solution_pool]
         }
+        if self.branch_results is not None:
+            for grid_idx, solution in solutions.items():
+                solution['branch'] = self.population[grid_idx]['branch']
+            exported['branches'] = self.branch_results
+        return exported
+
+    # ------------------------------------------------------------------
+    # Branches: sub-ranges of profiled parameters followed separately
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _branch_key(branch):
+        """Identifies a branch across projections: its sub-ranges."""
+        return tuple((d, lo, hi) for d, (lo, hi) in sorted(branch['ranges'].items()))
+
+    def _collect_branch_seeds(self, from_pool, from_file):
+        """Initial maxima per branch of the current projection, best first.
+
+        A branch takes the initial maxima of the projection that lie inside
+        it, and the endpoint of its confined optimisation if an earlier
+        projection ran one. Where the initial maxima came from the pool or
+        the warm-start file, which keep one point per cell, the same sources
+        are read again per branch.
+        """
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+        samples = self._read_warm_start_samples(self.warm_start_file) if from_file else None
+        seeds = []
+        for branch in self.projection_branches:
+            box = branch['bounds']
+            mine = [m for m in self.initial_maxima if self._inside(m['point'], box)]
+            optimum = self._branch_optima.get(self._branch_key(branch))
+            if optimum is not None:
+                mine.append(optimum)
+            if from_pool:
+                mine += [{'point': entry['full_params'].copy(), 'target_val': entry['fitness']}
+                         for entry in self._best_pool_entry_per_cell(box).values()
+                         if entry['fitness'] >= roi_cutoff]
+            if samples is not None:
+                mine += [{'point': c['params'], 'target_val': c['target_val']}
+                         for c in self._best_sample_per_cell(samples, box).values()
+                         if c['target_val'] >= roi_cutoff]
+            mine.sort(key=lambda m: m['target_val'], reverse=True)
+            seeds.append(mine)
+        return seeds
+
+    def create_branch_seed_jobs(self, next_job_id, from_pool=False, from_file=False):
+        """Collect the initial maxima of every branch and return the jobs that
+        look for one where there is none.
+
+        A branch without a known point inside the region of interest gets one
+        L-BFGS-B run over all parameters, confined to the branch. It starts
+        from the best known point with each split parameter mirrored into
+        the branch at the nearest end of its sub-range, which is the other
+        solution if the two are symmetric about the split point. A branch is
+        tried once per scan.
+        """
+        self.branch_seeds = self._collect_branch_seeds(from_pool, from_file)
+        if not self.initial_maxima:
+            return [], next_job_id
+        best = max(self.initial_maxima, key=lambda m: m['target_val'])
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+
+        jobs = []
+        for branch, seeds in zip(self.projection_branches, self.branch_seeds):
+            if seeds and seeds[0]['target_val'] >= roi_cutoff:
+                continue
+            key = self._branch_key(branch)
+            if key in self._branch_optima:
+                continue
+            self._branch_optima[key] = None
+            start = np.array(best['point'], dtype=float)
+            for d, (lo, hi) in branch['ranges'].items():
+                if start[d] < lo:
+                    start[d] = min(hi, 2.0 * lo - start[d])
+                elif start[d] > hi:
+                    start[d] = max(lo, 2.0 * hi - start[d])
+            job = LBFGSBJob(
+                job_id=next_job_id,
+                job_type='BRANCH_SEED',
+                sampler=self,
+                opt_dims=tuple(range(self.dims)),
+                start_params=start,
+                grid_idx=None,
+                start_params_full=start,
+                seed_history=None,
+                bounds=branch['bounds'],
+            )
+            job.branch_index = branch['index']
+            jobs.append(job)
+            next_job_id += 1
+            self.logger.info(f"--- No known point inside the region of interest in "
+                             f"{self._describe_branch(branch)}: optimising within it ---")
+        return jobs, next_job_id
+
+    def add_branch_seed(self, index, point, target_val):
+        """Record the endpoint of a branch's confined optimisation."""
+        seed = {'point': point, 'target_val': target_val}
+        self._branch_optima[self._branch_key(self.projection_branches[index])] = seed
+        self.branch_seeds[index].append(seed)
+        self.branch_seeds[index].sort(key=lambda m: m['target_val'], reverse=True)
+        if target_val > self.global_max_target_val:
+            self.global_max_target_val = target_val
+        self._update_global_pool(point, target_val, grid_idx=None)
+
+    def branch_states(self):
+        """One projection state per branch that is followed, in branch order.
+
+        A branch is followed if its best initial maximum lies inside the
+        region of interest; every cell value of a branch is at most its
+        maximum. Each state starts without cells and confines the profiled
+        parameters to the branch. Call after create_branch_seed_jobs, with
+        the projection's state loaded.
+        """
+        roi_cutoff = self.global_max_target_val - self.roi_threshold
+        base = self.capture_projection_state()
+        states = []
+        for branch, seeds in zip(self.projection_branches, self.branch_seeds):
+            name = self._describe_branch(branch)
+            if not seeds or seeds[0]['target_val'] < roi_cutoff:
+                best = f"{seeds[0]['target_val']:.4f}" if seeds else "none"
+                self.logger.info(f"--- Not following {name}: best known value ({best}) is "
+                                 f"outside the region of interest ---")
+                continue
+            self.logger.info(f"--- Following {name}: {len(seeds)} initial maxima, "
+                             f"best {seeds[0]['target_val']:.4f} ---")
+            state = dict(base)
+            state.update({
+                'branch': branch,
+                'branch_seeds': None,
+                'initial_maxima': seeds,
+                'population': {},
+                'profile_likelihood_grid': {},
+                'activated_grid_indices': set(),
+                'pending_activation_indices': set(),
+                'ahead_cells': set(),
+                'current_generation': 0,
+                'memory_F': np.full(self.memory_size, 0.5),
+                'memory_CR': np.full(self.memory_size, 0.5),
+                'memory_idx': 0,
+                '_lbfgsb_cell_scales': collections.deque(maxlen=LBFGSB_SCALE_MEMORY),
+                'lbfgsb_hessian_hint': None,
+                '_neighbor_cache': {},
+                '_proximity_pool_cache': None,
+                '_profiled_bounds': branch['bounds'][self.profiled_dims],
+            })
+            states.append(state)
+        return states
+
+    def enter_branch(self, index):
+        """Confine the current projection to one of its branches."""
+        self.branch = self.projection_branches[index]
+        self._profiled_bounds = self.branch['bounds'][self.profiled_dims]
+        self._proximity_pool_cache = None
+
+    def merge_branch_states(self, states):
+        """Projection state that holds, per cell, the branch with the highest value.
+
+        ``states`` are the states of the finished branches of the projection
+        the sampler is set up for. A finished cell is preferred over an
+        unfinished one; between equal values the first branch is kept.
+        """
+        done = ('converged', 'optimized')
+        population = {}
+        activated = set()
+        for state in states:
+            index = state['branch']['index']
+            activated |= state['activated_grid_indices']
+            for grid_idx, cell in state['population'].items():
+                cell['branch'] = index
+                kept = population.get(grid_idx)
+                if kept is None or ((cell['status'] in done, cell['best_fitness'])
+                                    > (kept['status'] in done, kept['best_fitness'])):
+                    population[grid_idx] = cell
+
+        by_index = {state['branch']['index']: state for state in states}
+        results = []
+        for branch in self.projection_branches:
+            state = by_index.get(branch['index'])
+            results.append({
+                'ranges': dict(branch['ranges']),
+                'solutions': self._solutions(state['population']) if state is not None else {},
+            })
+
+        merged = dict(states[0])
+        merged.update({
+            'branch': None,
+            'branch_results': results,
+            'population': population,
+            'profile_likelihood_grid': {idx: cell['best_fitness'] for idx, cell in population.items()},
+            'activated_grid_indices': activated,
+            'pending_activation_indices': set(),
+            'ahead_cells': set(),
+            '_lbfgsb_cell_scales': collections.deque(maxlen=LBFGSB_SCALE_MEMORY),
+            'lbfgsb_hessian_hint': None,
+            '_proximity_pool_cache': None,
+            '_profiled_bounds': self.bounds[self.profiled_dims],
+        })
+        n_cells = [sum(1 for cell in population.values() if cell['branch'] == b['index'])
+                   for b in self.projection_branches]
+        self.logger.info(f"--- Merged {len(states)} branches: {len(population)} cells, "
+                         f"of which per branch {n_cells} ---")
+        return merged
 
 
     def setup_refinement_run(self, coarse_solution, refinement_factor, refinement_method='linear'):
@@ -1375,6 +1731,13 @@ class ProfileProjector:
             return None
         if self.direct_eval_mode:
             return None
+        if self.branch is not None:
+            # Only the entries inside the branch, from the per-projection snapshot.
+            rows = self._pool_snapshot()['profiled']
+            if len(rows) == 0:
+                return None
+            picked = np.random.choice(len(rows), size=min(n_samples, len(rows)), replace=False)
+            return rows[picked].copy()
 
         n_available = len(self.global_solution_pool)
         sample_indices = np.random.choice(n_available, size=min(n_samples, n_available), replace=False)
@@ -1398,6 +1761,8 @@ class ProfileProjector:
         snapshot (the heap reorders on push/replace, but stale snapshots
         are still valid past evaluations).
 
+        In a branch only the entries inside it are used.
+
         Returns ``None`` when the pool is empty, in direct-evaluation mode, or
         when ``n_samples <= 0``.
         """
@@ -1406,6 +1771,27 @@ class ProfileProjector:
         if self.direct_eval_mode:
             return None
 
+        cache = self._pool_snapshot()
+        n_cached = len(cache['proj'])
+        if n_cached == 0:
+            return None
+
+        target = np.asarray(target_proj_coords, dtype=float)
+        deltas = (cache['proj'] - target) / cache['extent']
+        dists = np.einsum('ij,ij->i', deltas, deltas)
+
+        k = min(n_samples, n_cached)
+        if k < n_cached:
+            nearest = np.argpartition(dists, k - 1)[:k]
+        else:
+            nearest = np.arange(n_cached)
+
+        return cache['profiled'][nearest].copy()
+
+    def _pool_snapshot(self):
+        """Projection-dim and profiled-dim coordinates of the pool entries (in
+        a branch: of those inside it), cached per projection. See
+        _sample_proximity_from_global_pool for when the cache is rebuilt."""
         cache = self._proximity_pool_cache
         n_pool = len(self.global_solution_pool)
         stale = (cache is None
@@ -1415,6 +1801,8 @@ class ProfileProjector:
         if stale:
             full = np.array([entry['full_params']
                              for _f, _c, entry in self.global_solution_pool])
+            if self.branch is not None:
+                full = full[self._inside(full, self.branch['bounds'])]
             proj_dims = self.projection_dims
             profiled_dims = self.profiled_dims
             extent = self.bounds[proj_dims, 1] - self.bounds[proj_dims, 0]
@@ -1426,19 +1814,7 @@ class ProfileProjector:
                 'extent': extent,
             }
             self._proximity_pool_cache = cache
-
-        target = np.asarray(target_proj_coords, dtype=float)
-        deltas = (cache['proj'] - target) / cache['extent']
-        dists = np.einsum('ij,ij->i', deltas, deltas)
-
-        n_cached = cache['size']
-        k = min(n_samples, n_cached)
-        if k < n_cached:
-            nearest = np.argpartition(dists, k - 1)[:k]
-        else:
-            nearest = np.arange(n_cached)
-
-        return cache['profiled'][nearest].copy()
+        return cache
 
 
     def _initialize_from_global_pool(self):
@@ -1458,17 +1834,7 @@ class ProfileProjector:
         if not self.global_solution_pool:
             return
 
-        best_per_cell = {}
-        for _f, _c, entry in self.global_solution_pool:
-            params = entry['full_params']
-            if not np.all((params >= self.bounds[:, 0])
-                          & (params <= self.bounds[:, 1])):
-                continue
-            grid_idx = self._get_grid_indices_from_point(params)
-            cur = best_per_cell.get(grid_idx)
-            if cur is None or entry['fitness'] > cur['fitness']:
-                best_per_cell[grid_idx] = entry
-
+        best_per_cell = self._best_pool_entry_per_cell(self.bounds)
         if not best_per_cell:
             return
 
@@ -1496,40 +1862,66 @@ class ProfileProjector:
         )
 
 
-    def _initialize_from_warm_start_file(self, warm_start_file):
-        """Seed initial_maxima from a previous run's sample CSV (skips initial opt)."""
+    def _best_pool_entry_per_cell(self, bounds):
+        """Per cell of the current grid, the best pool entry inside ``bounds``."""
+        best_per_cell = {}
+        for _f, _c, entry in self.global_solution_pool:
+            params = entry['full_params']
+            if not np.all((params >= bounds[:, 0])
+                          & (params <= bounds[:, 1])):
+                continue
+            grid_idx = self._get_grid_indices_from_point(params)
+            cur = best_per_cell.get(grid_idx)
+            if cur is None or entry['fitness'] > cur['fitness']:
+                best_per_cell[grid_idx] = entry
+        return best_per_cell
+
+    def _read_warm_start_samples(self, warm_start_file):
+        """The rows ``[params..., logL, phase]`` of a warm-start file, or None
+        if it cannot be used."""
         if not warm_start_file or not os.path.exists(warm_start_file):
             self.logger.info("  No warm-start file found or provided. Skipping warm start.")
-            return
+            return None
 
         self.logger.info(f"--- Initializing from warm-start file: {warm_start_file} ---")
         try:
             samples = read_samples(warm_start_file)
         except Exception as e:
             self.logger.info(f"  Warning: Could not read warm-start file. Error: {e}. Skipping.")
-            return
+            return None
         if samples.size == 0:
             self.logger.info("  Warm-start file contained no samples. Skipping.")
-            return
+            return None
         if samples.shape[1] != self.dims + 2:
             self.logger.info(
                 f"  Warm-start file rows have width {samples.shape[1]}, expected "
                 f"n_dims + 2 = {self.dims + 2} ([params..., logL, phase]). Skipping."
             )
-            return
+            return None
+        return samples
 
+    def _best_sample_per_cell(self, samples, bounds):
+        """Per cell of the current grid, the best warm-start sample inside ``bounds``."""
         # params and logL are read by position; the trailing phase column is
         # ignored, so a run's own sample log round-trips.
         best_candidates = {}
         for sample_row in samples:
             params = sample_row[:self.dims]
             target_val = sample_row[self.dims]
-            if not np.all((params >= self.bounds[:, 0]) & (params <= self.bounds[:, 1])):
+            if not np.all((params >= bounds[:, 0]) & (params <= bounds[:, 1])):
                 continue
             grid_idx = self._get_grid_indices_from_point(params)
             if grid_idx not in best_candidates or target_val > best_candidates[grid_idx]['target_val']:
                 best_candidates[grid_idx] = {'params': params, 'target_val': target_val}
+        return best_candidates
 
+    def _initialize_from_warm_start_file(self, warm_start_file):
+        """Seed initial_maxima from a previous run's sample CSV (skips initial opt)."""
+        samples = self._read_warm_start_samples(warm_start_file)
+        if samples is None:
+            return
+
+        best_candidates = self._best_sample_per_cell(samples, self.bounds)
         if not best_candidates:
             self.logger.info("  No valid samples found in warm-start file for the current grid.")
             return
@@ -1831,7 +2223,7 @@ class ProfileProjector:
         return min(max(step, LBFGSB_HESSIAN_STEP_MIN), LBFGSB_HESSIAN_STEP_MAX)
 
     def _lbfgsb_scales(self, job_type):
-        return (self._lbfgsb_global_scales if job_type == 'INITIAL_OPTIMIZATION'
+        return (self._lbfgsb_global_scales if job_type in ('INITIAL_OPTIMIZATION', 'BRANCH_SEED')
                 else self._lbfgsb_cell_scales)
 
     def lbfgsb_scale_hint(self, job_type):

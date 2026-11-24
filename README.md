@@ -121,11 +121,36 @@ Common constructor arguments:
 - `n_optima` — prior on how many optima the target has *globally*; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (the global max is then among them, so the `min_starts` floor is skipped — `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are. They replace the global L-BFGS-B starts and are evaluated, not optimised.
 - `refine_initial_points` — run one L-BFGS-B optimisation over all parameters from every entry of `initial_points` before the grid points are activated. Default `False`. Without it the best initial point stands as the maximum unless a grid point exceeds it, so set it when the points are near the maximum but not known to be at it.
+- `branches` — `{parameter: [split points]}`: follow the sub-ranges of a profiled parameter separately and report the highest value per cell. For a parameter with two solutions (see [Branches of a profiled parameter](#branches-of-a-profiled-parameter)). Default `None`.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
 - `refinement_direct_eval` — skip optimization in the refinement run and just evaluate the interpolated point. Default `False`.
 - `samples_output_file` — path to log every evaluation as `[params…, logL, phase]`; the `phase` column tags which algorithm stage produced each point (see [Sample file formats](#sample-file-formats)). The format is chosen from the extension: `.csv` for plain text or `.h5`/`.hdf5` for HDF5 binary (needs the optional `h5py` dependency).
 - `warm_start_file` — sample file read at the start of each projection to pre-populate `initial_maxima`. Any supported format is accepted (the extension selects the reader). Set this equal to `samples_output_file` to feed a run's samples into the next one.
 - `grad_func` — analytic gradient (see below).
+
+### Branches of a profiled parameter
+
+A grid cell starts its optimisation from the profiled parameters of a neighbouring cell. If a profiled parameter has two separate local optima, and which of them is higher changes across the grid, the scan can stay on one of them and report its value where the other is higher. Nothing in the output shows it. Patching, the suspect recheck and `use_clustering` choose between solutions the grid already holds; they do not look for the other optimum.
+
+If you know such a parameter, say where to cut its range:
+
+```python
+ProfileProjector(..., branches={'theta23': [0.7854]})   # by name (with parameter_names) or by index
+```
+
+A projection that profiles the parameter is then run once per sub-range (a branch), with the parameter confined to it, and the result holds per cell the highest value. A projection with the parameter as an axis is run as before.
+
+- The noise estimate, the initial points and the global L-BFGS-B starts are shared. The cost of a branch is its grid run. The branches share the workers.
+- The region of interest is measured from the maximum over all branches. A branch whose best known point lies outside it is not followed.
+- A branch needs a start. It takes the initial maxima inside its sub-range. If none of them is inside the region of interest, one L-BFGS-B run over all parameters, confined to the branch, starts from the best known point with the split parameter mirrored about the split point. This run is made once per scan.
+- Put the split point between the two solutions. Several split points give several sub-ranges, several parameters give one branch per combination of sub-ranges.
+- In the exported solution each cell has a `branch` index, and `branches` lists per branch its `ranges` and its own `solutions`, so the profile of each branch can be plotted.
+- A `branches` key in a projection replaces the setting for that projection; `{}` turns it off.
+- With `grid_refinement_factor` each branch is refined from its own coarse cells, one branch after the other.
+
+paraprof does not find the cut itself: a two-solution parameter that is not declared is handled as before.
+
+Measured on virtual workers (`fit6` of `tools/bench_scheduling.py`, plane (`m32`, `t12`) on a 25 × 25 grid, 40 workers; the profiled `t23` has modes at 0.40 and 0.62 that swap order across the plane): the plain scan takes 2 500 evaluations and is low in 17 of the 72 cells inside the region of interest, by up to 1.43. With `branches={5: [0.51]}` it takes 3 990 evaluations and no cell is low. Two separate scans with the bounds of `t23` restricted, merged by hand, take 4 962.
 
 ### User-supplied gradients
 
@@ -276,7 +301,7 @@ See the `ProfileProjector` docstring for the full structure. Several DE knobs th
 
 ### Projection options
 
-Each projection is a dict. Required: `dims` (parameter indices) and `grid_points` (resolution per dimension). Optional: `optimization_method` (`'de'` or `'lbfgsb'`, default `'de'`), `patch_coarse_grid` (default `True`), `patch_refined_grid` (default `False`), `grid_refinement_factor` (integer > 1 to enable refinement), and `refinement_method` (default `'linear'`).
+Each projection is a dict. Required: `dims` (parameter indices) and `grid_points` (resolution per dimension). Optional: `optimization_method` (`'de'` or `'lbfgsb'`, default `'de'`), `patch_coarse_grid` (default `True`), `patch_refined_grid` (default `False`), `grid_refinement_factor` (integer > 1 to enable refinement), `refinement_method` (default `'linear'`), and `branches` (replaces the constructor's `branches` for this projection).
 
 ## Visualization
 

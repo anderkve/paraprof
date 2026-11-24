@@ -32,7 +32,8 @@ class ActivationJob(Job):
 
         self.pop_size = self.sampler.pop_per_grid_point
         self.n_prof_dims = self.sampler.n_prof_dims
-        prof_bounds = self.sampler.bounds[self.sampler.profiled_dims]
+        # The bounds of the branch being followed, if any.
+        prof_bounds = self.sampler.active_bounds[self.sampler.profiled_dims]
 
         # Mixed initialization: warm-start neighbour + global-pool + random LHS.
         # Slots that can't be filled fall through to the random LHS bucket.

@@ -1,4 +1,4 @@
-"""The GAMBIT plugin's handling of `initial_points`, without MPI or GAMBIT.
+"""The GAMBIT plugin's handling of `initial_points` and `branches`, without MPI or GAMBIT.
 
 The plugin module imports `scanner_plugin`, `scannerbit` and `utils` from
 ScannerBit. They are stubbed here for the duration of one test.
@@ -50,6 +50,7 @@ def plugin(monkeypatch):
         return (x - LOWER) / (UPPER - LOWER)
 
     obj.inverse_transform = inverse_transform
+    obj.transform_to_vec = lambda unit: LOWER + np.asarray(unit) * (UPPER - LOWER)
     obj.calls = calls
     return obj
 
@@ -81,3 +82,42 @@ def test_short_name_shared_by_two_models_is_ambiguous(plugin):
     plugin.parameter_names = ("A::x", "B::x", "A::y")
     with pytest.raises(RuntimeError, match="ambiguous"):
         plugin._initial_points_to_unit([{"x": 0.5, "y": 0.5}])
+
+
+def test_split_points_are_mapped_from_physical_coordinates(plugin):
+    out = plugin._branches_to_unit({"alpha": 1.0, "Model::gamma": [1.0, -1.0]}, "branches")
+    assert list(out) == ["Model::alpha", "Model::gamma"]
+    np.testing.assert_allclose(out["Model::alpha"], [0.25])
+    np.testing.assert_allclose(out["Model::gamma"], [0.75, 0.25])
+    # The other parameters sit at the centre of the hypercube in the transform.
+    assert plugin.calls[0] == {"Model::alpha": 1.0, "Model::beta": 5.5e-5, "Model::gamma": 0.0}
+    assert plugin._branches_to_unit({}, "branches") == {}
+    assert plugin._branches_to_unit(None, "branches") == {}
+
+
+def test_bad_branches_are_errors(plugin):
+    with pytest.raises(RuntimeError, match="must be a mapping"):
+        plugin._branches_to_unit([0.5], "branches")
+    with pytest.raises(RuntimeError, match="not a scanned parameter"):
+        plugin._branches_to_unit({"delta": 0.5}, "branches")
+    # A prior that mixes parameters: the split point has no single unit coordinate.
+    plain = plugin.inverse_transform
+
+    def mixed(physical):
+        unit = plain(physical)
+        unit[1] += 0.1 * (unit[0] - 0.5)
+        return unit
+    plugin.inverse_transform = mixed
+    with pytest.raises(RuntimeError, match="depends on other parameters"):
+        plugin._branches_to_unit({"alpha": 1.0}, "projections[0] branches")
+
+
+def test_the_mapped_split_is_accepted_by_paraprof(plugin):
+    from paraprof import ProfileProjector
+    unit = plugin._branches_to_unit({"gamma": [0.5]}, "branches")
+    with ProfileProjector(target_func=lambda x: 0.0, bounds=[(0.0, 1.0)] * 3,
+                          projections=[{"dims": ["Model::alpha", "Model::beta"],
+                                        "grid_points": [4, 4]}],
+                          parameter_names=list(NAMES), branches=unit) as sampler:
+        assert [b["ranges"] for b in sampler.projection_branches] == [
+            {2: (0.0, 0.625)}, {2: (0.625, 1.0)}]

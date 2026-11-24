@@ -64,6 +64,9 @@ YAML options:
                             refinement_method:      interpolation method (default 'linear')
                             patch_coarse_grid:      bool (default true)
                             patch_refined_grid:     bool (default false)
+                            branches:               replaces the 'branches' option
+                                                    below for this projection
+                                                    ({} turns it off)
                         Optional ProfileProjector tuning keys:
     roi_threshold:           ROI cutoff in log-likelihood units (default 4.0).
     pop_per_grid_point:      DE population size per grid cell (default 3).
@@ -84,6 +87,17 @@ YAML options:
     refine_initial_points:   Optimise all parameters from every initial point
                              before grid points are activated (default false).
                              Without it the points are evaluated only.
+    branches:                Optional mapping {parameter name: split point or
+                             list of split points}, in physical coordinates.
+                             A projection that profiles the parameter is run
+                             once per sub-range, with the parameter confined
+                             to it, and reports per cell the highest value.
+                             For a parameter with separate local optima whose
+                             order changes over the grid, e.g. the two octants
+                             of theta23 (split at pi/4): a single run follows
+                             one of them. Costs one grid run per sub-range.
+                             The prior of the parameter must not depend on
+                             other parameters.
     samples_output_file:     Optional CSV path; written by rank 0 only. Note that
                              GAMBIT's printers already record every evaluation,
                              so this is purely a paraprof-side diagnostic file.
@@ -193,7 +207,7 @@ only the loglike value, so L-BFGS-B uses finite differences.
         for key in (
             "roi_threshold", "pop_per_grid_point", "max_patching_waves",
             "lbfgsb_max_iter", "lbfgsb_polish", "n_initial_optimizations",
-            "n_optima", "initial_points", "refine_initial_points", "use_clustering",
+            "n_optima", "initial_points", "refine_initial_points", "branches", "use_clustering",
             "refinement_direct_eval", "samples_output_file", "warm_start_file",
             "volume_sampling", "advanced_config",
         ):
@@ -247,6 +261,15 @@ only the loglike value, so L-BFGS-B uses finite differences.
             self.projector_kwargs["initial_points"] = self._initial_points_to_unit(
                 self.projector_kwargs["initial_points"])
 
+        # Split points are given in physical coordinates, like the initial points.
+        if "branches" in self.projector_kwargs:
+            self.projector_kwargs["branches"] = self._branches_to_unit(
+                self.projector_kwargs["branches"], "branches")
+        for i, projection in enumerate(self.projections):
+            if "branches" in projection:
+                projection["branches"] = self._branches_to_unit(
+                    projection["branches"], f"projections[{i}] branches")
+
         if self.mpi_rank == 0:
             print(f"{self.print_prefix} Starting paraprof scan with "
                   f"{len(self.projections)} projection(s) on {self.mpi_size - 1} "
@@ -274,6 +297,57 @@ only the loglike value, so L-BFGS-B uses finite differences.
             self._handle_volume_stage(sampler, results)
 
         return 0
+
+
+    def _branches_to_unit(self, branches, option):
+        """A ``branches`` setting {parameter name: split point(s)} with the
+        split points mapped from physical coordinates to the unit hypercube.
+
+        The inverse prior transform takes a full point, so the other
+        parameters are set to the centre of the hypercube. The split
+        parameter's prior must not depend on them.
+        """
+        if not branches:
+            return {}
+        if not isinstance(branches, dict):
+            raise RuntimeError(
+                f"{self.print_prefix} {option} must be a mapping "
+                f"{{parameter name: split point or list of split points}} in "
+                f"physical coordinates.")
+        names = list(self.parameter_names)
+        short = {}
+        for full in names:
+            short.setdefault(full.split("::")[-1], []).append(full)
+        centre = self.transform_to_vec(np.full(len(names), 0.5))
+        reference = {name: float(value) for name, value in zip(names, centre)}
+        unit_branches = {}
+        for key, splits in branches.items():
+            if key in names:
+                full = key
+            elif len(short.get(key, [])) == 1:
+                full = short[key][0]
+            else:
+                raise RuntimeError(
+                    f"{self.print_prefix} {option}: '{key}' is not a scanned "
+                    f"parameter (or is ambiguous without its model prefix). "
+                    f"Scanned parameters: {names}")
+            index = names.index(full)
+            unit_splits = []
+            for value in np.atleast_1d(splits):
+                unit = np.asarray(self.inverse_transform(dict(reference, **{full: float(value)})),
+                                  dtype=float)
+                if not np.allclose(np.delete(unit, index), 0.5, atol=1e-6):
+                    raise RuntimeError(
+                        f"{self.print_prefix} {option}: the prior of '{full}' depends on "
+                        f"other parameters, so a split point has no single position in "
+                        f"the unit hypercube.")
+                unit_splits.append(float(unit[index]))
+            print(f"{self.print_prefix} {option}: '{full}' split at "
+                  + ", ".join(f"{float(v):g}" for v in np.atleast_1d(splits))
+                  + " (unit hypercube: " + ", ".join(f"{u:.6f}" for u in unit_splits) + ")",
+                  flush=True)
+            unit_branches[full] = unit_splits
+        return unit_branches
 
 
     def _initial_points_to_unit(self, points):

@@ -217,18 +217,45 @@ def run_projection(comm, sampler, projection_config,
         # Get refinement method from config (default to 'linear')
         refinement_method = projection_config.get('refinement_method', 'linear')
 
-        # Configure sampler for refinement
-        sampler.setup_refinement_run(coarse_solution, refinement_factor, refinement_method)
-        sampler._reset_for_new_projection(refined_config)
+        refined_branches = [index for index, branch_result
+                            in enumerate(coarse_solution.get('branches') or [])
+                            if branch_result['solutions']]
+        if not refined_branches:
+            # Configure sampler for refinement
+            sampler.setup_refinement_run(coarse_solution, refinement_factor, refinement_method)
+            sampler._reset_for_new_projection(refined_config)
 
-        # Run refinement workflow
-        master_main(
-            comm=comm,
-            sampler=sampler,
-            plot_settings=plot_settings,
-            skip_init_opt_on_warm_start=True,  # Always skip for refinement
-            myrank=myrank
-        )
+            # Run refinement workflow
+            master_main(
+                comm=comm,
+                sampler=sampler,
+                plot_settings=plot_settings,
+                skip_init_opt_on_warm_start=True,  # Always skip for refinement
+                myrank=myrank
+            )
+        else:
+            # Branches: each is refined from its own coarse cells, one after
+            # the other, and the refined grids are merged like the coarse ones.
+            states = []
+            for index in refined_branches:
+                branch_coarse = dict(coarse_solution,
+                                     solutions=coarse_solution['branches'][index]['solutions'])
+                if states:
+                    # The pool was restored for the first branch and has grown since.
+                    del branch_coarse['global_solution_pool']
+                sampler.setup_refinement_run(branch_coarse, refinement_factor, refinement_method)
+                sampler._reset_for_new_projection(refined_config)
+                sampler.enter_branch(index)
+                logger.info(f"=== Refining {sampler._describe_branch(sampler.branch)} ===")
+                master_main(
+                    comm=comm,
+                    sampler=sampler,
+                    plot_settings=plot_settings,
+                    skip_init_opt_on_warm_start=True,
+                    myrank=myrank
+                )
+                states.append(sampler.capture_projection_state())
+            sampler.restore_projection_state(sampler.merge_branch_states(states))
 
         results['refined_solution'] = _collect_solution(
             sampler, projection_config, save_plots, plot_settings, myrank, grid='refined')
@@ -600,11 +627,21 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
 
 
 class _ProjectionRun:
-    """Stage machine and queues of one projection inside master_main."""
+    """Stage machine and queues of one projection inside master_main, or of
+    one branch of it once the projection has been split."""
 
     def __init__(self, index, stages, state, skip_init_opt_on_warm_start):
         self.index = index                  # position in the list of projections
+        self.run_id = None                  # set by master_main; names the run in task contexts
         self.state = state                  # sampler.capture_projection_state()
+        # Branches: the runs of the same projection (this one included, the
+        # one that holds the merged result first), and the branch of this run.
+        self.siblings = None
+        self.branch_index = None
+        self.finished = False
+        # Where the initial maxima came from (see ProfileProjector._collect_branch_seeds).
+        self.seeded_from_file = False
+        self.seeded_from_pool = False
         self.skip_init_opt_on_warm_start = skip_init_opt_on_warm_start
         self.stages = stages
         self.next_stage()
@@ -661,14 +698,19 @@ class _ProjectionRun:
 
 
 class _ProjectionLabel(logging.Filter):
-    """Prefixes log lines with the projection being worked on (eager start)."""
+    """Prefixes log lines with the projection (eager start) and the branch
+    being worked on."""
 
-    def __init__(self):
+    def __init__(self, show_projection):
         super().__init__()
+        self.show_projection = show_projection
         self.prefix = ''
 
-    def set(self, index):
-        self.prefix = f"[P{index + 1}] "
+    def set(self, index, branch_index=None):
+        parts = [f"P{index + 1}"] if self.show_projection else []
+        if branch_index is not None:
+            parts.append(f"B{branch_index + 1}")
+        self.prefix = f"[{' '.join(parts)}] " if parts else ''
 
     def filter(self, record):
         record.msg = self.prefix + str(record.msg)
@@ -684,6 +726,11 @@ def master_main(comm, sampler,
     on workers this one leaves idle. Each projection being worked on has its
     own ``_ProjectionRun``; the sampler state of the one being handled is
     swapped in. The sampler is left holding the projection started last.
+
+    A projection with branches (``ProfileProjector`` ``branches``) is split
+    into one run per branch after its initial maxima are known. The branches
+    share the workers. When the last one ends their states are merged, and
+    the sampler holds the merged projection from then on.
     """
     logger = setup_logger(rank=myrank)
     n_workers = comm.Get_size() - 1
@@ -720,7 +767,11 @@ def master_main(comm, sampler,
             if (sampler.initial_points is not None
                     and not sampler._initial_points_evaluated):
                 stages.append('INITIAL_POINTS_EVAL')
-            stages += ['INITIAL_OPTIMIZATION', 'ACTIVATION']
+            stages.append('INITIAL_OPTIMIZATION')
+            # Branches: find a start in each, then go on with one run per branch.
+            if sampler.projection_branches and sampler.branch is None:
+                stages += ['BRANCH_SEEDS', 'BRANCH_SPLIT']
+            stages.append('ACTIVATION')
 
             # Add optimization stage based on configured method
             if sampler.optimization_method == 'de':
@@ -748,12 +799,22 @@ def master_main(comm, sampler,
                           skip_init_opt_on_warm_start=skip_init_opt_on_warm_start)
     R = host                           # the run being worked on
     loaded = host                      # the run whose state the sampler holds
-    runs = [host]                      # unfinished runs, in the order they were started
+    runs = []                          # unfinished runs; the branches of a projection are adjacent
+    run_by_id = {}
+    # Per projection, the run that holds its state when it has ended.
     run_by_index = {host.index: host}
-    label = _ProjectionLabel() if eager is not None else None
+    label = _ProjectionLabel(show_projection=True) if eager is not None else None
     if label is not None:
         label.set(host.index)
         logger.addFilter(label)
+
+    def _add_run(run, after=None):
+        """Register a run: at the end, or behind the run ``after``."""
+        run.run_id = len(run_by_id)
+        run_by_id[run.run_id] = run
+        runs.insert(runs.index(after) + 1 if after is not None else len(runs), run)
+
+    _add_run(host)
 
     def _switch(run):
         """Make ``run`` the projection the sampler works on."""
@@ -764,7 +825,56 @@ def master_main(comm, sampler,
         sampler.restore_projection_state(run.state)
         loaded = run
         if label is not None:
-            label.set(run.index)
+            label.set(run.index, run.branch_index)
+
+    def _split_into_branches():
+        """Turn run ``R``, whose state the sampler holds, into one run per
+        branch that is followed. ``R`` becomes the first of them."""
+        nonlocal label
+        states = sampler.branch_states()
+        if not states:
+            logger.warning("No branch has a known point inside the region of interest. "
+                           "Running the projection without branches.")
+            return
+        if label is None:
+            label = _ProjectionLabel(show_projection=False)
+            logger.addFilter(label)
+        group = []
+        for state in states:
+            if not group:
+                run = R
+                R.state = state
+                sampler.restore_projection_state(state)
+            else:
+                # The stages left after the split: activation onwards.
+                run = _ProjectionRun(R.index, list(R.stages), state,
+                                     R.skip_init_opt_on_warm_start)
+                _add_run(run, after=group[-1])
+            run.branch_index = state['branch']['index']
+            run.siblings = group
+            group.append(run)
+        label.set(R.index, R.branch_index)
+
+    def _finish_run():
+        """Run ``R``, whose state the sampler holds, has no stages left. With
+        branches the projection ends with its last branch: the sampler then
+        takes the merged state."""
+        nonlocal loaded
+        runs.remove(R)
+        R.finished = True
+        first = R
+        if R.siblings is not None:
+            if not all(run.finished for run in R.siblings):
+                return
+            first = R.siblings[0]
+            first.branch_index = None
+            label.set(first.index)
+            R.state.update(sampler.capture_projection_state())
+            first.state = sampler.merge_branch_states([run.state for run in R.siblings])
+            sampler.restore_projection_state(first.state)
+            loaded = first
+        if eager is not None:
+            eager.finish(first.index, sampler, logger)
 
     def _is_ahead(job):
         return getattr(job, 'grid_idx', None) in sampler.ahead_cells
@@ -774,7 +884,7 @@ def master_main(comm, sampler,
         """Add tasks to appropriate priority queue based on job type."""
         if job is not None and _is_ahead(job):
             R.ahead_tasks.extend(tasks)
-        elif job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        elif job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'BRANCH_SEED', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             R.high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -810,17 +920,32 @@ def master_main(comm, sampler,
 
     def _next_task(ahead):
         """The next task and its run, in the order the runs were started:
-        queued tasks, then speculative ones. ``ahead`` selects the work for
-        cells activated ahead."""
+        queued tasks, then speculative ones. The branches of a projection are
+        served together: the queued tasks of all of them come before the
+        speculative ones of any. ``ahead`` selects the work for cells
+        activated ahead."""
+        group = None
         for run in runs:
-            queues = (run.ahead_tasks,) if ahead else (run.high_prio_tasks, run.low_prio_tasks)
-            task = next((q.popleft() for q in queues if q), None)
-            ring = run.ahead_spec_ring if ahead else run.spec_ring
-            if task is None and ring:
-                _switch(run)
-                task = _next_speculative_task(run, ring)
-            if task is not None:
-                return task, run
+            if run.siblings is None:
+                members = (run,)
+            elif run.siblings is group:
+                continue                # served with the first of its branches
+            else:
+                group = run.siblings
+                members = [r for r in group if not r.finished]
+            for member in members:
+                queues = ((member.ahead_tasks,) if ahead
+                          else (member.high_prio_tasks, member.low_prio_tasks))
+                task = next((q.popleft() for q in queues if q), None)
+                if task is not None:
+                    return task, member
+            for member in members:
+                ring = member.ahead_spec_ring if ahead else member.spec_ring
+                if ring:
+                    _switch(member)
+                    task = _next_speculative_task(member, ring)
+                    if task is not None:
+                        return task, member
         return None, None
 
     def _start_jobs(jobs):
@@ -877,6 +1002,7 @@ def master_main(comm, sampler,
             # samples output file; see ProfileProjector.warm_start_file).
             if R.skip_init_opt_on_warm_start and sampler.warm_start_file:
                 sampler._initialize_from_warm_start_file(sampler.warm_start_file)
+                R.seeded_from_file = True
 
             # In-memory cross-projection seeding: skip the global L-BFGS-B
             # starts on projections 2..N when the accumulated pool already
@@ -888,6 +1014,7 @@ def master_main(comm, sampler,
                     and sampler.pool_seeded_initial_maxima
                     and len(sampler.global_solution_pool) > 0):
                 sampler._initialize_from_global_pool()
+                R.seeded_from_pool = True
 
             # refine_initial_points: one global L-BFGS-B run per user-supplied
             # point, without the basin stopping rule.
@@ -937,6 +1064,20 @@ def master_main(comm, sampler,
                 R.next_stage()
                 return True
             R.current_stage = 'WAITING_FOR_INITIAL_OPT'
+
+        elif R.current_stage == 'BRANCH_SEEDS':
+            # Initial maxima per branch. A branch without a known point
+            # inside the region of interest is optimised once, confined to it.
+            new_jobs, next_job_id = sampler.create_branch_seed_jobs(
+                next_job_id, from_pool=R.seeded_from_pool, from_file=R.seeded_from_file)
+            if not new_jobs:
+                R.next_stage()
+                return True
+
+        elif R.current_stage == 'BRANCH_SPLIT':
+            _split_into_branches()
+            R.next_stage()
+            return True
 
         elif R.current_stage == 'ACTIVATION':
             # Use refinement activation for refinement runs
@@ -1142,10 +1283,9 @@ def master_main(comm, sampler,
             while _drained(R):
                 _switch(R)
                 if not R.current_stage:
-                    # All stages of this projection are complete.
-                    runs.remove(R)
-                    if eager is not None:
-                        eager.finish(R.index, sampler, logger)
+                    # All stages of this projection, or of this branch of it,
+                    # are complete.
+                    _finish_run()
                     break
                 if not _advance():
                     break
@@ -1157,7 +1297,7 @@ def master_main(comm, sampler,
             worker_rank = result['context']['worker_rank']
             free_workers.append(worker_rank)
             tasks_completed += 1
-            R = run_by_index[result['context']['proj']]
+            R = run_by_id[result['context']['run']]
             R.inflight -= 1
             if result['context'].get('ahead_task'):
                 R.ahead_inflight -= 1
@@ -1413,7 +1553,7 @@ def master_main(comm, sampler,
                     owner.ahead_inflight += 1
             if task is None:
                 break
-            task['context']['proj'] = owner.index
+            task['context']['run'] = owner.run_id
             owner.inflight += 1
             worker_rank = free_workers.pop(0)
 
@@ -1444,7 +1584,7 @@ def master_main(comm, sampler,
                                state=sampler.capture_projection_state(),
                                skip_init_opt_on_warm_start=True)
             loaded = R
-            runs.append(R)
+            _add_run(R)
             run_by_index[R.index] = R
 
         now = time.time()

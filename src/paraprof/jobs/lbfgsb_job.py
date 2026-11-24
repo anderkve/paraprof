@@ -36,6 +36,12 @@ HESSIAN_EIG_FLOOR = 1e-4
 
 GRID_JOB_TYPES = ('LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB',
                   'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB')
+# Runs over all parameters: a start of the multistart, and the optimisation
+# confined to a branch (see ProfileProjector.create_branch_seed_jobs).
+GLOBAL_JOB_TYPES = ('INITIAL_OPTIMIZATION', 'BRANCH_SEED')
+# In a run confined to part of a parameter's range, a finite-difference step
+# is at most this fraction of that part, so the probes fit inside it.
+MAX_CONFINED_STEP = 0.05
 
 
 class LBFGSBJob(Job):
@@ -55,9 +61,13 @@ class LBFGSBJob(Job):
     For grid-anchored LBFGSB jobs the run starts with a neighbor-test
     step: if a converged neighbor has better fitness at our cell, we
     adopt its params and seed the (s, y) history from its optimizer state.
+
+    The run stays inside ``bounds`` (all parameters; default: the bounds of
+    the branch the sampler is following, or the full ones).
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
-                 grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf):
+                 grid_idx, start_params_full, seed_history=None, start_fitness=-np.inf,
+                 bounds=None):
 
         super().__init__(job_id, job_type, sampler)
 
@@ -79,10 +89,17 @@ class LBFGSBJob(Job):
         self.opt_dims = opt_dims
         self.n_opt_dims = len(opt_dims)
 
-        b = np.asarray(sampler.bounds, dtype=float)[list(opt_dims)]
+        if bounds is None:
+            bounds = sampler.active_bounds
+        b = np.asarray(bounds, dtype=float)[list(opt_dims)]
         self._lo = b[:, 0]
         self._hi = b[:, 1]
         self._scale = self._hi - self._lo
+        # The finite-difference steps are fractions of the full range of a
+        # parameter, also where a branch confines it to part of that range.
+        full = np.asarray(sampler.bounds, dtype=float)[list(opt_dims)]
+        self._step_scale = full[:, 1] - full[:, 0]
+        self._confined = bounds is not sampler.bounds
 
         # start_params are the partial parameters corresponding to opt_dims;
         # start_params_full is the full vector for the initial eval.
@@ -117,7 +134,7 @@ class LBFGSBJob(Job):
         self._trust = None
         if seed_history:
             self._seed_curvature(seed_history)
-        if self.use_hessian and self.Hinv is None and self.type != 'INITIAL_OPTIMIZATION':
+        if self.use_hessian and self.Hinv is None and self.type not in GLOBAL_JOB_TYPES:
             hint = sampler.lbfgsb_hessian_hint
             if hint is not None and hint.shape == (self.n_opt_dims, self.n_opt_dims):
                 self.Hinv = hint
@@ -157,6 +174,14 @@ class LBFGSBJob(Job):
         if self.grid_idx is None:
             return bounded
         return self.sampler._construct_params(self.grid_idx, bounded)
+
+    def _fd_steps(self, fraction):
+        """Finite-difference step per parameter for a step of ``fraction`` of
+        its full range."""
+        h = fraction * self._step_scale
+        if self._confined:
+            h = np.minimum(h, MAX_CONFINED_STEP * self._scale)
+        return h
 
     def _ctx(self, sub_type, **extra):
         return {'type': self.type, 'job_id': self.id, 'sub_type': sub_type, **extra}
@@ -296,7 +321,7 @@ class LBFGSBJob(Job):
         replaced by a backward one, so a parameter on its upper bound still
         gets a derivative and no probe coincides with x.
         """
-        h = self.fd_step * self._scale
+        h = self._fd_steps(self.fd_step)
         ug = self._user_grad_opt(user_grad_full)
         probes = {}
         per_dim_cost = 2 if self.lbfgsb_gradient_method == "central" else 1
@@ -327,7 +352,7 @@ class LBFGSBJob(Job):
         g = self._grads[gid]
         x = g['x']
         n = self.n_opt_dims
-        h = self.hessian_step * self._scale
+        h = self._fd_steps(self.hessian_step)
         sign = np.where(x + h <= self._hi, 1.0, -1.0)
         offsets = {}
         for i in range(n):
@@ -343,7 +368,10 @@ class LBFGSBJob(Job):
                 e[i] = sign[i] * h[i]
                 e[j] = sign[j] * h[j]
                 offsets[('m', i, j)] = e
-        g['hess'] = {'sign': sign, 'offsets': offsets, 'vals': dict.fromkeys(offsets)}
+        g['hess'] = {'sign': sign, 'offsets': offsets, 'vals': dict.fromkeys(offsets),
+                     # Step in normalised units relative to hessian_step, per
+                     # parameter; None where the run works in the full range.
+                     'ratio': h / (self.hessian_step * self._scale) if self._confined else None}
 
     def _hessian_task(self, gid, key):
         g = self._grads[gid]
@@ -371,6 +399,8 @@ class LBFGSBJob(Job):
             for j in range(i + 1, n):
                 mixed = (v[('m', i, j)] - v[('d', i, 1)] - v[('d', j, 1)] + f0) / hz ** 2
                 H[i, j] = H[j, i] = hs['sign'][i] * hs['sign'][j] * mixed
+        if hs['ratio'] is not None:
+            H /= np.outer(hs['ratio'], hs['ratio'])
         w, V = np.linalg.eigh(H)
         wmax = float(np.max(np.abs(w)))
         if not np.isfinite(wmax) or wmax == 0.0:
@@ -778,6 +808,12 @@ class LBFGSBJob(Job):
             # isn't a basin minimizer and would inflate W.
             if self.converged:
                 sampler.register_initial_optimum(final_params, final_target_val)
+
+        elif self.type == 'BRANCH_SEED':
+            if usable:
+                sampler.add_branch_seed(
+                    self.branch_index, self._construct_full_params_for_task(self.current_params),
+                    self.current_fitness)
 
         elif self.type in GRID_JOB_TYPES:
             grid_idx = self.grid_idx
