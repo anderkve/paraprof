@@ -54,6 +54,12 @@ See `paraprof_example.yaml` for a complete worked example.
   a mapping `{parameter name: value}` that names every scanned parameter, with
   or without its model prefix. The plugin maps it to the unit hypercube with
   ScannerBit's inverse prior transform and prints the result.
+- `periodic` is a list of parameters that are periodic over their prior
+  range, with or without the model prefix, e.g. `[delta13]`. The two ends of
+  the range are then the same point for paraprof. The range in the
+  `Parameters` block must be exactly one period (for an angle
+  `[0, 6.283185307179586]`, not `[-0.05, 6.3]`) and the prior flat. paraprof
+  logs a warning if the likelihood differs between the two ends.
 - `refine_initial_points: true` makes paraprof optimise all parameters from
   every initial point before it activates grid points. Without it the points
   are evaluated only, and the best of them stands as the maximum unless a
@@ -66,7 +72,8 @@ See `paraprof_example.yaml` for a complete worked example.
   split point to the unit hypercube with the inverse prior transform, with the
   other parameters at the centre of the hypercube, and prints the result. It
   stops if the prior of the parameter depends on other parameters. A
-  projection may carry its own `branches` key.
+  projection may carry its own `branches` key. A parameter listed under both
+  `branches` and `periodic` does not wrap inside a branch.
 - `samples_output_file` is forwarded to paraprof and only written by rank 0.
   This is purely a paraprof-side diagnostic: GAMBIT's printers already
   capture every evaluation, so it defaults to off.

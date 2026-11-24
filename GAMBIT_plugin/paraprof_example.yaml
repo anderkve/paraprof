@@ -90,6 +90,10 @@ Scanner:
         # the highest value per grid point. Not needed for this target.
         # branches:
         #   x3: [0.0]
+        # Parameters that are periodic over their prior range (with or
+        # without the model prefix). The range must be exactly one period,
+        # e.g. [0, 6.283185307179586] for an angle. None in this example.
+        # periodic: [delta13]
         max_patching_waves: 15
         lbfgsb_max_iter: 50
         lbfgsb_polish: true

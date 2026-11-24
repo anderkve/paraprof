@@ -20,6 +20,7 @@ PHASE_VOLUME = 4          # volume sampling (umbrella-ensemble walkers)
 # Map each job's ``type`` string to the phase its evaluations belong to.
 JOB_TYPE_TO_PHASE = {
     'NOISE_ESTIMATE': PHASE_INITIAL,
+    'PERIODIC_CHECK': PHASE_INITIAL,
     'INITIAL_POINT_EVAL': PHASE_INITIAL,
     'INITIAL_OPTIMIZATION': PHASE_INITIAL,
     'BRANCH_SEED': PHASE_INITIAL,

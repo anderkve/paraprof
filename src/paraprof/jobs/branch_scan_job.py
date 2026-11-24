@@ -21,9 +21,10 @@ class BranchScanJob(Job):
     a line through the reference start: the parameter takes LINE_POINTS
     values spread over its sub-range, the others stay. An optimum of the
     branch shows as a local maximum along the line. The highest one, over
-    all lines, becomes the start. The end of a line next to ``point`` does
-    not count: a maximum there is the tail of the optimum that ``point``
-    belongs to. Without a local maximum the reference start is used.
+    all lines, becomes the start. An end of a line where another sub-range
+    begins (a split point, or a bound of a periodic parameter) does not
+    count: a maximum there is the tail of an optimum on the other side.
+    Without a local maximum the reference start is used.
     """
 
     def __init__(self, job_id, sampler, branch, point):
@@ -31,23 +32,25 @@ class BranchScanJob(Job):
         self.branch = branch
         point = np.asarray(point, dtype=float)
         self.reference = point.copy()
-        moved = {}           # dim -> True if the point lies below the sub-range
+        moved = []           # the split parameters in which the point lies outside
         for d, (lo, hi) in branch['ranges'].items():
             if point[d] < lo:
                 self.reference[d] = min(hi, 2.0 * lo - point[d])
-                moved[d] = True
+                moved.append(d)
             elif point[d] > hi:
                 self.reference[d] = max(lo, 2.0 * hi - point[d])
-                moved[d] = False
+                moved.append(d)
 
         # Per line: the dim, its values in ascending order with the reference
-        # value among them, and the index of the end next to the point.
+        # value among them, and the indices of the ends that do not count.
+        cuts = {(d, end) for d, end, _, _ in sampler._branch_cuts(branch)}
         self.lines = []
-        for d, below in moved.items():
+        for d in moved:
             lo, hi = branch['ranges'][d]
             values = lo + (np.arange(LINE_POINTS) + 0.5) / LINE_POINTS * (hi - lo)
             values = np.unique(np.append(values, self.reference[d]))
-            self.lines.append((d, values, 0 if below else len(values) - 1))
+            skipped = {k for k, end in ((0, lo), (len(values) - 1, hi)) if (d, end) in cuts}
+            self.lines.append((d, values, skipped))
         self.results = [np.full(len(values), -np.inf) for _, values, _ in self.lines]
         self.evals_remaining = sum(len(values) for _, values, _ in self.lines)
 
@@ -80,11 +83,11 @@ class BranchScanJob(Job):
         the reference start with its value (-inf if it was not evaluated)."""
         best_point, best_value = None, -np.inf
         reference_value = -np.inf
-        for (d, values, near), f in zip(self.lines, self.results):
+        for (d, values, skipped), f in zip(self.lines, self.results):
             at_reference = int(np.argmin(np.abs(values - self.reference[d])))
             reference_value = f[at_reference]
             for k in range(len(values)):
-                if k == near or not np.isfinite(f[k]) or f[k] <= best_value:
+                if k in skipped or not np.isfinite(f[k]) or f[k] <= best_value:
                     continue
                 rises = k == 0 or f[k] > f[k - 1]
                 holds = k == len(values) - 1 or f[k] >= f[k + 1]

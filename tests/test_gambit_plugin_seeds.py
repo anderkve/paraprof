@@ -1,4 +1,5 @@
-"""The GAMBIT plugin's handling of `initial_points` and `branches`, without MPI or GAMBIT.
+"""The GAMBIT plugin's handling of `initial_points`, `branches` and `periodic`, without MPI
+or GAMBIT.
 
 The plugin module imports `scanner_plugin`, `scannerbit` and `utils` from
 ScannerBit. They are stubbed here for the duration of one test.
@@ -136,3 +137,14 @@ def test_the_mapped_split_is_accepted_by_paraprof(plugin):
                           parameter_names=list(NAMES), branches=unit) as sampler:
         assert [b["ranges"] for b in sampler.projection_branches] == [
             {2: (0.0, 0.625)}, {2: (0.625, 1.0)}]
+
+
+def test_periodic_names_are_resolved_to_full_names(plugin, capsys):
+    assert plugin._periodic_parameters(["alpha", "Model::gamma"]) == ["Model::alpha", "Model::gamma"]
+    assert plugin._periodic_parameters("gamma") == ["Model::gamma"]
+    assert ("Model::gamma is treated as periodic over its prior range [-2, 2]."
+            in capsys.readouterr().out)
+    with pytest.raises(RuntimeError, match="periodic: 'delta' is not a scanned parameter"):
+        plugin._periodic_parameters(["delta"])
+    with pytest.raises(RuntimeError, match="list of parameter names"):
+        plugin._periodic_parameters([0])

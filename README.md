@@ -122,6 +122,7 @@ Common constructor arguments:
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
 - `n_optima` — prior on how many optima the target has *globally*; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (the global max is then among them, so the `min_starts` floor is skipped — `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`. Big saver on multimodal targets where the Bayesian rule would otherwise run to the cap.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are. They replace the global L-BFGS-B starts and are evaluated, not optimised.
+- `periodic` — parameters whose bounds span exactly one period (indices, or names with `parameter_names`), e.g. an angle on `[0, 2π]`. See [Periodic parameters](#periodic-parameters).
 - `refine_initial_points` — run one L-BFGS-B optimisation over all parameters from every entry of `initial_points` before the grid points are activated. Default `False`. Without it the best initial point stands as the maximum unless a grid point exceeds it, so set it when the points are near the maximum but not known to be at it.
 - `branches` — `{parameter: [split points]}`: follow the sub-ranges of a profiled parameter separately and report the highest value per cell. For a parameter with two solutions (see [Branches of a profiled parameter](#branches-of-a-profiled-parameter)). Default `None`.
 - `use_clustering` — detect multiple modes during refinement. Default `True`.
@@ -146,6 +147,8 @@ A projection that profiles the parameter is then run once per sub-range (a branc
 - The region of interest is measured from the maximum over all branches. A branch whose best known point lies outside it is not followed.
 - A branch needs a start. It takes the initial maxima inside its sub-range. If none of them is inside the region of interest, paraprof evaluates the target at 17 values of the split parameter inside the sub-range, with the other parameters as in the best known point, and runs one L-BFGS-B optimisation over all parameters, confined to the branch, from the highest local maximum along that line. Without a local maximum it starts from the best known point mirrored about the split point. This is done once per scan. A solution that only appears when other parameters change as well is not seen on the line: give an initial point inside the sub-range then.
 - A warning is logged if the best start of a branch lies on the split point. The branch then has no optimum of its own that paraprof found, and its cells follow the split point.
+- The target is continuous across a split point, so a cell value that lies on one is the tail of a higher value in the neighbouring branch. When the branches are merged, a warning gives the number of cells inside the region of interest that lie on a split point while the neighbouring branch has no value there. This happens when an optimum crosses the split point within the grid and the branch it enters was not followed there. Those cells are too low; an initial point in that branch near the crossing repairs them.
+- A split parameter may also be listed in `periodic`. Inside a branch it does not wrap: the ends of a sub-range are walls. Its bounds count as split points, so the first and the last sub-range are two branches although they meet at the bound. Other periodic parameters keep wrapping inside a branch.
 - Put the split point between the two solutions. Several split points give several sub-ranges, several parameters give one branch per combination of sub-ranges.
 - In the exported solution each cell has a `branch` index, and `branches` lists per branch its `ranges` and its own `solutions`, so the profile of each branch can be plotted.
 - A `branches` key in a projection replaces the setting for that projection; `{}` turns it off.
@@ -155,6 +158,20 @@ A projection that profiles the parameter is then run once per sub-range (a branc
 paraprof does not find the cut itself: a two-solution parameter that is not declared is handled as before.
 
 Measured on virtual workers (`fit6` of `tools/bench_scheduling.py`, plane (`m32`, `t12`) on a 25 × 25 grid, 40 workers; the profiled `t23` has modes at 0.40 and 0.62 that swap order across the plane): the plain scan takes 2 500 evaluations and is low in 17 of the 72 cells inside the region of interest, by up to 1.43. With `branches={5: [0.51]}` it takes 3 990 evaluations and no cell is low. Two separate scans with the bounds of `t23` restricted, merged by hand, take 4 962.
+
+### Periodic parameters
+
+To tell paraprof that a parameter should be treated as periodic, list it in the `periodic` option. In this case the provided parameter bounds should span exactly one period.
+
+```python
+sampler = ProfileProjector(
+    target_func=log_likelihood,
+    bounds=[(0.0, 2 * np.pi), (0.0, 1.0), (-1.0, 1.0)],
+    parameter_names=['delta', 'theta', 'nuisance'],
+    periodic=['delta'],        # or by index: periodic=[0]
+    projections=[{'dims': ['delta', 'theta'], 'grid_points': [50, 50]}],
+)
+```
 
 ### User-supplied gradients
 

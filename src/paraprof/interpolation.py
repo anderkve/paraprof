@@ -21,9 +21,16 @@ class GridInterpolator:
     Builds one RegularGridInterpolator per profiled dimension over the
     sparse coarse solution. Takes the dict returned by
     ``ProfileProjector.export_grid_solution()``.
+
+    ``periodic_bounds`` maps the position of a periodic profiled parameter in
+    ``profiled_params`` to its ``(lower, upper)`` bounds. Such a parameter is
+    interpolated as a point on the circle, so two cells with values on either
+    side of the bound give a value near the bound, not near the middle of the
+    range.
     """
 
-    def __init__(self, coarse_grid_solution):
+    def __init__(self, coarse_grid_solution, periodic_bounds=None):
+        self.periodic_bounds = dict(periodic_bounds or {})
         self.grid_axes = coarse_grid_solution['grid_axes']
         self.projection_dims = coarse_grid_solution['projection_dims']
         self.profiled_dims = coarse_grid_solution['profiled_dims']
@@ -64,22 +71,51 @@ class GridInterpolator:
                 logger.warning(f" No valid data for profiled dim {prof_dim_idx}. "
                                f"Interpolator will return NaN.")
                 interpolator = None
-            elif n_valid < 2**self.n_proj_dims:
-                logger.warning(f" Sparse data ({n_valid} points) for profiled dim {prof_dim_idx}. "
-                               f"Using nearest neighbor interpolation.")
-                interpolator = RegularGridInterpolator(
-                    self.grid_axes, values_grid,
-                    method='nearest', bounds_error=False, fill_value=None,
-                )
+            elif prof_dim_idx in self.periodic_bounds:
+                # Periodic parameter: interpolate cos and sin of its phase.
+                phase = self._phase(prof_dim_idx, values_grid)
+                interpolator = (self._grid_interpolator(np.cos(phase), n_valid, prof_dim_idx),
+                                self._grid_interpolator(np.sin(phase), n_valid, prof_dim_idx))
             else:
-                # fill_value=NaN so callers can detect out-of-bounds; we clip
-                # query points to the grid in _clip_to_grid first.
-                interpolator = RegularGridInterpolator(
-                    self.grid_axes, values_grid,
-                    method='linear', bounds_error=False, fill_value=np.nan,
-                )
+                interpolator = self._grid_interpolator(values_grid, n_valid, prof_dim_idx)
 
             self.interpolators.append(interpolator)
+
+    def _grid_interpolator(self, values_grid, n_valid, prof_dim_idx):
+        if n_valid < 2**self.n_proj_dims:
+            logger.warning(f" Sparse data ({n_valid} points) for profiled dim {prof_dim_idx}. "
+                           f"Using nearest neighbor interpolation.")
+            return RegularGridInterpolator(
+                self.grid_axes, values_grid,
+                method='nearest', bounds_error=False, fill_value=None,
+            )
+        # fill_value=NaN so callers can detect out-of-bounds; we clip
+        # query points to the grid in _clip_to_grid first.
+        return RegularGridInterpolator(
+            self.grid_axes, values_grid,
+            method='linear', bounds_error=False, fill_value=np.nan,
+        )
+
+    def _phase(self, prof_dim_idx, values):
+        lo, hi = self.periodic_bounds[prof_dim_idx]
+        return 2.0 * np.pi * (np.asarray(values, dtype=float) - lo) / (hi - lo)
+
+    def _from_phase(self, prof_dim_idx, cos_part, sin_part):
+        """Parameter value of the direction (cos_part, sin_part), inside the bounds."""
+        lo, hi = self.periodic_bounds[prof_dim_idx]
+        turn = np.mod(np.arctan2(sin_part, cos_part) / (2.0 * np.pi), 1.0)
+        return lo + turn * (hi - lo)
+
+    def weighted_mean(self, params, weights):
+        """Weighted mean of rows of profiled params; periodic ones are averaged on the circle."""
+        params = np.asarray(params, dtype=float)
+        weights = np.asarray(weights, dtype=float)
+        mean = np.sum(params * weights[:, np.newaxis], axis=0)
+        for i in self.periodic_bounds:
+            phase = self._phase(i, params[:, i])
+            mean[i] = self._from_phase(i, np.sum(weights * np.cos(phase)),
+                                       np.sum(weights * np.sin(phase)))
+        return mean
 
 
     def _clip_to_grid(self, coords):
@@ -108,7 +144,13 @@ class GridInterpolator:
                 interpolated_params[i] = np.nan
                 continue
             try:
-                interpolated_params[i] = interpolator(coords_for_interp)[0]
+                if isinstance(interpolator, tuple):
+                    cos_part, sin_part = (part(coords_for_interp)[0] for part in interpolator)
+                    interpolated_params[i] = (
+                        self._from_phase(i, cos_part, sin_part)
+                        if np.isfinite(cos_part) and np.isfinite(sin_part) else np.nan)
+                else:
+                    interpolated_params[i] = interpolator(coords_for_interp)[0]
             except Exception as e:
                 logger.warning(f"Warning: Interpolation failed for profiled dim {i}: {e}")
                 interpolated_params[i] = np.nan
@@ -386,7 +428,7 @@ def get_cluster_based_initialization(fine_grid_coords, coarse_solution,
         weights = 1.0 / cluster_distances
         weights /= weights.sum()
         candidates.append({
-            'profiled_params': np.sum(cluster_params * weights[:, np.newaxis], axis=0),
+            'profiled_params': interpolator.weighted_mean(cluster_params, weights),
             'cluster_id': cluster_id,
             'method': 'cluster_extrapolated',
             'n_points_used': len(cluster_params),

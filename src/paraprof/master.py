@@ -502,6 +502,7 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     window = config['partner_level_window']
     rng = np.random.default_rng()
     n_dims = sampler.dims
+    all_dims = list(range(n_dims))
 
     # Seed walkers inside the envelope (shrink the ensemble if the prefilter
     # region yields fewer seeds than requested).
@@ -560,7 +561,10 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
                 j = int(pool[rng.integers(len(pool))])
                 z = float(draw_stretch(rng, 1)[0])
                 meta[k] = z
-                items.append((k, theta[j] + z * (theta[k] - theta[j])))
+                # Periodic parameters: stretch along the shorter arc, and
+                # bring a proposal that leaves the bounds back in.
+                step = sampler._param_delta(theta[k], theta[j], all_dims)
+                items.append((k, sampler._wrap_periodic(theta[j] + z * step, all_dims)))
             res = _volume_eval_batch(comm, sampler, logger, items, myrank)
             n_evals += len(items)
             n_prop += len(items)
@@ -765,6 +769,9 @@ def master_main(comm, sampler,
             # fd_step 'auto': measure the noise before anything is optimised.
             if sampler.needs_noise_estimate():
                 stages.append('NOISE_ESTIMATE')
+            # Periodic parameters: compare the target at their two bounds.
+            if sampler.needs_periodic_check():
+                stages.append('PERIODIC_CHECK')
             # Evaluate user-supplied initial points first (if any). This stage is
             # only added on the first projection that sees them; the job sets
             # ``_initial_points_evaluated`` once complete.
@@ -888,7 +895,7 @@ def master_main(comm, sampler,
         """Add tasks to appropriate priority queue based on job type."""
         if job is not None and _is_ahead(job):
             R.ahead_tasks.extend(tasks)
-        elif job_type in ['NOISE_ESTIMATE', 'INITIAL_OPTIMIZATION', 'BRANCH_SEED', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        elif job_type in ['NOISE_ESTIMATE', 'PERIODIC_CHECK', 'INITIAL_OPTIMIZATION', 'BRANCH_SEED', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             R.high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -991,6 +998,9 @@ def master_main(comm, sampler,
 
         if R.current_stage == 'NOISE_ESTIMATE':
             new_jobs, next_job_id = sampler.create_noise_estimate_job(next_job_id)
+
+        elif R.current_stage == 'PERIODIC_CHECK':
+            new_jobs, next_job_id = sampler.create_periodic_check_job(next_job_id)
 
         elif R.current_stage == 'INITIAL_POINTS_EVAL':
             # Evaluate user-supplied initial_points via the standard Job

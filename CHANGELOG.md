@@ -79,13 +79,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the target along the split parameter inside the sub-range (17 evaluations),
   or else from the best known point mirrored about the split point. A branch
   whose best point stays outside the region of interest is not followed; one
-  whose best point lies on the split point is followed with a warning. The exported solution names the `branch` of each cell and
-  lists the solutions of every branch under `branches`. A projection can set
-  its own `branches`. With `grid_refinement_factor` the branches are refined
-  one after the other. A projection with the split parameter as an axis, and
-  any scan without `branches`, evaluates the same points in the same order as
-  before. The GAMBIT plugin forwards the option and takes the split points in
-  physical coordinates.
+  whose best point lies on the split point is followed with a warning. The
+  exported solution names the `branch` of each cell and lists the solutions of
+  every branch under `branches`. A projection can set its own `branches`. With
+  `grid_refinement_factor` the branches are refined one after the other. A
+  projection with the split parameter as an axis, and any scan without
+  `branches`, evaluates the same points in the same order as before. The
+  GAMBIT plugin forwards the option and takes the split points in physical
+  coordinates. With `periodic`: a periodic parameter that is not split keeps
+  wrapping inside a branch; one that is split does not, and its bounds
+  separate its first sub-range from its last. When the branches are merged, a
+  warning counts the cells inside the region of interest whose value lies on
+  a split point (or on such a bound) while the branch on the other side has
+  no value there: an optimum crossed into a branch that was not followed
+  there, and those cells are too low.
+- **Periodic parameters** (`periodic`, a list of parameter indices or names).
+  For a parameter whose bounds span one period, the lower and the upper bound
+  are the same point. Without the option a region of interest that runs
+  through such a bound was found only on the side the scan started from,
+  unless a global start happened to end on the other side: cells are activated
+  from their grid neighbours, and the first and the last grid point were not
+  neighbours. On a test target seeded with its best-fit point the scan held
+  121 of 178 cells of the region of interest; with `periodic` it holds all
+  178. As a profiled parameter, a periodic one is wrapped at its bounds
+  instead of clipped (L-BFGS-B, differential evolution, activation samples,
+  volume-sampling walkers), and differences between two values are taken the
+  short way round (curvature pairs, mutation vectors, suspect-cell detection,
+  merging of initial optima, interpolation in grid refinement). A run used to
+  stop at the bound when the optimum lay just beyond it; on a test target that
+  left 7 to 14 of 425 cells up to 0.16 below the profile after patching, and
+  none with `periodic`. Both grid points on the bound are still evaluated, so
+  the exported grid keeps its shape. Before the scan the target is compared at
+  the two bounds of each periodic parameter (new `PERIODIC_CHECK` stage, 6
+  evaluations per parameter) and a difference is logged as a warning. Scans
+  without `periodic` are unchanged.
+- GAMBIT plugin: `periodic`, a list of parameter names with or without the
+  model prefix. The prior range of such a parameter must be one period.
 - **Evaluations ahead of time on idle workers.** The trial steps of a line
   search form a fixed ladder and the step accepted is the first that passes
   the Armijo test, so later rungs can be evaluated before earlier ones return;

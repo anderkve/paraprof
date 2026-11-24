@@ -590,9 +590,18 @@ def test_line_scan_picks_a_local_maximum_away_from_the_near_end():
     # Falling all the way: the mirrored point.
     point, value = scan(lambda t: -100.0 * (t - 0.3) ** 2)
     assert point[3] == pytest.approx(0.7) and value == pytest.approx(-16.0)
-    # Rising to the far end counts as a maximum there.
+    # Rising to the bound of the parameter counts as a maximum there.
     point, value = scan(lambda t: 3.0 * t)
     assert point[3] == pytest.approx(1.0 - 0.25 / LINE_POINTS)
+    sampler.close()
+
+    # A bound of a periodic parameter is where its other sub-range begins: values rising
+    # towards it are the tail of an optimum there, as at a split point.
+    sampler = ProfileProjector(target_func=twin, bounds=[(0.0, 1.0)] * 4, branches=SPLIT,
+                               periodic=[3], projections=[{'dims': [0, 1], 'grid_points': [4, 4]}])
+    upper = sampler.projection_branches[1]
+    point, value = scan(lambda t: 3.0 * t)
+    assert point[3] == pytest.approx(0.7)
     sampler.close()
 
 
@@ -872,3 +881,206 @@ def test_job_confined_to_part_of_a_range():
     # Gradient probe of x3 at the start point: fd_step (1e-6) of the full range, not of 0.4.
     probes = points[np.all(points[:, :3] == start[:3], axis=1) & (points[:, 3] != start[3])]
     assert np.min(np.abs(probes[:, 3] - start[3])) == pytest.approx(1e-6, rel=1e-6)
+
+
+# ---- branches together with periodic parameters --------------------------------------------
+TWO_PI = 2.0 * np.pi
+
+
+def scan_with_bounds(target, bounds, dims, n_workers=40, method='lbfgsb', grid=12, **kwargs):
+    np.random.seed(3)
+    settings = dict(jitter=0.05, seed=3, roi_threshold=4.0, n_initial_optimizations=12,
+                    max_patching_waves=2, lbfgsb_max_iter=20)
+    settings.update(kwargs)
+    return run_virtual_scan(target, bounds, [plane(dims, grid, method)], n_workers, **settings)
+
+
+CROSSING_BOUNDS = [(0.0, TWO_PI), (0.0, 1.0), (0.0, 1.0), (-1.0, 1.0)]
+
+
+def crossing(x):
+    """The periodic x0 is profiled, and its best value 4 (t - 0.5) + (u - 0.5) moves through
+    the bound as t = x1 crosses 0.5 (u = x2). The profiled-parameter target of
+    test_periodic.py; profiled over (x0, x3) it is -((u - 0.5) / 0.25)^2 / 2."""
+    d, t, u, n = x[:4]
+    best_d = 4.0 * (t - 0.5) + (u - 0.5)
+    return float(-6.0 * (1.0 - np.cos(d - best_d)) - 0.5 * ((u - 0.5) / 0.25) ** 2
+                 - 0.5 * ((n - 0.4 * np.cos(d) - 0.2 * (t - 0.5)) / 0.08) ** 2)
+
+
+def crossing_and_two_modes(x):
+    """`crossing`, plus x4 with modes at 0.3 and 0.7 that swap order at t = 0.6. The second
+    adds max(0, 3 (t - 0.6)) to the profile, so the maximum is 1.2, at t = 1."""
+    first = -0.5 * ((x[4] - 0.3) / 0.05) ** 2
+    second = -0.5 * ((x[4] - 0.7) / 0.05) ** 2 - 0.3 + 3.0 * (x[1] - 0.5)
+    return crossing(x) + float(np.logaddexp(first, second))
+
+
+def crossing_errors(sol, two_modes=False):
+    """Stored minus exact profile value on the plane (t, u), inside the region of interest."""
+    err = []
+    for i, t in enumerate(sol['grid_axes'][0]):
+        for j, u in enumerate(sol['grid_axes'][1]):
+            exact = -0.5 * ((u - 0.5) / 0.25) ** 2 + (max(0.0, 3.0 * (t - 0.6)) if two_modes else 0.0)
+            if exact > (1.2 if two_modes else 0.0) - 4.0:
+                err.append(sol['solutions'][(i, j)]['likelihood'] - exact
+                           if (i, j) in sol['solutions'] else -np.inf)
+    return np.array(err)
+
+
+@pytest.mark.parametrize('method', ['lbfgsb', 'de'])
+def test_periodic_parameter_and_a_split_parameter(method):
+    bounds = CROSSING_BOUNDS + [(0.0, 1.0)]
+
+    def n_low(**options):
+        out = scan_with_bounds(crossing_and_two_modes, bounds, [1, 2], method=method, **options)
+        err = crossing_errors(out['results'][0]['coarse_solution'], two_modes=True)
+        assert len(err) > 100 and err.max() < 1e-6
+        return int(np.sum(err < -1e-4))
+
+    # Each option repairs its own cells: the periodic one those where x0 has to pass its
+    # bound, the branches those where the lower mode of x4 was followed. Inside a branch of
+    # x4 the periodic x0 still wraps.
+    assert n_low(periodic=[0], branches={4: [0.5]}) == 0
+    assert n_low(periodic=[0]) > 0
+    assert n_low(branches={4: [0.5]}) > 0
+
+
+def ring(x):
+    """`twin` with x3 an angle in [0, 2 pi]: modes at 1 and at 4 rad, periodic."""
+    x0, x1, x2, d = np.asarray(x, dtype=float)
+    first = 12.0 * (np.cos(d - 1.0) - 1.0) - 0.5 * ((x2 - 0.50 - 0.3 * (x0 - 0.5)) / 0.06) ** 2
+    second = (12.0 * (np.cos(d - 4.0) - 1.0) - 0.5 * ((x2 - 0.45 + 0.2 * (x1 - 0.5)) / 0.06) ** 2
+              - 0.4 + 5.0 * (x0 - 0.5))
+    level = -0.5 * (((x0 - 0.45) / 0.12) ** 2 + ((x1 - 0.55) / 0.15) ** 2)
+    return -10.0 + level + float(np.logaddexp(first, second))
+
+
+RING_BOUNDS = [(0.0, 1.0)] * 3 + [(0.0, TWO_PI)]
+RING_FIRST = [0.45, 0.55, 0.485, 1.0]
+
+
+def ring_errors(sol):
+    """Against the two modes, each profiled over x2: -10 + level and -10 + level - 0.4 + 5 (x0 - 0.5)."""
+    err = []
+    for i, x0 in enumerate(sol['grid_axes'][0]):
+        for j, x1 in enumerate(sol['grid_axes'][1]):
+            level = -10.0 - 0.5 * (((x0 - 0.45) / 0.12) ** 2 + ((x1 - 0.55) / 0.15) ** 2)
+            exact = level + max(0.0, -0.4 + 5.0 * (x0 - 0.5))
+            if exact > -14.0:
+                err.append(sol['solutions'][(i, j)]['likelihood'] - exact
+                           if (i, j) in sol['solutions'] else -np.inf)
+    return np.array(err)
+
+
+@pytest.mark.parametrize('method, splits', [('lbfgsb', [2.5, 5.5]), ('de', [2.5, 5.5]),
+                                           ('lbfgsb', [2.5])])
+def test_branches_of_a_periodic_parameter(method, splits):
+    # One initial point, in the first mode: the single run does not find the second.
+    settings = dict(method=method, periodic=[3], initial_points=[RING_FIRST])
+    single = scan_with_bounds(ring, RING_BOUNDS, [0, 1], **settings)
+    assert np.sum(ring_errors(single['results'][0]['coarse_solution']) < -0.01) > 10
+
+    out = scan_with_bounds(ring, RING_BOUNDS, [0, 1], branches={3: splits}, **settings)
+    sol = out['results'][0]['coarse_solution']
+    err = ring_errors(sol)
+    assert len(err) > 50 and err.min() > -1e-4 and err.max() < 1e-6
+    # The sub-ranges end at the bounds: the parameter does not wrap inside a branch.
+    edges = [0.0] + splits + [TWO_PI]
+    assert [b['ranges'][3] for b in sol['branches']] == list(zip(edges[:-1], edges[1:]))
+    d = sol['profiled_dims'].index(3)
+    for branch in sol['branches']:
+        lo, hi = branch['ranges'][3]
+        assert all(lo <= e['profiled_params'][d] <= hi for e in branch['solutions'].values())
+    assert len(sol['branches'][0]['solutions']) > 20 and len(sol['branches'][1]['solutions']) > 20
+
+
+@pytest.mark.parametrize('method', ['lbfgsb', 'de'])
+def test_optimum_crossing_the_periodic_bound_between_two_branches(method):
+    """The bound of a periodic parameter that is split separates two branches. An optimum
+    that moves through it is in one branch on one side and in the other beyond."""
+    out = scan_with_bounds(crossing, CROSSING_BOUNDS, [1, 2], method=method, periodic=[0],
+                           branches={0: [np.pi]})
+    sol = out['results'][0]['coarse_solution']
+    err = crossing_errors(sol)
+    assert len(err) == 169 and err.min() > -1e-4 and err.max() < 1e-6
+    used = [sum(1 for e in sol['solutions'].values() if e['branch'] == k) for k in (0, 1)]
+    assert min(used) > 50
+
+
+def test_cells_on_a_cut_with_nothing_on_the_other_side_are_reported(capsys):
+    # The same target, started from one point far from where the optimum crosses the bound.
+    # The upper branch has no start near the crossing and is not followed there.
+    start = [1.6, 0.9, 0.5, 0.4 * np.cos(1.6) + 0.08]
+    out = scan_with_bounds(crossing, CROSSING_BOUNDS, [1, 2], periodic=[0],
+                           branches={0: [np.pi]}, initial_points=[start])
+    log = capsys.readouterr().err
+    assert 'cells inside the region of interest lie on the periodic bound 0 of parameter 0' in log
+    # What the warning is about: the optimum went on into the other branch.
+    assert crossing_errors(out['results'][0]['coarse_solution']).min() < -1.0
+
+    # With both sides started, nothing is reported.
+    scan_with_bounds(crossing, CROSSING_BOUNDS, [1, 2], periodic=[0], branches={0: [np.pi]})
+    assert 'lie on the' not in capsys.readouterr().err
+
+
+def test_cuts_and_wrapping_of_a_split_periodic_parameter():
+    sampler = ProfileProjector(target_func=ring, bounds=RING_BOUNDS, periodic=[3],
+                               branches={3: [2.5, 5.5]},
+                               projections=[{'dims': [0, 1], 'grid_points': [4, 4]}],
+                               advanced_config={'lbfgsb': {'fd_step': 1e-6}})
+    lower, middle, upper = sampler.projection_branches
+    # The bounds are cuts too, and the first and the last sub-range are neighbours there.
+    assert sampler._branch_cuts(lower) == [(3, 0.0, 'periodic bound', 2), (3, 2.5, 'split point', 1)]
+    assert sampler._branch_cuts(middle) == [(3, 2.5, 'split point', 0), (3, 5.5, 'split point', 2)]
+    assert sampler._branch_cuts(upper) == [(3, 5.5, 'split point', 1), (3, TWO_PI, 'periodic bound', 0)]
+
+    a, b = np.array([0.5, 6.0]), np.array([0.5, 0.2])        # (x2, x3)
+    # Without a branch the angle wraps and differences go the short way round.
+    np.testing.assert_allclose(sampler._param_delta(a, b, sampler.profiled_dims),
+                               [0.0, 5.8 - TWO_PI])
+    np.testing.assert_allclose(sampler._ensure_bounds(np.array([0.5, 6.5]), sampler.profiled_dims),
+                               [0.5, 6.5 - TWO_PI])
+    job = LBFGSBJob(0, 'LBFGSB_LOOP', sampler, (2, 3), a, (0, 0), None)
+    assert list(job._periodic) == [False, True]
+    # Inside a branch its ends are walls.
+    sampler.enter_branch(2)
+    np.testing.assert_allclose(sampler._param_delta(a, b, sampler.profiled_dims), [0.0, 5.8])
+    np.testing.assert_allclose(sampler._ensure_bounds(np.array([0.5, 6.5]), sampler.profiled_dims),
+                               [0.5, TWO_PI])
+    job = LBFGSBJob(0, 'LBFGSB_LOOP', sampler, (2, 3), a, (0, 0), None)
+    assert list(job._periodic) == [False, False]
+    np.testing.assert_array_equal(job._into_bounds(np.array([0.5, 6.5])), [0.5, TWO_PI])
+    sampler.close()
+
+    # A periodic parameter that is not split keeps wrapping inside the branches of another.
+    sampler = ProfileProjector(target_func=ring, bounds=RING_BOUNDS, periodic=[3],
+                               branches={2: [0.5]},
+                               projections=[{'dims': [0, 1], 'grid_points': [4, 4]}])
+    assert sampler._branch_cuts(sampler.projection_branches[0]) == [(2, 0.5, 'split point', 1)]
+    sampler.enter_branch(0)
+    job = LBFGSBJob(0, 'LBFGSB_LOOP', sampler, (2, 3), a, (0, 0), None)
+    assert list(job._periodic) == [False, True]
+    np.testing.assert_allclose(job._into_bounds(np.array([0.7, 6.5])), [0.5, 6.5 - TWO_PI])
+    sampler.close()
+
+
+def test_refinement_in_a_branch_does_not_interpolate_round_the_circle():
+    sampler = ProfileProjector(target_func=ring, bounds=RING_BOUNDS, periodic=[3],
+                               branches={3: [5.0]},
+                               projections=[{'dims': [0, 1], 'grid_points': [1, 1]}])
+    # Four coarse cells of the lower branch [0, 5]; x3 is 0.5 in two of them and 4.5 in the
+    # others, which is nearer through the bound than through the middle of the sub-range.
+    solutions = {(i, j): {'profiled_params': np.array([0.5, 0.5 if i == 0 else 4.5]),
+                          'likelihood': -10.0,
+                          'full_params': np.array([float(i), float(j), 0.5, 0.5 if i == 0 else 4.5])}
+                 for i in (0, 1) for j in (0, 1)}
+    coarse = dict(sampler.export_grid_solution(), solutions=solutions)
+    middle = np.array([0.5, 0.5])
+    sampler.setup_refinement_run(coarse, 2)
+    round_the_circle = sampler._get_refined_initialization_candidates(middle)[0]['profiled_params']
+    assert round_the_circle[1] < 0.5 or round_the_circle[1] > 4.5
+    sampler.enter_branch(0)
+    inside = sampler._get_refined_initialization_candidates(middle)[0]['profiled_params']
+    assert inside[1] == pytest.approx(2.5)
+    sampler.close()
