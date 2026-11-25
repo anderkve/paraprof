@@ -7,7 +7,6 @@ from .activation_job import ActivationJob
 from .de_job import DEGridPointJob
 from .patching_test_job import PatchingTestJob
 from .initial_points_job import InitialPointEvalJob
-from .suspect_recheck_job import SuspectRecheckJob
 
 __all__ = [
     'Job',
@@ -16,5 +15,4 @@ __all__ = [
     'DEGridPointJob',
     'PatchingTestJob',
     'InitialPointEvalJob',
-    'SuspectRecheckJob',
 ]

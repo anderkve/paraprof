@@ -131,7 +131,7 @@ YAML options:
                                                      derived from output_file)
     advanced_config:         Forwarded as-is to ProfileProjector. Sub-dicts:
                              'de', 'lbfgsb', 'clustering', 'cross_projection',
-                             'suspect_recheck'. See the paraprof README for the
+                             'basin_detection'. See the paraprof README for the
                              full key list.
                              For an expensive likelihood consider
                              'lbfgsb': {'ftol': 1e-4}.

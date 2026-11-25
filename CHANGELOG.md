@@ -23,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convergence tolerance (`lbfgsb.ftol`, or four times the noise); without
   this, optima of equal height were swapped back and forth. On `octant_6d`,
   projection (delta, m32) with 40 x 40 grid points: of 25 grid points in the
-  wrong optimum before patching, 9 were left after patching and 0 to 4 at the
-  end of the scan; now 0 are left after patching, at the same number of
+  wrong optimum before patching, 9 were left after patching and 0 to 4 after
+  the suspect recheck; now 0 are left after patching, at the same number of
   target calls.
 - **`max_patching_waves` defaults to the largest number of grid points along a
   projection dimension** (was 10). The border between two optima moves by one
@@ -80,6 +80,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   apart.
 
 ### Removed
+- **Suspect-cell recheck**: the stage after patching, the `suspect_recheck`
+  keys of `advanced_config`, `SuspectRecheckJob` and `PHASE_SUSPECT`. The
+  stage re-optimised grid points whose profiled parameters were far from the
+  median of their neighbours, from seeds two or three grid steps away and
+  from the pool. It was added for what patching could not repair while
+  patching looked at the highest neighbour only. With patching testing
+  neighbours across a jump it no longer changed a result: 42 scans
+  (`octant_6d`, Himmelblau, Rosenbrock, Levy and Rastrigin; `'lbfgsb'` and
+  `'de'`; one to four projections) ended with the same value at each of
+  about 11 500 grid points inside the region of interest with the stage on
+  and off, and the stage took 0 to 3 % of the target calls. The
+  `suspect_recheck` keys are ignored if still given. Phase `3` is no longer
+  written to the sample file; `PHASE_VOLUME` is still `4`.
 - **DE F/CR adaptation memory** (`advanced_config['memory_size']`). One of
   its `25 * max(grid_points)` slots was written per generation, and a scan
   takes some tens of generations, so at most a few percent of the trial
@@ -113,8 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   higher changes across the projections that profile it.
   `tools/octant_lab.py` runs one projection of it on virtual workers, compares
   the result with a reference profile computed separately for each optimum,
-  and lists what patching and the suspect recheck tried at the grid points
-  that end in the wrong optimum.
+  and lists what patching tried at the grid points that end in the wrong
+  optimum.
 - **Periodic parameters** (`periodic`, a list of parameter indices or names).
   For a parameter whose bounds span one period, the lower and the upper bound
   are the same point. Without the option a region of interest that runs

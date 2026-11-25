@@ -91,14 +91,6 @@ LBFGSB_HESSIAN_STEP_MAX = 0.05
 PATCHING_JUMP_K = 3.0
 PATCHING_JUMP_FLOOR = 1e-3
 
-# Suspect-cell recheck defaults
-DEFAULT_SUSPECT_RECHECK_ENABLED = True
-DEFAULT_SUSPECT_MAX_WAVES = 10
-DEFAULT_SUSPECT_PARAM_K = 3.0          # MAD multiplier on profiled-param discontinuity
-DEFAULT_SUSPECT_MAX_FRACTION = 0.25    # safety cap: max fraction of ROI cells per wave
-DEFAULT_SUSPECT_SEEDS_K_RING = 3       # Chebyshev radius for extended-neighbour seeds
-DEFAULT_SUSPECT_SEEDS_FROM_POOL = 3
-DEFAULT_SUSPECT_POLISH_THRESHOLD = 1e-3  # min improvement over current to trigger LBFGSB
 
 # Activation-population mix ratios (neighbours / global pool / random LHS).
 # Not user-tunable.
@@ -310,16 +302,6 @@ class ProfileProjector:
                     'proximity_warm_start': bool,        # Default: True
                     'pool_seeded_initial_maxima': bool,  # Default: True
                     'eager_start': bool,                 # Default: True
-                },
-
-                'suspect_recheck': {
-                    'enabled': bool,                # Default: True
-                    'max_waves': int,               # Default: 10
-                    'param_k': float,               # Default: 3.0
-                    'max_fraction': float,          # Default: 0.25
-                    'seeds_k_ring': int,            # Default: 3
-                    'seeds_from_pool': int,         # Default: 3
-                    'polish_threshold': float,      # Default: 1e-3
                 },
 
                 'basin_detection': {
@@ -566,16 +548,6 @@ class ProfileProjector:
                 'eager_start': True,
             },
 
-            'suspect_recheck': {
-                'enabled': DEFAULT_SUSPECT_RECHECK_ENABLED,
-                'max_waves': DEFAULT_SUSPECT_MAX_WAVES,
-                'param_k': DEFAULT_SUSPECT_PARAM_K,
-                'max_fraction': DEFAULT_SUSPECT_MAX_FRACTION,
-                'seeds_k_ring': DEFAULT_SUSPECT_SEEDS_K_RING,
-                'seeds_from_pool': DEFAULT_SUSPECT_SEEDS_FROM_POOL,
-                'polish_threshold': DEFAULT_SUSPECT_POLISH_THRESHOLD,
-            },
-
             'basin_detection': {
                 'batch_size': DEFAULT_BASIN_BATCH_SIZE,
                 'undiscovered_threshold': DEFAULT_BASIN_UNDISCOVERED_THRESHOLD,
@@ -712,18 +684,6 @@ class ProfileProjector:
         # 3. eager_start: the next projection starts on workers the current
         #    one leaves idle (run_all_projections, master_main).
         self.eager_projection_start = bool(config['cross_projection']['eager_start'])
-
-        # Suspect-cell recheck: after patching, recheck cells whose profiled
-        # parameters are far from the median of their neighbours, with seeds
-        # from further away and from the pool.
-        sc = config['suspect_recheck']
-        self.suspect_recheck_enabled = sc['enabled']
-        self.max_suspect_waves = sc['max_waves']
-        self.suspect_param_k = sc['param_k']
-        self.suspect_max_fraction = sc['max_fraction']
-        self.suspect_seeds_k_ring = sc['seeds_k_ring']
-        self.suspect_seeds_from_pool = sc['seeds_from_pool']
-        self.suspect_polish_threshold = sc['polish_threshold']
 
         # Basin-detection configuration for the initial-optimization stage.
         bd = config['basin_detection']
@@ -2377,6 +2337,16 @@ class ProfileProjector:
 
         return new_jobs, next_job_id
 
+    def _best_profiled_params(self, grid_idx):
+        """Return the best-fitness profiled-params vector at a grid cell."""
+        state = self.population[grid_idx]
+        return state['profiled_params'][int(np.argmax(state['fitnesses']))]
+
+    def _profiled_extent(self):
+        """Per-profiled-dim bounds extent (positive, floored to 1.0)."""
+        ext = self.bounds[self.profiled_dims, 1] - self.bounds[self.profiled_dims, 0]
+        return np.where(ext > 0, ext, 1.0)
+
     def _jump_thresholds(self):
         """Per profiled parameter, the difference between two neighbouring
         grid points above which they count as holding different optima, as a
@@ -2508,171 +2478,4 @@ class ProfileProjector:
 
         self.logger.info(f"--- Patching Wave {wave_number}: {len(jobs)} tests at "
                          f"{len(candidates)} grid points ---")
-        return jobs, next_job_id
-
-
-    # ------------------------------------------------------------------
-    # Suspect-cell recheck
-    # ------------------------------------------------------------------
-
-    def _best_profiled_params(self, grid_idx):
-        """Return the best-fitness profiled-params vector at a grid cell."""
-        state = self.population[grid_idx]
-        return state['profiled_params'][int(np.argmax(state['fitnesses']))]
-
-    def _profiled_extent(self):
-        """Per-profiled-dim bounds extent (positive, floored to 1.0)."""
-        ext = self.bounds[self.profiled_dims, 1] - self.bounds[self.profiled_dims, 0]
-        return np.where(ext > 0, ext, 1.0)
-
-    def _find_suspect_cells(self, wave_number, updated_points_last_wave):
-        """Suspect grid indices for a wave. Wave 0 scans all ROI cells and
-        flags cells whose profiled-params vector lies far (robust MAD
-        threshold) from its neighbour-median. Wave >=1 returns in-population
-        neighbours of last wave's winners (boundary propagation).
-        """
-        if self.n_prof_dims == 0 or not self.population:
-            return []
-
-        if wave_number > 0:
-            if not updated_points_last_wave:
-                return []
-            seen = set()
-            out = []
-            for upd_idx in updated_points_last_wave:
-                for n in self._get_valid_neighbors(upd_idx):
-                    if n in self.population and n not in seen:
-                        seen.add(n)
-                        out.append(n)
-            return out
-
-        roi_cutoff = self.global_max_target_val - self.roi_threshold
-        extent = self._profiled_extent()
-        param_d = {}
-        for idx, st in self.population.items():
-            if st['best_fitness'] < roi_cutoff:
-                continue
-            neigh = [n for n in self._get_valid_neighbors(idx) if n in self.population]
-            if len(neigh) < 2:
-                continue
-            neigh_params = np.array([self._best_profiled_params(n) for n in neigh])
-            own = self._best_profiled_params(idx)
-            if self._has_periodic:
-                # Place the neighbours' periodic parameters next to the cell's own.
-                neigh_params = own + self._param_delta(neigh_params, own, self.profiled_dims)
-            median = np.median(neigh_params, axis=0)
-            param_d[idx] = float(np.linalg.norm((own - median) / extent))
-        if not param_d:
-            return []
-
-        # Robust MAD threshold, with a small absolute floor so a
-        # perfectly-smooth surface gives no suspects.
-        d_vals = np.array(list(param_d.values()))
-        d_med = float(np.median(d_vals))
-        d_mad = float(np.median(np.abs(d_vals - d_med))) or 1e-12
-        d_thresh = max(d_med + self.suspect_param_k * 1.4826 * d_mad, 1e-3)
-
-        suspects = [idx for idx, d in param_d.items() if d > d_thresh]
-
-        max_total = max(1, int(self.suspect_max_fraction * len(param_d)))
-        if len(suspects) > max_total:
-            suspects.sort(key=param_d.__getitem__, reverse=True)
-            suspects = suspects[:max_total]
-
-        self.logger.info(
-            f"--- Suspect detection: {len(suspects)}/{len(param_d)} ROI cells flagged "
-            f"(d_thresh={d_thresh:.3e}) ---"
-        )
-        return suspects
-
-    def _get_k_ring(self, grid_idx, k):
-        """In-population grid cells at Chebyshev distance 2..k from grid_idx."""
-        if k < 2:
-            return []
-        if self._has_periodic_projection_dim():
-            ring = [o for o in itertools.product(range(-k, k + 1), repeat=self.n_proj_dims)
-                    if max(abs(v) for v in o) >= 2]
-            near = set(self._get_valid_neighbors(grid_idx, include_center=True))
-            return [c for c in self._cells_at_offsets(grid_idx, ring)
-                    if c not in near and c in self.population]
-        cells = []
-        center = np.array(grid_idx)
-        for offset in itertools.product(range(-k, k + 1), repeat=self.n_proj_dims):
-            cheb = max(abs(o) for o in offset)
-            if cheb < 2 or cheb > k:
-                continue
-            nb = tuple(center + np.array(offset))
-            if (all(0 <= i < s for i, s in zip(nb, self.grid_shape))
-                    and nb in self.population):
-                cells.append(nb)
-        return cells
-
-    def _gather_suspect_seeds(self, grid_idx, suspect_set):
-        """Diverse profiled-params seeds for a suspect cell: own params (as a
-        safety baseline), top-fitness non-suspect direct neighbours, top-fitness
-        non-suspect cells from an extended Chebyshev ring, and proximity samples
-        from the cross-projection global pool. Seeds within 1e-3 (normalised L2)
-        of an already-kept seed are dropped.
-        """
-        extent = self._profiled_extent()
-        seeds = []
-
-        def _add(vec):
-            v = np.asarray(vec, dtype=float)
-            if not np.all(np.isfinite(v)):
-                return
-            for existing in seeds:
-                if np.linalg.norm(self._param_delta(v, existing, self.profiled_dims) / extent) < 1e-3:
-                    return
-            seeds.append(v.copy())
-
-        _add(self._best_profiled_params(grid_idx))
-
-        def _top_non_suspect(idx_iter, k):
-            entries = [(self.population[n]['best_fitness'], n)
-                       for n in idx_iter
-                       if n in self.population and n not in suspect_set]
-            entries.sort(reverse=True)
-            for _f, n in entries[:k]:
-                _add(self._best_profiled_params(n))
-
-        _top_non_suspect(self._get_valid_neighbors(grid_idx), 3)
-        _top_non_suspect(self._get_k_ring(grid_idx, self.suspect_seeds_k_ring), 3)
-
-        n_pool = max(0, int(self.suspect_seeds_from_pool))
-        if n_pool > 0:
-            target_coords = self._get_grid_coords_from_indices(grid_idx)
-            pool_seeds = self._sample_proximity_from_global_pool(n_pool, target_coords)
-            if pool_seeds is not None:
-                for s in pool_seeds:
-                    _add(s)
-
-        return seeds
-
-    def create_suspect_recheck_jobs(self, wave_number, updated_points_last_wave,
-                                    next_job_id):
-        """Create SuspectRecheckJob instances for the current wave."""
-        from .jobs.suspect_recheck_job import SuspectRecheckJob
-
-        candidates = self._find_suspect_cells(wave_number, updated_points_last_wave)
-        if not candidates:
-            return [], next_job_id
-
-        suspect_set = set(candidates)
-        jobs = []
-        for grid_idx in candidates:
-            seeds = self._gather_suspect_seeds(grid_idx, suspect_set)
-            if len(seeds) <= 1:
-                # Only own params survived; nothing new to test.
-                continue
-            jobs.append(SuspectRecheckJob(
-                job_id=next_job_id,
-                sampler=self,
-                grid_idx=grid_idx,
-                candidate_seeds=seeds,
-                wave_number=wave_number,
-            ))
-            next_job_id += 1
-
-        self.logger.info(f"--- Suspect Wave {wave_number}: {len(jobs)} jobs created ---")
         return jobs, next_job_id

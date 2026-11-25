@@ -1,5 +1,4 @@
 """Patching test job for wave-based patching verification."""
-import numpy as np
 from .base import Job
 
 

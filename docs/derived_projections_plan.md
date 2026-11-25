@@ -162,7 +162,7 @@ and bookkeeping, and sharing a base class buys little).
    cells terminate expansion like below-threshold cells and are rendered
    distinctly (Phase 6).
 
-## Phase 4 — Activation, expansion, patching, suspect recheck in derived mode
+## Phase 4 — Activation, expansion and patching in derived mode
 
 1. **Initial activation.** Bin all available samples (warm-start file, initial
    optimization stage, pool) into derived cells. Activate occupied cells inside the
@@ -183,17 +183,19 @@ and bookkeeping, and sharing a base class buys little).
    vectors injected as population members. Same wave/baseline-improvement loop in
    `master_main`.
 
-4. **Suspect recheck.** The discontinuity metric runs on `cell_best['full_params']`
-   across the derived-grid neighborhood — unchanged MAD logic. Multivaluedness
-   (disconnected θ-branches mapping to the same cell with different logL) is *the*
-   failure mode in derived mode, so this pass matters more here: keep it enabled by
-   default and include a multivalued target in the benchmarks (see Testing).
+4. **Different optima in neighbouring cells.** The suspect recheck this plan was
+   written against has been removed; patching now tests the parameters of
+   neighbours across a jump (`_is_jump`). In derived mode the jump test runs on
+   `cell_best['full_params']` across the derived-grid neighborhood — unchanged MAD
+   logic. Multivaluedness (disconnected θ-branches mapping to the same cell with
+   different logL) is *the* failure mode in derived mode, so this test matters
+   more here: include a multivalued target in the benchmarks (see Testing).
 
 ## Phase 5 — Master wiring and top-up mode
 
 1. **Stages.** Derived-mode stage list:
    `INITIAL_POINTS_EVAL? → INITIAL_OPTIMIZATION → DERIVED_ACTIVATION →
-   ANCHORED_DE_LOOP → PATCHING_WAVES → SUSPECT_RECHECK_WAVES`.
+   ANCHORED_DE_LOOP → PATCHING_WAVES`.
    Implement `ANCHORED_DE_LOOP` as a sibling of `DE_LOOP` (same generation loop,
    different job factory) rather than overloading `DE_LOOP` with mode switches.
    Refinement runs (`setup_refinement_run`) are **not supported** for derived
@@ -204,8 +206,8 @@ and bookkeeping, and sharing a base class buys little).
    nearly-converged population, so its anchored-DE cost is a short convergence
    check. Optional accelerator `derived.topup_accept_existing` (default False): mark
    such cells `'optimized'` immediately when their `cell_best` is within a
-   tolerance of the neighborhood trend, skipping DE entirely — patching and suspect
-   recheck still get a chance to flag them. Conservative default because binned
+   tolerance of the neighborhood trend, skipping DE entirely — patching still
+   gets a chance to flag them. Conservative default because binned
    maxima are lower bounds with no per-cell convergence guarantee.
 
 3. **Result loop.** In derived mode the master routes every result through
@@ -240,7 +242,7 @@ and bookkeeping, and sharing a base class buys little).
 - Baseline comparison: same target, post-hoc binning of an input-space scan's
   samples vs. the anchored-DE scan — quantifies the raggedness this feature
   removes and the evaluation cost it adds.
-- Multivalued target: verify suspect recheck recovers the better branch.
+- Multivalued target: verify patching recovers the better branch.
 - Unattainable region: derived quantities with a forbidden region (e.g.
   `m1 ≥ m2` impossible) — assert cells are marked unattainable, not low-likelihood.
 
@@ -262,5 +264,5 @@ and bookkeeping, and sharing a base class buys little).
 
 Phases are ordered by dependency; 1 and 2 are small, 3+4 carry the algorithmic
 substance, 5 is wiring, 6 is polish. Phase 1 merges independently (useful on its
-own). A working end-to-end prototype needs 1–5 with patching/suspect-recheck
+own). A working end-to-end prototype needs 1–5 with patching
 stubbed; benchmarks should run before freezing the Phase 3 defaults.

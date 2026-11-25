@@ -5,9 +5,8 @@ The target is `octant_6d` (see `paraprof.test_functions`): s23 has two
 optima, the lower and the upper octant, and which is higher depends on the
 other parameters. The script computes a reference profile for each octant
 with scipy, runs one projection on virtual workers (`virtual_pool.py`) and
-compares the two at three points of the run: before patching, before the
-suspect recheck and at the end. For grid points that end in the wrong
-octant it lists what patching and the suspect recheck tried there.
+compares the two before patching and at the end. For grid points that end
+in the wrong octant it lists what patching tried there.
 
     python tools/octant_lab.py --dims 4 --grid 60
     python tools/octant_lab.py --dims 0,2 --grid 40,40 --cells 4
@@ -22,8 +21,7 @@ that is missing and `.` one outside the region of interest.
 `--plant-shift` and `--plant` overwrite the grid just before patching with
 reference solutions of a chosen octant: the reference assignment displaced
 by a number of grid points per projection dimension, or one octant
-everywhere. This tests patching and the suspect recheck on a known wrong
-state.
+everywhere. This tests patching on a known wrong state.
 """
 import argparse
 import collections
@@ -110,11 +108,11 @@ def plant(sampler, ref, assign):
 def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None,
         **projector_kwargs):
     """One projection on virtual workers. Returns the snapshots and the
-    patching and suspect-recheck jobs, which keep what they tested."""
+    patching jobs, which keep what they tested."""
     np.random.seed(seed)
     paraprof.set_log_level('WARNING')
     projections = [{'dims': list(dims), 'grid_points': list(npts), 'optimization_method': method}]
-    rec = {'snaps': {}, 'patch_jobs': [], 'suspect_jobs': []}
+    rec = {'snaps': {}, 'patch_jobs': []}
     kwargs = dict(roi_threshold=6.0, parameter_names=NAMES, periodic=['delta'])
     kwargs.update(projector_kwargs)
     comm = VirtualComm(n_workers, TARGET, seed=seed)
@@ -124,7 +122,6 @@ def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None
         with paraprof.ProfileProjector(target_func=TARGET, bounds=BOUNDS,
                                        projections=copy.deepcopy(projections), **kwargs) as sampler:
             make_patch_jobs = sampler.create_patching_wave_jobs
-            make_suspect_jobs = sampler.create_suspect_recheck_jobs
 
             def patch(wave_number, updated_points_last_wave, next_job_id):
                 if wave_number == 0:
@@ -142,16 +139,7 @@ def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None
                     rec['patch_jobs'].append((wave_number, job, src))
                 return jobs, next_job_id
 
-            def suspect(wave_number, updated_points_last_wave, next_job_id):
-                if wave_number == 0:
-                    rec['snaps']['before suspect recheck'] = snapshot(sampler)
-                jobs, next_job_id = make_suspect_jobs(wave_number, updated_points_last_wave,
-                                                      next_job_id)
-                rec['suspect_jobs'] += [(wave_number, job) for job in jobs]
-                return jobs, next_job_id
-
             sampler.create_patching_wave_jobs = patch
-            sampler.create_suspect_recheck_jobs = suspect
             paraprof.run_scan(comm=comm, sampler=sampler, projections=projections,
                               save_plots=False, broadcast_target_func=False, myrank=0)
             rec['snaps']['end'] = snapshot(sampler)
@@ -207,7 +195,7 @@ def grid_map(snap, ref, roi):
 
 
 def report_cell(idx, rec, ref):
-    """What patching and the suspect recheck tried at one grid point."""
+    """What patching tried at one grid point."""
     sampler = rec['sampler']
     end = rec['snaps']['end']
     f, o, _ = end[idx]
@@ -230,13 +218,6 @@ def report_cell(idx, rec, ref):
               f"{', taken' if j.will_update else ''}")
     if not tests:
         print("  no patching test")
-    jobs = [(w, j) for w, j in rec['suspect_jobs'] if tuple(j.grid_idx) == idx]
-    for w, j in jobs:
-        seeds = ' '.join(f"{'lu'[octant_of(u)]}:{TARGET(u):.3f}" for u in
-                         (sampler._construct_params(idx, s) for s in j.candidate_seeds))
-        print(f"  suspect wave {w}: seeds {seeds}{'; best one taken' if j.will_update else ''}")
-    if not jobs:
-        print("  not a suspect-recheck candidate")
 
 
 def main():
@@ -279,9 +260,7 @@ def main():
         worst = max(low.values()) if low else 0.0
         print(f"{stage + ':':24s} {dict(counts)}, largest deficit {worst:.3f}")
     n_taken = sum(j.will_update for _, j, _ in rec['patch_jobs'])
-    n_seeded = sum(j.will_update for _, j in rec['suspect_jobs'])
-    print(f"patching: {len(rec['patch_jobs'])} tests, {n_taken} taken; "
-          f"suspect recheck: {len(rec['suspect_jobs'])} jobs, {n_seeded} taken")
+    print(f"patching: {len(rec['patch_jobs'])} tests, {n_taken} taken")
     print(grid_map(rec['snaps']['end'], ref, rec['roi']))
     for idx in sorted(low, key=low.get, reverse=True)[:args.cells]:
         report_cell(idx, rec, ref)

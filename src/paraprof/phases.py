@@ -14,7 +14,8 @@ PHASE_UNKNOWN = -1        # producing stage not identified
 PHASE_INITIAL = 0         # initial optimization (global maxima / basin detection)
 PHASE_SCAN = 1            # projection-grid scan (activation, DE, grid polish)
 PHASE_REFINE = 2          # grid refinement and patching waves
-PHASE_SUSPECT = 3         # suspect-cell recheck
+# 3 was the suspect-cell recheck, a stage that no longer exists. Sample files
+# of earlier versions can hold it.
 PHASE_VOLUME = 4          # volume sampling (umbrella-ensemble walkers)
 
 # Map each job's ``type`` string to the phase its evaluations belong to.
@@ -30,8 +31,6 @@ JOB_TYPE_TO_PHASE = {
     'PATCHING_TEST': PHASE_REFINE,
     'PATCHING_LBFGSB': PHASE_REFINE,
     'REFINEMENT_LBFGSB': PHASE_REFINE,
-    'SUSPECT_RECHECK': PHASE_SUSPECT,
-    'SUSPECT_RECHECK_LBFGSB': PHASE_SUSPECT,
     'VOLUME': PHASE_VOLUME,
 }
 
@@ -41,7 +40,6 @@ PHASE_LEGEND = {
     PHASE_INITIAL: 'initial optimization (global maxima / basin detection)',
     PHASE_SCAN: 'projection-grid scan (activation, DE, grid polish)',
     PHASE_REFINE: 'grid refinement and patching',
-    PHASE_SUSPECT: 'suspect-cell recheck',
     PHASE_VOLUME: 'volume sampling (umbrella-ensemble walkers)',
 }
 

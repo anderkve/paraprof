@@ -186,11 +186,13 @@ Rastrigin, 2 on Levy), and the values differed by at most 1.2e-5.
 
 - The branch to change is the one in `create_refinement_lbfgsb_jobs` that
   takes `candidates[0]`.
-- `SuspectRecheckJob` already evaluates several seeds at a cell and starts an
-  L-BFGS-B run from the best. A refinement cell has no population entry yet,
-  so the run it starts must be of type `REFINEMENT_LBFGSB`, with
-  `start_fitness` set to the value found. `LBFGSBJob` then skips its initial
-  evaluation. The master handles a job started from `on_finish` already.
+- The job needed evaluates several candidates at a cell and starts an
+  L-BFGS-B run from the best. `SuspectRecheckJob` did this until the suspect
+  recheck was removed (changelog, Unreleased); the git history has it as a
+  model. A refinement cell has no population entry yet, so the run the job
+  starts must be of type `REFINEMENT_LBFGSB`, with `start_fitness` set to the
+  value found. `LBFGSBJob` then skips its initial evaluation. The master
+  handles a job started from `on_finish` already.
 - Enclosing coarse cells of a fine index `i` along one projection parameter,
   with refinement factor `rf`: `i // rf`, and `i // rf + 1` if `i % rf != 0`.
 - `_is_jump` takes differences through `_param_delta`, so two values on
@@ -201,4 +203,4 @@ Rastrigin, 2 on Levy), and the values differed by at most 1.2e-5.
 - In direct-evaluation mode the list of candidates can feed the existing path
   that evaluates several candidates in one `ActivationJob`.
 - The two constructed targets are small enough to serve as tests on virtual
-  workers, in the manner of `tests/test_suspect_recheck.py`.
+  workers, in the manner of `tests/test_patching.py`.

@@ -138,9 +138,6 @@ def test_cells_further_out_wrap_too():
     near = set(sampler._get_valid_neighbors((0, 2)))
     assert set(within[:len(near)]) == near
 
-    sampler.population = {(6, 2): {}, (7, 2): {}, (2, 2): {}, (4, 2): {}}
-    assert set(sampler._get_k_ring((0, 2), 2)) == {(6, 2), (2, 2)}
-
 
 # --- wrapping and differences -------------------------------------------------
 

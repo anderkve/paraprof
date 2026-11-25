@@ -63,11 +63,7 @@ FUNC_NAME = "rosenbrock_4d"
 GRID_PER_DIM = 100
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 10.0
-# ParaProf library defaults. The new suspect-cell recheck pass that
-# landed on main between this version of the animation and the
-# previous one is expected to clean up the contiguous wrong-optimum
-# strips that previously forced us to bump POP_PER_CELL and
-# LBFGSB_ITER above their defaults.
+# ParaProf library defaults.
 POP_PER_CELL = 3
 LBFGSB_ITER = 50
 MAX_PATCHING_WAVES = 10

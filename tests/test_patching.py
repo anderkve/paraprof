@@ -141,6 +141,63 @@ class TestPatchingTestJob:
         assert job.will_update is taken
 
 
+def _two_optima_target(x):
+    """Two projection parameters (a, b) and two profiled ones (p, q). q has
+    two optima of unequal height, 0.8 apart in the target and far apart in q."""
+    a, b, p, q = np.asarray(x, dtype=float)
+    smooth = (-0.5 * ((a - 0.5) / 0.15) ** 2 - 0.5 * ((b - 0.5) / 0.15) ** 2
+              - 0.5 * ((p - 0.5 - 0.3 * (a - 0.5)) / 0.05) ** 2)
+    optima = np.logaddexp(-0.5 * ((q - 0.3) / 0.04) ** 2,
+                          -0.8 - 0.5 * ((q - 0.7) / 0.04) ** 2)
+    return float(smooth + optima)
+
+
+def test_patching_repairs_a_planted_strip():
+    """A row of grid points near the maximum is moved onto the lower optimum
+    before patching starts. Patching puts every one back, and lowers none."""
+    from virtual_pool import run_virtual_scan
+
+    record = {}
+
+    def hook(sampler):
+        make_jobs = sampler.create_patching_wave_jobs
+
+        def patch(wave_number, updated_points_last_wave, next_job_id):
+            if wave_number == 0:
+                best = max(sampler.population,
+                           key=lambda c: sampler.population[c]['best_fitness'])
+                strip = [(best[0], best[1] + k) for k in (-2, -1, 0, 1, 2)]
+                strip = [c for c in strip if c in sampler.population]
+                for idx in strip:
+                    st = sampler.population[idx]
+                    k = int(np.argmax(st['fitnesses']))
+                    moved = st['profiled_params'][k].copy()
+                    moved[1] = 0.7
+                    val = _two_optima_target(sampler._construct_params(idx, moved))
+                    st['profiled_params'][k] = moved
+                    st['fitnesses'][:] = val
+                    st['best_fitness'] = val
+                record['strip'] = strip
+                record['before'] = {c: st['best_fitness']
+                                    for c, st in sampler.population.items()}
+            return make_jobs(wave_number, updated_points_last_wave, next_job_id)
+        sampler.create_patching_wave_jobs = patch
+
+    np.random.seed(11)
+    out = run_virtual_scan(
+        _two_optima_target, [(0.0, 1.0)] * 4,
+        [{'dims': [0, 1], 'grid_points': [16, 16], 'optimization_method': 'lbfgsb'}],
+        n_workers=5, seed=11, sampler_hook=hook,
+        roi_threshold=4.0, n_initial_optimizations=8)
+
+    assert len(record['strip']) >= 3
+    after = {c: st['best_fitness'] for c, st in out['population'].items()}
+    gains = [after[c] - record['before'][c] for c in record['strip']]
+    # every planted grid point is back on the higher optimum, 0.8 above
+    assert min(gains) > 0.7
+    assert all(after[c] >= record['before'][c] - 1e-12 for c in record['before'])
+
+
 def test_patching_moves_a_displaced_border_back():
     """octant_6d, projection on s13: the upper octant is planted three grid
     points too far on the downhill side of the maximum. Patching has to take
@@ -156,7 +213,7 @@ def test_patching_moves_a_displaced_border_back():
                          n_initial_optimizations=20)
 
     planted, _ = octant_lab.compare(rec['snaps']['before patching'], ref, rec['roi'])
-    patched, _ = octant_lab.compare(rec['snaps']['before suspect recheck'], ref, rec['roi'])
+    patched, _ = octant_lab.compare(rec['snaps']['end'], ref, rec['roi'])
     assert planted['wrong octant'] == 3
     assert patched['wrong octant'] == 0
     assert patched['ok'] == planted['ok'] + 3
