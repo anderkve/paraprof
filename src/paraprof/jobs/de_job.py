@@ -7,16 +7,20 @@ from .base import Job
 logger = get_logger()
 
 
+# Each trial vector draws its own crossover rate CR (normal, clipped to
+# [0, 1]) and scale factor F (Cauchy, redrawn while <= 0, capped at
+# DE_F_MAX_VALUE) around these centres.
+DE_CR_CENTRE = 0.5
 DE_CR_NORMAL_SCALE = 0.1
+DE_F_CENTRE = 0.7
 DE_F_CAUCHY_SCALE = 0.1
 DE_F_MAX_VALUE = 1.0
 DE_MIN_PARENT_POOL_SIZE = 3
 
 
 class DEGridPointJob(Job):
-    """Run one DE generation for a single grid point."""
-    def __init__(self, job_id, sampler, grid_idx, parent_pool,
-                 pbest_archive, successful_F_list, successful_CR_list):
+    """Run one DE generation (current-to-pbest/1) for a single grid point."""
+    def __init__(self, job_id, sampler, grid_idx, parent_pool, pbest_archive):
 
         super().__init__(job_id, 'DE_GRID_POINT', sampler)
         self.grid_idx = grid_idx
@@ -26,15 +30,11 @@ class DEGridPointJob(Job):
         self.parent_pool = parent_pool
         self.pbest_archive = pbest_archive
 
-        # Shared lists to append successful mutations to
-        self.successful_F_list = successful_F_list
-        self.successful_CR_list = successful_CR_list
-
         self.pop_size = self.sampler.pop_per_grid_point
         self.evals_remaining = self.pop_size
 
-        # Store trial info to process results
-        self.trial_info = {} # {point_idx: (trial_params, F_i, CR_i)}
+        # Trial vectors by population slot, to process results
+        self.trial_params = {}
 
 
     def start(self):
@@ -53,13 +53,10 @@ class DEGridPointJob(Job):
             return sampler._param_delta(a, b, sampler.profiled_dims)
 
         for i in range(self.pop_size):
-            mem_loc = np.random.randint(0, self.sampler.memory_size)
-            mu_CR, mu_F = self.sampler.memory_CR[mem_loc], self.sampler.memory_F[mem_loc]
-
-            CR_i = np.clip(norm.rvs(loc=mu_CR, scale=DE_CR_NORMAL_SCALE), 0, 1)
-            F_i = cauchy.rvs(loc=mu_F, scale=DE_F_CAUCHY_SCALE)
+            CR_i = np.clip(norm.rvs(loc=DE_CR_CENTRE, scale=DE_CR_NORMAL_SCALE), 0, 1)
+            F_i = cauchy.rvs(loc=DE_F_CENTRE, scale=DE_F_CAUCHY_SCALE)
             while F_i <= 0:
-                F_i = cauchy.rvs(loc=mu_F, scale=DE_F_CAUCHY_SCALE)
+                F_i = cauchy.rvs(loc=DE_F_CENTRE, scale=DE_F_CAUCHY_SCALE)
             F_i = min(F_i, DE_F_MAX_VALUE)
 
             x_i_params = grid_state['profiled_params'][i]
@@ -85,45 +82,25 @@ class DEGridPointJob(Job):
                 self.evals_remaining -= 1
                 continue
 
-            mutant = None
             if use_neighbor_mutation:
+                # Pull towards the best neighbour instead of a p-best parent.
                 r2_p, r3_p = np.random.choice(self.parent_pool, 2, replace=False)
                 r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
                 mutant = x_i_params + F_i * diff(best_neighbor_params, x_i_params) + F_i * diff(r2, r3)
-
-            elif self.sampler.mutation_strategy == 'current-to-rand/1':
-                p1_p, p2_p, p3_p = np.random.choice(self.parent_pool, 3, replace=False)
-                p1, p2, p3 = p1_p['profiled_params'], p2_p['profiled_params'], p3_p['profiled_params']
-                mutant = x_i_params + F_i * diff(p1, x_i_params) + F_i * diff(p2, p3)
-
-            elif self.sampler.mutation_strategy == 'rand/1':
-                r1_p, r2_p, r3_p = np.random.choice(self.parent_pool, 3, replace=False)
-                r1, r2, r3 = r1_p['profiled_params'], r2_p['profiled_params'], r3_p['profiled_params']
-                mutant = r1 + F_i * diff(r2, r3)
-
-            elif self.sampler.mutation_strategy == 'current-to-pbest/1':
+            else:
                 archive = self.pbest_archive if self.pbest_archive else self.parent_pool
                 x_pbest_p = np.random.choice(archive)
                 x_pbest = x_pbest_p['profiled_params']
 
-                potential_diff = self.parent_pool
-                if len(potential_diff) < 2:
-                    self.evals_remaining -= 1
-                    continue
-
                 max_attempts = 10
                 for _ in range(max_attempts):
-                    r2_p, r3_p = np.random.choice(potential_diff, 2, replace=False)
+                    r2_p, r3_p = np.random.choice(self.parent_pool, 2, replace=False)
                     if not (np.array_equal(r2_p['profiled_params'], x_pbest) or
                             np.array_equal(r3_p['profiled_params'], x_pbest)):
                         break
 
                 r2, r3 = r2_p['profiled_params'], r3_p['profiled_params']
                 mutant = x_i_params + F_i * diff(x_pbest, x_i_params) + F_i * diff(r2, r3)
-
-            if mutant is None:
-                self.evals_remaining -= 1
-                continue
 
             cross_points = np.random.rand(self.sampler.n_prof_dims) < CR_i
             if not np.any(cross_points):
@@ -134,7 +111,7 @@ class DEGridPointJob(Job):
 
             full_trial_params = self.sampler._construct_params(self.grid_idx, trial_params)
 
-            self.trial_info[i] = (trial_params, F_i, CR_i)
+            self.trial_params[i] = trial_params
 
             context = {
                 'type': self.type,
@@ -154,26 +131,23 @@ class DEGridPointJob(Job):
         return tasks
 
     def process_result(self, result):
-        """Compare trial fitness with target and store successful F/CR."""
+        """Keep the trial vector if it beats the member it was made from."""
         point_idx = result['context']['point_idx']
         trial_fitness = result['target_val']
 
-        if point_idx not in self.trial_info:
-            logger.warning(f"Warning: Received result for DE point_idx {point_idx} with no trial info. Ignoring.")
+        if point_idx not in self.trial_params:
+            logger.warning(f"Warning: Received result for DE point_idx {point_idx} with no trial vector. Ignoring.")
             self.evals_remaining -= 1
             if self.evals_remaining <= 0:
                 self.success = True
                 self._is_finished = True
             return []
 
-        trial_params, F_i, CR_i = self.trial_info[point_idx]
         grid_state = self.grid_state
 
         if trial_fitness > grid_state['fitnesses'][point_idx]:
-            grid_state['profiled_params'][point_idx] = trial_params
+            grid_state['profiled_params'][point_idx] = self.trial_params[point_idx]
             grid_state['fitnesses'][point_idx] = trial_fitness
-            self.successful_F_list.append(F_i)
-            self.successful_CR_list.append(CR_i)
 
         self.evals_remaining -= 1
         if self.evals_remaining <= 0:
@@ -198,8 +172,6 @@ class DEGridPointJob(Job):
 
         if new_best_fitness > old_best_fitness:
             grid_state['best_fitness'] = new_best_fitness
-            grid_state['last_update_gen'] = self.sampler.current_generation
-            self.sampler.profile_likelihood_grid[self.grid_idx] = new_best_fitness
 
             if new_best_fitness > self.sampler.global_max_target_val:
                 self.sampler.global_max_target_val = new_best_fitness
@@ -221,7 +193,7 @@ class DEGridPointJob(Job):
                 if self.sampler.lbfgsb_polish:
                     return self.sampler.create_LBFGSB_job_for_point(self.grid_idx, next_job_id)
                 else:
-                    grid_state['status'] = 'optimized'
+                    grid_state['status'] = 'done'
                     return None
 
         return None

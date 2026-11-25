@@ -10,6 +10,11 @@ from .logger import get_logger
 logger = get_logger()
 
 
+def _cell_values(sampler):
+    """(grid index, best target value) of every activated grid point."""
+    return [(grid_idx, state['best_fitness']) for grid_idx, state in sampler.population.items()]
+
+
 def plot_profiles(sampler, filename, plot_settings=None):
     """Save profile-likelihood plots for any projection dimensionality.
 
@@ -61,7 +66,7 @@ def _plot_1d_profile(sampler, filename, plot_settings):
 
     grid_axis = sampler.grid_axes[0]
     profile_1d = np.full(len(grid_axis), np.nan)
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         profile_1d[grid_idx[0]] = fitness
 
     valid_mask = ~np.isnan(profile_1d)
@@ -140,7 +145,7 @@ def _plot_2d_profile(sampler, filename, plot_settings):
     dim1, dim2 = sampler.projection_dims
 
     profile_2d = np.full(sampler.grid_shape, -np.inf)
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         profile_2d[grid_idx] = fitness
 
     finite_mask = np.isfinite(profile_2d)
@@ -232,7 +237,7 @@ def _plot_nd_profile(sampler, filename, plot_settings):
 
     max_likelihood = -np.inf
     max_grid_idx = None
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         if fitness > max_likelihood:
             max_likelihood = fitness
             max_grid_idx = grid_idx
@@ -317,7 +322,7 @@ def _extract_2d_slice(sampler, dim_i, dim_j, anchor_idx):
     shape_j = sampler.grid_shape[dim_j]
     slice_2d = np.full((shape_i, shape_j), -np.inf)
 
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         matches_anchor = True
         for k in range(sampler.n_proj_dims):
             if k != dim_i and k != dim_j and grid_idx[k] != anchor_idx[k]:
@@ -335,7 +340,7 @@ def _marginalize_to_2d(sampler, dim_i, dim_j):
     shape_j = sampler.grid_shape[dim_j]
     marginalized_2d = np.full((shape_i, shape_j), -np.inf)
 
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         i_idx = grid_idx[dim_i]
         j_idx = grid_idx[dim_j]
         if fitness > marginalized_2d[i_idx, j_idx]:
@@ -398,7 +403,7 @@ def _plot_1d_profiled_params(sampler, base_filename, plot_settings):
         for grid_idx, state in sampler.population.items():
             if sampler.direct_eval_mode:
                 continue
-            if state['status'] in ['converged', 'optimized']:
+            if state['status'] == 'done':
                 best_ind_idx = np.argmax(state['fitnesses'])
                 profiled_params = state['profiled_params'][best_ind_idx]
                 prof_param_values[grid_idx[0]] = profiled_params[prof_idx]
@@ -443,7 +448,7 @@ def _plot_2d_profiled_params(sampler, base_filename, plot_settings):
         for grid_idx, state in sampler.population.items():
             if sampler.direct_eval_mode:
                 continue
-            if state['status'] in ['converged', 'optimized']:
+            if state['status'] == 'done':
                 best_ind_idx = np.argmax(state['fitnesses'])
                 profiled_params = state['profiled_params'][best_ind_idx]
                 prof_param_grid[grid_idx] = profiled_params[prof_idx]
@@ -507,7 +512,7 @@ def _plot_nd_profiled_params(sampler, base_filename, plot_settings):
 
     max_likelihood = -np.inf
     max_grid_idx = None
-    for grid_idx, fitness in sampler.profile_likelihood_grid.items():
+    for grid_idx, fitness in _cell_values(sampler):
         if fitness > max_likelihood:
             max_likelihood = fitness
             max_grid_idx = grid_idx
@@ -527,7 +532,7 @@ def _plot_nd_profiled_params(sampler, base_filename, plot_settings):
         for grid_idx, state in sampler.population.items():
             if sampler.direct_eval_mode:
                 continue
-            if state['status'] in ['converged', 'optimized']:
+            if state['status'] == 'done':
                 best_ind_idx = np.argmax(state['fitnesses'])
                 profiled_params = state['profiled_params'][best_ind_idx]
                 prof_param_grid[grid_idx] = profiled_params[prof_idx]

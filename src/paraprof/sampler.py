@@ -44,18 +44,15 @@ DEFAULT_GLOBAL_POOL_SIZE = 10000
 DEFAULT_GLOBAL_POOL_PER_DIM = 2500
 DEFAULT_GLOBAL_POOL_MAX = 100000
 
-MEMORY_SIZE_MULTIPLIER = 25  # DE memory size = max_grid_size * multiplier
-
 # DE per-cell convergence cutoff (mean logL improvement / generation over
 # `de.convergence_window` gens). 1e-6 cuts mean ROI grid error ~2.4x on
 # stiff projections (Rosenbrock-style narrow valleys) at negligible cost
 # vs the earlier roi_threshold/1000 default.
 DEFAULT_CONVERGENCE_THRESHOLD = 1e-6
 
-# DE mutation knobs. Sensitivity benchmarks show all three supported
-# strategies give equivalent grid quality; defaults dominate, so these are
-# kept hidden from the public API.
-DEFAULT_DE_MUTATION_STRATEGY = 'current-to-pbest/1'
+# DE mutation knobs (the mutation is current-to-pbest/1, see jobs/de_job.py).
+# Sensitivity benchmarks showed no effect on grid quality, so these are kept
+# hidden from the public API.
 DEFAULT_DE_PBEST_FRACTION = 0.1
 DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY = 0.5
 DEFAULT_DE_CONVERGENCE_WINDOW = 3
@@ -216,13 +213,13 @@ class ProfileProjector:
             Apply L-BFGS-B polishing step after DE optimization (default: True)
             Refines solutions found by DE using gradient-based optimization
         n_initial_optimizations : int, optional
-            Number of global L-BFGS-B optimizations to find initial maxima (default: None).
-            With basin detection enabled (the default) this is a *cap*, not a fixed
-            spend: the Bayesian stopping rule halts early on easy targets and uses
-            the full budget only when optima remain, so set it generously. If None,
-            auto-configured as min(400, 50 * n_dims) with basin detection on, or the
-            modest min(100, 20 * n_dims) when it is off (where it is the fixed number
-            of starts). See ``advanced_config['basin_detection']``.
+            Cap on the global L-BFGS-B optimizations that find the initial
+            maxima (default: None). The Bayesian stopping rule halts early on
+            easy targets and uses the full budget only when optima remain, so
+            set it generously. If None, min(400, 50 * n_dims). With
+            ``basin_detection.undiscovered_threshold = 0`` the rule is off
+            and this is the fixed number of starts.
+            See ``advanced_config['basin_detection']``.
         n_optima : int or dict, optional
             Prior on the number of optima the target has *globally*; use only
             when confident it has one or a few (default: None). A known
@@ -323,13 +320,11 @@ class ProfileProjector:
         advanced_config : dict, optional
             Dictionary for expert-level parameter tuning. Structure:
             {
-                'memory_size': int,                # Default: max(grid_sizes) * 25
                 'convergence_threshold': float,    # Default: 1e-6
 
                 'de': {
                     'convergence_window': int,     # Default: 3
                     'num_generations': int,        # Default: 100000
-                    'max_num_to_evolve': int,      # Default: None (all grid points)
                     'allow_early_DE_exit': bool,        # Default: True
                 },
 
@@ -431,10 +426,11 @@ class ProfileProjector:
         the total of the scan is the sampler's ``target_calls``.
 
         Several DE knobs that did not show measurable effect on grid quality
-        in benchmarking (mutation_strategy, pbest_fraction,
-        neighbor_pull_probability, global_pool_size, patching.n_neighbors,
-        activation.mix_ratios) are now module-level constants in sampler.py
-        and are no longer user-tunable. The basin-clustering ``merge_tol`` is
+        in benchmarking (pbest_fraction, neighbor_pull_probability,
+        global_pool_size, patching.n_neighbors, activation.mix_ratios) are
+        module-level constants in sampler.py and are not user-tunable. The
+        centres of the per-trial DE scale factor F and crossover rate CR
+        are constants in jobs/de_job.py. The basin-clustering ``merge_tol`` is
         likewise a fixed internal constant: a sensitivity sweep showed a wide
         safe plateau at/below its value, with larger values only over-merging
         distinct optima and biasing the stopping statistic.
@@ -589,16 +585,12 @@ class ProfileProjector:
                         )
 
         # --- Build configuration with smart defaults ---
-        max_grid_size = max(max(proj['grid_points']) for proj in projections)
-
         config = {
-            'memory_size': max_grid_size * MEMORY_SIZE_MULTIPLIER,
             'convergence_threshold': DEFAULT_CONVERGENCE_THRESHOLD,
 
             'de': {
                 'convergence_window': DEFAULT_DE_CONVERGENCE_WINDOW,
                 'num_generations': DEFAULT_DE_NUM_GENERATIONS,
-                'max_num_to_evolve': None,
                 'allow_early_DE_exit': DEFAULT_DE_ALLOW_EARLY_DE_EXIT,
             },
 
@@ -677,13 +669,11 @@ class ProfileProjector:
         self.use_clustering = use_clustering
 
         # Store advanced config values
-        self.memory_size = config['memory_size']
         self.convergence_threshold = config['convergence_threshold']
 
         # DE configuration
         self.convergence_window = config['de']['convergence_window']
         self.de_num_generations = config['de']['num_generations']
-        self.de_max_num_to_evolve = config['de']['max_num_to_evolve']
         self.de_allow_early_DE_exit = config['de']['allow_early_DE_exit']
 
         # L-BFGS-B configuration
@@ -725,7 +715,6 @@ class ProfileProjector:
             max(DEFAULT_GLOBAL_POOL_SIZE,
                 self.dims * DEFAULT_GLOBAL_POOL_PER_DIM),
         )
-        self.mutation_strategy = DEFAULT_DE_MUTATION_STRATEGY
         self.pbest_fraction = DEFAULT_DE_PBEST_FRACTION
         self.neighbor_pull_probability = DEFAULT_DE_NEIGHBOR_PULL_PROBABILITY
         self.patching_n_neighbors = DEFAULT_PATCHING_N_NEIGHBORS
@@ -858,13 +847,8 @@ class ProfileProjector:
         # stopping rule. Reset per projection alongside initial_maxima.
         self.initial_optima_registry = []
         self.population = {}  # {grid_idx: state_dict}
-        self.activated_grid_indices = set()
         self.pending_activation_indices = set()
         self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
-        self.current_generation = 0
-        self.memory_F = np.full(self.memory_size, 0.5)
-        self.memory_CR = np.full(self.memory_size, 0.5)
-        self.memory_idx = 0
         self.optimization_method = 'de'
         self.lbfgsb_polish = lbfgsb_polish
         self.patch_coarse_grid = True
@@ -983,12 +967,11 @@ class ProfileProjector:
         'projection_dims', 'grid_points_per_dim', 'optimization_method',
         'patch_coarse_grid', 'patch_refined_grid', 'profiled_dims', 'n_proj_dims',
         'n_prof_dims', 'direct_eval_mode', 'grid_shape', 'grid_axes',
-        'profile_likelihood_grid', 'initial_maxima', 'initial_optima_registry',
+        'initial_maxima', 'initial_optima_registry',
         '_initial_opt_start_points', '_initial_opt_lhs_idx', 'population',
-        'activated_grid_indices', 'pending_activation_indices', 'ahead_cells',
-        'current_generation', 'memory_F', 'memory_CR', 'memory_idx',
+        'pending_activation_indices', 'ahead_cells',
         '_lbfgsb_cell_scales', 'lbfgsb_hessian_hint', '_neighbor_cache',
-        '_proximity_pool_cache', '_profiled_bounds', '_projection_bounds',
+        '_proximity_pool_cache',
     )
 
     def capture_projection_state(self):
@@ -1069,21 +1052,15 @@ class ProfileProjector:
         self.grid_shape = tuple(self.grid_points_per_dim)
 
         self.grid_axes = [np.linspace(self.bounds[d, 0], self.bounds[d, 1], n) for d, n in zip(self.projection_dims, self.grid_points_per_dim)]
-        self.profile_likelihood_grid = {} # Use a dict for sparse grid
 
         # Reset state variables
         self.initial_maxima = []
         self.initial_optima_registry = []
         self._initial_opt_start_points = None
         self._initial_opt_lhs_idx = 0
-        self.population = {}
-        self.activated_grid_indices = set()
+        self.population = {}         # {grid_idx: state_dict}, sparse
         self.pending_activation_indices = set()
         self.ahead_cells = set()     # activated ahead, not confirmed (activation_depth > 1)
-        self.current_generation = 0
-        self.memory_F = np.full(self.memory_size, 0.5)
-        self.memory_CR = np.full(self.memory_size, 0.5)
-        self.memory_idx = 0
         # Curvature scales of finished cell runs, and the latest inverse
         # Hessian a cell run measured (for a cell without a finished neighbour).
         self._lbfgsb_cell_scales = collections.deque(maxlen=LBFGSB_SCALE_MEMORY)
@@ -1094,10 +1071,6 @@ class ProfileProjector:
         # Invalidate the proximity-pool snapshot: projection_dims and
         # profiled_dims have changed, so the cached column slices are stale.
         self._proximity_pool_cache = None
-
-        # Cache bounds arrays for profiled and projection dimensions
-        self._profiled_bounds = self.bounds[self.profiled_dims] if len(self.profiled_dims) > 0 else None
-        self._projection_bounds = self.bounds[self.projection_dims] if len(self.projection_dims) > 0 else None
 
         # --- Handle refinement run: Transfer coarse grid solutions to fine grid ---
         if self.is_refinement_run and self.coarse_grid_solution is not None:
@@ -1117,18 +1090,14 @@ class ProfileProjector:
                 likelihood = solution['likelihood']
                 profiled_params = solution['profiled_params']
 
-                # Store in profile likelihood grid for visualization
-                self.profile_likelihood_grid[fine_idx] = likelihood
-
-                # Create population state for this transferred point
-                # This ensures profiled parameter plots include coarse grid data
+                # Population state of the transferred point, so that plots and
+                # the exported solution of the fine grid include it.
                 self.population[fine_idx] = {
                     'profiled_params': np.array([profiled_params]),  # Shape: (1, n_prof_dims)
                     'fitnesses': np.array([likelihood]),
                     'best_fitness': likelihood,
-                    'status': 'optimized',  # Mark as already optimized from coarse run
+                    'status': 'done',  # optimised in the coarse run
                     'improvement_history': [],
-                    'last_update_gen': 0,
                     'optimizer_state': None,
                     # Needed by export_grid_solution in direct-eval mode.
                     'full_params': solution['full_params'].copy(),
@@ -1144,7 +1113,7 @@ class ProfileProjector:
         """Export the current grid state (axes, dims, solutions, pool) as a dict."""
         solutions = {}
         for grid_idx, state in self.population.items():
-            if state['status'] not in ['converged', 'optimized']:
+            if state['status'] != 'done':
                 continue
             if self.direct_eval_mode:
                 solutions[grid_idx] = {
@@ -1300,13 +1269,6 @@ class ProfileProjector:
         return tuple(idx * refinement_factor for idx in coarse_idx)
 
 
-    def _map_fine_to_coarse_index(self, fine_idx, refinement_factor):
-        """Fine-grid index -> coarse-grid index, or None if not aligned."""
-        if not self._is_coarse_grid_point(fine_idx, refinement_factor):
-            return None
-        return tuple(idx // refinement_factor for idx in fine_idx)
-
-
     def _cleanup_refinement_state(self):
         """Reset refinement state so the sampler is ready for the next projection."""
         self.is_refinement_run = False
@@ -1417,26 +1379,13 @@ class ProfileProjector:
         return full_params
 
 
-    def _ensure_bounds(self, vec, dims_to_check):
-        """Bring ``vec`` into the bounds of the given dim subset: periodic
-        entries are wrapped, the others clipped. Uses cached bounds arrays."""
-        if self._has_periodic and np.shape(vec) == (len(dims_to_check),):
-            # A wrapped value lies inside the bounds; the clip below keeps it.
-            vec = self._wrap_periodic(vec, dims_to_check)
-        if dims_to_check is self.profiled_dims and self._profiled_bounds is not None:
-            return np.clip(vec, self._profiled_bounds[:, 0], self._profiled_bounds[:, 1])
-        elif dims_to_check is self.projection_dims and self._projection_bounds is not None:
-            return np.clip(vec, self._projection_bounds[:, 0], self._projection_bounds[:, 1])
-
-        dims_to_check = np.array(dims_to_check, dtype=int)
-        if vec.shape != self.bounds[dims_to_check, 0].shape:
-            # Global optimization: vec is full (n_dims,) but dims_to_check is a
-            # subset; clip only the listed dims.
-            clipped_vec = vec.copy()
-            for i, dim_idx in enumerate(dims_to_check):
-                clipped_vec[i] = np.clip(vec[i], self.bounds[dim_idx, 0], self.bounds[dim_idx, 1])
-            return clipped_vec
-        return np.clip(vec, self.bounds[dims_to_check, 0], self.bounds[dims_to_check, 1])
+    def _ensure_bounds(self, vec, dims):
+        """``vec``, holding values of the parameters ``dims`` along its last
+        axis, brought into their bounds: periodic entries are wrapped, the
+        others clipped."""
+        dims = list(dims)
+        # A wrapped value lies inside the bounds; the clip keeps it.
+        return np.clip(self._wrap_periodic(vec, dims), self.bounds[dims, 0], self.bounds[dims, 1])
 
 
     def _has_periodic_projection_dim(self):
@@ -2033,7 +1982,7 @@ class ProfileProjector:
         best_fitness = -np.inf
         for neighbor_idx in self._get_valid_neighbors(grid_idx):
             st = self.population.get(neighbor_idx)
-            if (st is not None and st['status'] in ('optimized', 'converged')
+            if (st is not None and st['status'] == 'done'
                     and st.get('optimizer_state')
                     and (st['optimizer_state']['s']
                          or st['optimizer_state'].get('Hinv') is not None)
@@ -2042,8 +1991,10 @@ class ProfileProjector:
                 best_state = st
         return None if best_state is None else best_state['optimizer_state']
 
-    def create_lbfgsb_job_for_active_cell(self, grid_idx, next_job_id, job_type, terminal_status):
-        """L-BFGS-B job for one active grid point, or None if it needs none.
+    def create_lbfgsb_job_for_active_cell(self, grid_idx, next_job_id):
+        """L-BFGS-B job for one active grid point of an ``'lbfgsb'``
+        projection, or None if it needs none (not active, or nothing to
+        profile).
 
         Returns ``(job_or_None, next_job_id)``.
         """
@@ -2052,7 +2003,7 @@ class ProfileProjector:
             return None, next_job_id
 
         if self.direct_eval_mode or self.n_prof_dims == 0:
-            state['status'] = terminal_status
+            state['status'] = 'done'
             return None, next_job_id
 
         state['status'] = 'LBFGSB_queued'
@@ -2063,7 +2014,7 @@ class ProfileProjector:
 
         job = LBFGSBJob(
             job_id=next_job_id,
-            job_type=job_type,
+            job_type='LBFGSB_LOOP',
             sampler=self,
             opt_dims=tuple(self.profiled_dims),
             start_params=start_params_partial,
@@ -2074,93 +2025,13 @@ class ProfileProjector:
         )
         return job, next_job_id + 1
 
-    def _create_lbfgsb_jobs_for_active(self, next_job_id, job_type, terminal_status):
-        """Spawn one L-BFGS-B job per active grid point.
-
-        `terminal_status` is the status assigned to direct-eval cells (which
-        skip optimization): 'optimized' for the one-shot post-activation
-        stage, 'converged' for LBFGSB_LOOP (allows dynamic re-activation).
-        """
+    def create_lbfgsb_loop_jobs(self, next_job_id):
+        """One L-BFGS-B job per active grid point, for the LBFGSB_LOOP stage."""
         jobs = []
         for grid_idx in list(self.population):
-            job, next_job_id = self.create_lbfgsb_job_for_active_cell(
-                grid_idx, next_job_id, job_type, terminal_status)
+            job, next_job_id = self.create_lbfgsb_job_for_active_cell(grid_idx, next_job_id)
             if job is not None:
                 jobs.append(job)
-        return jobs, next_job_id
-
-    def create_post_activation_lbfgsb_jobs(self, next_job_id):
-        """L-BFGS-B jobs for all activated cells (used when optimization_method='lbfgsb')."""
-        jobs, next_job_id = self._create_lbfgsb_jobs_for_active(
-            next_job_id, 'POST_ACTIVATION_LBFGSB', 'optimized',
-        )
-        self.logger.info(f"Created {len(jobs)} post-activation L-BFGS-B jobs")
-        return jobs, next_job_id
-
-    def create_lbfgsb_loop_jobs(self, next_job_id):
-        """L-BFGS-B jobs for active cells in the LBFGSB_LOOP stage."""
-        return self._create_lbfgsb_jobs_for_active(
-            next_job_id, 'LBFGSB_LOOP', 'converged',
-        )
-
-
-    def create_refinement_activation_jobs(self, next_job_id):
-        """ActivationJobs for neighbors of transferred coarse points (refinement only)."""
-        if not self.is_refinement_run or self.refinement_interpolator is None:
-            self.logger.warning("Warning: create_refinement_activation_jobs called but not in refinement mode.")
-            return [], next_job_id
-
-        jobs = []
-        activation_job_created_for_grid_points = set()
-
-        # Find all transferred coarse grid points (status='refined')
-        transferred_points = [idx for idx, state in self.population.items()
-                             if (state['status'] == 'optimized') and 
-                                (state['best_fitness'] >= (self.global_max_target_val - self.roi_threshold))]
-
-        self.logger.info(f"--- Creating refinement activation jobs from {len(transferred_points)} transferred points ---")
-
-        # Activate all neighbors of transferred points
-        for grid_idx in transferred_points:
-            for neighbor_idx in self._get_valid_neighbors(grid_idx):
-                # Skip if already activated or pending
-                if (neighbor_idx in activation_job_created_for_grid_points) or \
-                   (neighbor_idx in self.population) or \
-                   (neighbor_idx in self.pending_activation_indices):
-                    continue
-
-                # Get candidate parameters (using clustering if available)
-                grid_coords = self._get_grid_coords_from_indices(neighbor_idx)
-                candidates = self._get_refined_initialization_candidates(grid_coords)
-
-                # Use first candidate for activation jobs (optimization will explore from there)
-                if len(candidates) > 0:
-                    warm_start_params = candidates[0]['profiled_params']
-                    # Handle case where interpolation returns None (no profiled dims)
-                    if warm_start_params is None:
-                        warm_start_params = None
-                    # Check for NaN values
-                    elif np.any(np.isnan(warm_start_params)):
-                        # Fallback: use nearest transferred point's parameters
-                        nearest_state = self.population[grid_idx]
-                        warm_start_params = nearest_state['profiled_params'][0]
-                else:
-                    # No candidates - use fallback
-                    nearest_state = self.population[grid_idx]
-                    warm_start_params = nearest_state['profiled_params'][0]
-
-                job = ActivationJob(
-                    job_id=next_job_id,
-                    sampler=self,
-                    grid_idx=neighbor_idx,
-                    warm_start_params=warm_start_params
-                )
-                jobs.append(job)
-                activation_job_created_for_grid_points.add(neighbor_idx)
-                self.pending_activation_indices.add(neighbor_idx)
-                next_job_id += 1
-
-        self.logger.info(f"--- Generating {len(jobs)} refinement activation jobs ---")
         return jobs, next_job_id
 
 
@@ -2279,7 +2150,7 @@ class ProfileProjector:
                 # so refinement is just a single target evaluation at the fine
                 # grid point. ActivationJob handles this natively in
                 # direct_eval_mode (single eval at grid coords, status set to
-                # 'converged'). Bypass interpolation/LBFGSB entirely — an
+                # 'done'). Bypass interpolation/LBFGSB entirely — an
                 # LBFGSBJob with n_opt_dims==0 hangs the master loop because
                 # its start() returns no tasks but stays in active_jobs.
                 if self.direct_eval_mode:
@@ -2328,7 +2199,7 @@ class ProfileProjector:
                         sampler=self,
                         grid_idx=fine_idx,
                         warm_start_params=all_prof_params[0],  # Initial params (will be overridden)
-                        mark_converged=True
+                        mark_done=True
                     )
                     # Override to evaluate all candidates
                     job.pop_size = len(all_prof_params)
@@ -2363,7 +2234,7 @@ class ProfileProjector:
                             sampler=self,
                             grid_idx=fine_idx,
                             warm_start_params=start_params_partial,
-                            mark_converged=True
+                            mark_done=True
                         )
                         # Override to force single evaluation
                         job.pop_size = 1
@@ -2442,71 +2313,33 @@ class ProfileProjector:
         spread = float(np.max(np.abs(phis - phis.mean(axis=0)) / extent))
         return spread < SKIP_DE_PHI_SPREAD
 
-    def create_de_generation_jobs(self, next_job_id, max_num_to_evolve):
-        """Generates all DEGridPointJobs for one generation."""
+    def create_de_generation_jobs(self, next_job_id):
+        """One DEGridPointJob per active grid point, for one generation."""
+        active = [idx for idx, state in self.population.items() if state['status'] == 'active']
 
-        successful_F = []
-        successful_CR = []
-
-        unconverged_indices = [idx for idx, state in self.population.items() if state['status'] == 'active']
-
-        if not unconverged_indices:
+        if not active:
             self.logger.info("All active points have converged. Ending DE phase.")
-            return [], next_job_id, successful_F, successful_CR
+            return [], next_job_id
 
-        # --- Prioritize which grid points to evolve ---
-        priority_scores = []
-        for idx in unconverged_indices:
-            state = self.population[idx]
-            fitness_score = max(0, state['best_fitness'] - (self.global_max_target_val - 2 * self.roi_threshold))
-            improvement_rate = np.mean(state['improvement_history']) if state['improvement_history'] else 0
-            improvement_score = improvement_rate * 10
-            pri_score = fitness_score + improvement_score + (1./len(unconverged_indices))
-            priority_scores.append(pri_score)
+        if len(self.population) < 4:
+            self.logger.info("Not enough activated points (<4) to perform DE. Waiting.")
+            return [], next_job_id
 
-        priority_scores = np.array(priority_scores)
-        probabilities = priority_scores / np.sum(priority_scores)
-
-        if max_num_to_evolve is not None:
-            num_to_evolve = min(len(unconverged_indices), max_num_to_evolve)
-        else:
-            num_to_evolve = len(unconverged_indices)
-
-        if num_to_evolve == 0:
-             return [], next_job_id, successful_F, successful_CR
-
-        indices_to_process_map = np.random.choice(
-            np.arange(len(unconverged_indices)),
-            size=num_to_evolve,
-            replace=False,
-            p=probabilities
-        )
-        indices_to_process = [unconverged_indices[i] for i in indices_to_process_map]
-
-        active_pop_list = list(self.activated_grid_indices)
-        if len(active_pop_list) < 4:
-            self.logger.info("Not enough active points (<4) to perform DE. Waiting.")
-            return [], next_job_id, successful_F, successful_CR
-
-        # --- Create parent and p-best pools ---
+        # Parent pool: the best member of every activated grid point, best
+        # first. Its leading pbest_fraction is the p-best archive.
         parent_pool = []
-        for idx in active_pop_list:
-            state = self.population[idx]
+        for state in self.population.values():
             best_idx = np.argmax(state['fitnesses'])
             parent_pool.append({
                 'profiled_params': state['profiled_params'][best_idx],
                 'fitness': state['fitnesses'][best_idx]
             })
+        parent_pool.sort(key=lambda p: p['fitness'], reverse=True)
+        pbest_size = max(1, int(len(parent_pool) * self.pbest_fraction))
+        pbest_archive = parent_pool[:pbest_size]
 
-        pbest_archive = []
-        if self.mutation_strategy == 'current-to-pbest/1':
-            parent_pool.sort(key=lambda p: p['fitness'], reverse=True)
-            pbest_size = max(1, int(len(parent_pool) * self.pbest_fraction))
-            pbest_archive = parent_pool[:pbest_size]
-
-        # --- Create a job for each selected grid point ---
         jobs = []
-        for grid_idx in indices_to_process:
+        for grid_idx in active:
             state = self.population[grid_idx]
             # allow_early_DE_exit: a fresh, skip-eligible cell takes a one-
             # generation window (set here) then the polish, not the full one.
@@ -2517,37 +2350,23 @@ class ProfileProjector:
                 state['conv_window'] = SKIP_DE_WINDOW
                 self.de_cells_skipped += 1
 
-            job = DEGridPointJob(
+            jobs.append(DEGridPointJob(
                 job_id=next_job_id,
                 sampler=self,
                 grid_idx=grid_idx,
                 parent_pool=parent_pool,
                 pbest_archive=pbest_archive,
-                successful_F_list=successful_F, # Pass shared list
-                successful_CR_list=successful_CR # Pass shared list
-            )
-            jobs.append(job)
+            ))
             next_job_id += 1
 
-        return jobs, next_job_id, successful_F, successful_CR
-
-    def update_de_memory(self, successful_F, successful_CR):
-        """Updates the F and CR memory after a DE generation."""
-        if successful_F:
-            weights = np.ones(len(successful_F)) # Simple mean
-            muF = np.sum(weights * np.array(successful_F)**2) / np.sum(weights * np.array(successful_F))
-            muCR = np.sum(weights * np.array(successful_CR)) / np.sum(weights)
-
-            self.memory_F[self.memory_idx] = muF
-            self.memory_CR[self.memory_idx] = muCR
-            self.memory_idx = (self.memory_idx + 1) % self.memory_size
+        return jobs, next_job_id
 
     def create_LBFGSB_job_for_point(self, grid_idx, next_job_id):
         """Spawn an L-BFGS-B polish job for a single converged grid point."""
         if self.direct_eval_mode or self.n_prof_dims == 0:
             state = self.population.get(grid_idx)
             if state:
-                state['status'] = 'optimized'
+                state['status'] = 'done'
             return None
 
         state = self.population.get(grid_idx)
@@ -2592,8 +2411,6 @@ class ProfileProjector:
         n = len(self.ahead_cells)
         for idx in self.ahead_cells:
             self.population.pop(idx, None)
-            self.profile_likelihood_grid.pop(idx, None)
-            self.activated_grid_indices.discard(idx)
             self.pending_activation_indices.discard(idx)
         self.ahead_cells = set()
         return n

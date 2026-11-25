@@ -24,7 +24,7 @@ def _make_sampler(enabled=False):
 
 
 def _set_cell(sampler, idx, profiled_params, fitness, warm_start_best=True,
-              status='optimized'):
+              status='done'):
     idx = idx if isinstance(idx, tuple) else (idx,)
     sampler.population[idx] = {
         'profiled_params': np.array([np.asarray(profiled_params, dtype=float)]),
@@ -32,7 +32,6 @@ def _set_cell(sampler, idx, profiled_params, fitness, warm_start_best=True,
         'best_fitness': float(fitness),
         'status': status,
         'improvement_history': [],
-        'last_update_gen': 0,
         'optimizer_state': None,
         'warm_start_best': warm_start_best,
     }
@@ -66,15 +65,13 @@ def test_gate_tags_skippable_and_counts():
     """create_de_generation_jobs gives a skip-eligible fresh cell the reduced
     window and counts it, leaving a non-eligible cell on the full window."""
     s = _make_sampler(enabled=True)
-    s.current_generation = 1
     for i in (3, 4, 6, 7):
         _set_cell(s, (i,), [0.4, -0.4], fitness=-0.32)
     _set_cell(s, (9,), [-3.5, 3.5], fitness=-0.34)            # outlier for (8,)
     _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
     _set_cell(s, (8,), [0.41, -0.40], fitness=-0.33, status='active')
-    s.activated_grid_indices = set(s.population.keys())
 
-    s.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
+    s.create_de_generation_jobs(next_job_id=0)
 
     assert s.population[(5,)].get('conv_window') == SKIP_DE_WINDOW
     assert s.population[(8,)].get('conv_window') is None
@@ -84,13 +81,11 @@ def test_gate_tags_skippable_and_counts():
 def test_disabled_leaves_full_window():
     s = _make_sampler(enabled=False)
     assert s.de_allow_early_DE_exit is False
-    s.current_generation = 1
     for i in (3, 4, 6, 7):
         _set_cell(s, (i,), [0.4, -0.4], fitness=-0.32)
     _set_cell(s, (5,), [0.41, -0.40], fitness=-0.33, status='active')
-    s.activated_grid_indices = set(s.population.keys())
 
-    s.create_de_generation_jobs(next_job_id=0, max_num_to_evolve=None)
+    s.create_de_generation_jobs(next_job_id=0)
 
     assert s.population[(5,)].get('conv_window') is None
     assert s.de_cells_skipped == 0
