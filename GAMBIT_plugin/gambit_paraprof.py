@@ -71,7 +71,10 @@ YAML options:
                              initial maxima before grid optimization. With basin
                              detection on (the default) it is a cap, not a fixed
                              spend (default min(400, 50*n_dims)).
-    max_patching_waves:      Cap on patching iterations (default 10).
+    max_patching_waves:      Cap on patching waves (default: the largest number of
+                             grid points along a projection dimension, so patching
+                             ends when a wave updates nothing). The border between
+                             two optima moves by one grid point per wave.
     lbfgsb_max_iter:         Max L-BFGS-B iterations per polish (default 50).
     lbfgsb_polish:           Apply L-BFGS-B polish after DE (default true).
     use_clustering:          Detect modes during refinement (default true).
@@ -128,7 +131,7 @@ YAML options:
                                                      derived from output_file)
     advanced_config:         Forwarded as-is to ProfileProjector. Sub-dicts:
                              'de', 'lbfgsb', 'clustering', 'cross_projection',
-                             'suspect_recheck'. See the paraprof README for the
+                             'basin_detection'. See the paraprof README for the
                              full key list.
                              For an expensive likelihood consider
                              'lbfgsb': {'ftol': 1e-4}.

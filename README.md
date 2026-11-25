@@ -103,9 +103,8 @@ A scan proceeds roughly as follows:
 4. Anchor a DE population (or an initial point for L-BFGS-B optimization) at each promising cell. One population slot is filled with the highest-fitness past evaluation nearest the cell (proximity warm-start), so later projections inherit useful starting points.
 5. Optimize the profiled parameters at each active cell. L-BFGS-B cells also reuse the best already-converged neighbour's quasi-Newton history and its best profiled parameters as an alternative start, propagating local curvature outward.
 6. Activate the neighbours of high-likelihood cells, expanding the active set into the region of interest.
-7. Patching: re-test each cell with its neighbours' best profiled parameters and polish any improvement.
-8. Suspect recheck: cells whose profiled parameters look discontinuous compared to their neighbourhood are re-optimized from diverse seed points. This breaks contiguous wrong-optimum strips that the fitness-only filter of the patching step cannot fix.
-9. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
+7. Patching: evaluate at each cell the best profiled parameters of its highest neighbour, and of every neighbour that holds a different optimum, and polish any improvement. Two neighbouring cells hold different optima if a profiled parameter jumps between them: its difference is far above what is usual between neighbours on this grid. Improved cells pass their parameters on in the next wave, so the border between two optima moves by one cell per wave until each cell holds the higher one.
+8. Optionally refine the grid: interpolate the coarse grid to warm-start a finer one.
 
 With several projections, the next one starts while the current one is still running, on workers the current one leaves idle. This happens once a tenth of the workers is idle and the newest projection has finished its first cell optimisation or DE generation. Earlier projections are served first. Projections with `grid_refinement_factor` or without profiled parameters are not overlapped. While projections overlap, log lines are prefixed with the projection number (`[P2]`), and the call count in a projection's `metrics` is that of the whole scan when the projection ended; `sampler.target_calls` holds the total. Set `cross_projection.eager_start` to `False` to run the projections one after another.
 
@@ -118,7 +117,7 @@ Common constructor arguments:
 - `roi_threshold` — region-of-interest cutoff in log-likelihood; cells with `logL > global_max - roi_threshold` are inside the ROI. Default 4.0.
 - `pop_per_grid_point` — DE population size per cell. Default 3.
 - `n_initial_optimizations` — cap on global L-BFGS-B starts before grid optimization. Default `min(400, 50 * n_dims)`. The Bayesian stopping rule sets the actual spend, so this can be set generously. With `basin_detection.undiscovered_threshold = 0` it is a fixed count, so set it explicitly.
-- `max_patching_waves` — cap on patching iterations. Default 10.
+- `max_patching_waves` — cap on patching waves. Default: the largest number of grid points along a projection dimension, so patching ends when a wave updates nothing. A lower cap can leave the border between two optima short of where it belongs.
 - `lbfgsb_max_iter`, `lbfgsb_polish` — L-BFGS-B iteration cap and whether to polish DE results. Defaults 50 and `True`.
 - `n_optima` — prior on how many optima the target has globally; use only when sure it has one or a few. Stops the initial multistart as soon as that many distinct optima are found (skipping the `min_starts` floor, so `n_optima=1` stops after the first converged start), or keeps it running until at least that many are found. Pass an `int` (exact) or `{'min': int, 'max': int}`.
 - `initial_points` — explicit starting points to activate; useful when you already know where the good regions are. They replace the global L-BFGS-B starts and are evaluated, not optimised.
@@ -180,8 +179,9 @@ Phase values (`paraprof.PHASE_*`, with descriptions in `paraprof.PHASE_LEGEND`):
 | `0` | `PHASE_INITIAL` | initial optimization (global maxima / basin detection) |
 | `1` | `PHASE_SCAN` | projection-grid scan (activation, DE, grid polish) |
 | `2` | `PHASE_REFINE` | grid refinement and patching |
-| `3` | `PHASE_SUSPECT` | suspect-cell recheck |
 | `4` | `PHASE_VOLUME` | volume sampling (ensemble of MCMC walkers) |
+
+Phase `3` was the suspect-cell recheck, a stage that no longer exists; sample files of earlier versions can hold it.
 
 Both formats round-trip through `warm_start_file`, so a run can append to and re-read its own file (the warm-start reader reads params and logL by position and ignores the phase column). They differ in crash safety: CSV re-opens per flush, so a crash loses at most the un-flushed buffer, while HDF5 keeps the file open and can truncate the final chunk on a hard kill — prefer CSV if that matters more than file size.
 
@@ -262,13 +262,6 @@ Pass an `advanced_config` dict to set these:
 | `cross_projection.proximity_warm_start`       | `True`             | Swap one LHS seed for the best nearby past evaluation. |
 | `cross_projection.pool_seeded_initial_maxima` | `True`             | Seed `initial_maxima` from the pool on later projections and skip the global L-BFGS-B starts. |
 | `cross_projection.eager_start`                | `True`             | Start the next projection while the current one runs, on workers it leaves idle. Work is handed out in the order the projections were started. Not for projections with `grid_refinement_factor`. Set `False` to run the projections one after another. |
-| `suspect_recheck.enabled`                     | `True`             | Run the suspect-cell recheck pass after patching. |
-| `suspect_recheck.max_waves`                   | `10`               | Cap on suspect-recheck waves. |
-| `suspect_recheck.param_k`                     | `3.0`              | MAD multiplier for the discontinuity threshold. Lower flags more cells. |
-| `suspect_recheck.max_fraction`                | `0.25`             | Hard cap on the fraction of ROI cells flagged per wave. |
-| `suspect_recheck.seeds_k_ring`                | `3`                | Max Chebyshev radius for extended-neighbour seeds. |
-| `suspect_recheck.seeds_from_pool`             | `3`                | Cross-projection pool seeds tested per suspect cell. |
-| `suspect_recheck.polish_threshold`            | `1e-3`             | Min logL improvement to trigger the L-BFGS-B polish. |
 | `basin_detection.batch_size`                  | `None`             | Optimizations kept in flight at once in the rolling multistart. `None` = FD-aware auto (≈ `n_workers` / per-gradient finite-difference fan-out, floored at 2). |
 | `basin_detection.undiscovered_threshold`      | `0.5`              | Stop once the expected number of undiscovered ROI optima falls below this. Higher = stops sooner; `0` disables early stopping (the stage then runs the full `n_initial_optimizations`). |
 | `basin_detection.min_starts`                  | `None`             | Minimum starts before the stopping rule may fire. `None` = `max(10, 3·n_dims)` (capped at `n_initial_optimizations`). |
@@ -285,7 +278,7 @@ A noise level far above `1e-12` is worth a look at the target: it also limits ho
 
 **Early exit from the DE search (`de.allow_early_DE_exit`).** A cell normally runs at least `de.convergence_window` DE generations to confirm convergence. With `de.allow_early_DE_exit=True` (the default), a newly activated cell whose in-population neighbours agree on the profiled argmax, and whose neighbour warm-start was the best activation seed, runs one DE generation and then goes to the L-BFGS-B polish. A cell that improves in that generation keeps evolving. The default suits targets where the profiled-out dimensions enter smoothly (e.g. Gaussian-constrained nuisances). Set it to `False` when the inner problem is multimodal (e.g. Rastrigin-4D): one DE generation then under-explores the modes.
 
-See the `ProfileProjector` docstring for the full structure. Some internal settings (`pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and not user-tunable. Each DE trial vector draws its scale factor F around 0.7 and its crossover rate CR around 0.5; these centres are constants in `jobs/de_job.py`.
+See the `ProfileProjector` docstring for the full structure. Some internal settings (`pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, the patching jump threshold, `activation.mix_ratios`) are module-level constants in `sampler.py` and not user-tunable.
 
 ### Projection options
 
@@ -332,7 +325,7 @@ paraprof/
 │   ├── exceptions.py
 │   └── logger.py
 ├── tests/
-├── tools/                    # virtual_pool.py (master on virtual workers), bench_scheduling.py
+├── tools/                    # virtual_pool.py (master on virtual workers), bench_scheduling.py, octant_lab.py
 └── examples/                 # `*_advanced.py` exercises advanced_config
 ```
 

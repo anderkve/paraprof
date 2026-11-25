@@ -1,7 +1,9 @@
 # Refinement at a border between two optima: finding and proposal
 
 Status: proposal, not implemented. Written November 2026, against the code
-after the removal of dead and inert code (changelog, Unreleased).
+after the removal of dead and inert code (changelog, Unreleased). Step 2 of
+the proposal was revised when patching got its test for a jump between
+neighbouring cells; the measurements were not repeated.
 
 ## Summary
 
@@ -48,12 +50,16 @@ flat between them.
    evaluate the candidates and start the L-BFGS-B run from the best. The value
    at the start is then known, so the run needs no initial evaluation.
 2. Take the candidates from a local test. Look at the coarse cells that
-   enclose the fine point: two or four in a 2D projection. If their profiled
-   parameters differ by more than a threshold, the candidates are the
-   interpolated point and the parameters of each enclosing cell. The measure
-   used below is the largest deviation of any enclosing cell from their mean,
-   per profiled parameter, as a fraction of the bound extent, with a threshold
-   of 0.05. This is the test `_is_de_skippable` applies to neighbours.
+   enclose the fine point: two or four in a 2D projection. If two of them are
+   across a jump in the profiled parameters, the candidates are the
+   interpolated point and the parameters of each enclosing cell. A jump is
+   what patching takes it to be (`_is_jump` in `sampler.py`): a difference in
+   some profiled parameter above the median plus three MAD of its differences
+   over all pairs of neighbouring coarse cells. Patching and refinement then
+   share one definition. The measurements below were made with a fixed
+   threshold instead: the largest deviation of any enclosing cell from their
+   mean, per profiled parameter, as a fraction of the bound extent, above
+   0.05. This is the test `_is_de_skippable` applies to neighbours.
 3. Use the same candidates in direct-evaluation mode.
 4. Remove the clustering: `cluster_coarse_grid_by_modes` and its helpers in
    `interpolation.py` (about 250 lines), `use_clustering`, the `clustering`
@@ -129,7 +135,8 @@ stage:
 | Straight border  | 2.6 %                 | 1.5 %      |
 
 For comparison, `patch_refined_grid=True` added 14 % on the straight-border
-target.
+target. Since patching also tests neighbours across a jump it adds about
+16 %.
 
 ### Direct-evaluation mode
 
@@ -162,12 +169,16 @@ Rastrigin, 2 on Levy), and the values differed by at most 1.2e-5.
 - Two constructed targets and four standard ones, five seeds, 2D projections,
   refinement factor 2, coarse grid from `'lbfgsb'`.
 - The candidate step in optimisation mode was emulated, not implemented.
-- The threshold of 0.05 was not varied. A border with a smaller jump is
-  missed. A steep but smooth region can pass the test; that costs evaluations,
-  not correctness.
+- The threshold of 0.05 was not varied, and the jump test of step 2 was not
+  measured in its place. In the (delta, m32) projection of `octant_6d` its
+  thresholds are 0.001 to 0.007 of the bound extent, so it flags smaller
+  jumps than 0.05 does, and more fine points. A steep but smooth region can
+  pass either test; that costs evaluations, not correctness.
 - Both optima must be present among the enclosing coarse cells. A coarse grid
-  that has the border in the wrong place is not corrected, apart from what
-  the candidates happen to reach.
+  that has the border in the wrong place is not corrected by the candidates,
+  apart from what they happen to reach. Patching of the coarse grid moves
+  such a border before refinement starts, as long as both optima are on the
+  grid.
 - A projection over more than two parameters has up to `2^k` enclosing cells
   for `k` projection parameters. The cost per flagged point grows with it.
 
@@ -175,17 +186,21 @@ Rastrigin, 2 on Levy), and the values differed by at most 1.2e-5.
 
 - The branch to change is the one in `create_refinement_lbfgsb_jobs` that
   takes `candidates[0]`.
-- `SuspectRecheckJob` already evaluates several seeds at a cell and starts an
-  L-BFGS-B run from the best. A refinement cell has no population entry yet,
-  so the run it starts must be of type `REFINEMENT_LBFGSB`, with
-  `start_fitness` set to the value found. `LBFGSBJob` then skips its initial
-  evaluation. The master handles a job started from `on_finish` already.
+- The job needed evaluates several candidates at a cell and starts an
+  L-BFGS-B run from the best. `SuspectRecheckJob` did this until the suspect
+  recheck was removed (changelog, Unreleased); the git history has it as a
+  model. A refinement cell has no population entry yet, so the run the job
+  starts must be of type `REFINEMENT_LBFGSB`, with `start_fitness` set to the
+  value found. `LBFGSBJob` then skips its initial evaluation. The master
+  handles a job started from `on_finish` already.
 - Enclosing coarse cells of a fine index `i` along one projection parameter,
   with refinement factor `rf`: `i // rf`, and `i // rf + 1` if `i % rf != 0`.
-- Differences between profiled parameters should go through `_param_delta`,
-  so that two values on either side of a periodic bound do not count as a
-  jump.
+- `_is_jump` takes differences through `_param_delta`, so two values on
+  either side of a periodic bound do not count as a jump. Its thresholds
+  belong to the coarse grid: `_jump_thresholds()`, which the first patching
+  wave stores. They have to be passed on with the coarse solution, and
+  computed there if the coarse grid was not patched.
 - In direct-evaluation mode the list of candidates can feed the existing path
   that evaluates several candidates in one `ActivationJob`.
 - The two constructed targets are small enough to serve as tests on virtual
-  workers, in the manner of `tests/test_suspect_recheck.py`.
+  workers, in the manner of `tests/test_patching.py`.

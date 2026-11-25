@@ -118,26 +118,6 @@ if myrank == 0:
                                                        # L-BFGS-B starts.
         },
 
-        # Suspect-recheck refinement waves. After the normal patching waves,
-        # paraprof re-optimizes ROI cells whose profiled-parameter values look
-        # discontinuous relative to their neighbours (a sign of a missed
-        # better optimum), seeding the recheck from extended neighbours and the
-        # global solution pool.
-        'suspect_recheck': {
-            'enabled': True,                           # Default: True
-            'max_waves': 10,                           # Default: 10. Max recheck waves
-            'param_k': 3.0,                            # Default: 3.0. MAD multiplier on the
-                                                       # profiled-param discontinuity that
-                                                       # flags a cell as suspect
-            'max_fraction': 0.25,                      # Default: 0.25. Safety cap on the
-                                                       # fraction of ROI cells rechecked per wave
-            'seeds_k_ring': 3,                         # Default: 3. Chebyshev radius for
-                                                       # extended-neighbour seeds
-            'seeds_from_pool': 3,                      # Default: 3. Number of pool seeds added
-            'polish_threshold': 1e-3,                  # Default: 1e-3. Min improvement over the
-                                                       # current value to trigger an L-BFGS-B polish
-        },
-
         # Initial-optimization basin detection. The initial multistart runs a
         # rolling Latin-hypercube set of L-BFGS-B starts, clusters converged
         # optima into distinct basins online, and applies a Bayesian stopping

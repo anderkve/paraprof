@@ -8,7 +8,7 @@ projections scanned in sequence and shown in a 3 x 2 panel grid:
 
 The first projection runs the full ParaProf pipeline (initial global
 L-BFGS-B sweep -> dynamic grid activation -> differential-evolution
-refinement -> patching waves -> suspect-cell recheck). Each subsequent
+refinement -> patching waves). Each subsequent
 projection is warm-started from the accumulated global solution pool,
 so its initial L-BFGS-B sweep is skipped and dynamic activation can
 start immediately. The animation shows, in every frame, the live grid
@@ -73,10 +73,7 @@ FUNC_NAME = "himmelblau_4d"
 GRID_PER_DIM = 60
 N_INITIAL_OPT = 20
 ROI_THRESHOLD = 5.0
-# ParaProf library defaults; matches the Rosenbrock animation. The
-# suspect-cell recheck pass on the main branch (PR #13) cleans up any
-# contiguous wrong-optimum strips, so the DE/LBFGSB knobs do not need
-# to be bumped above their library defaults.
+# ParaProf library defaults; matches the Rosenbrock animation.
 POP_PER_CELL = 3
 LBFGSB_ITER = 50
 MAX_PATCHING_WAVES = 10

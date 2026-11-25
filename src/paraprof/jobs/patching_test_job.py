@@ -1,5 +1,4 @@
 """Patching test job for wave-based patching verification."""
-import numpy as np
 from .base import Job
 
 
@@ -14,6 +13,9 @@ class PatchingTestJob(Job):
 
         # Store current best for comparison
         self.current_best_fitness = self.sampler.population[self.grid_idx]['best_fitness']
+        # A gain below what an L-BFGS-B run takes as converged is not one:
+        # two optima of equal height would otherwise be swapped back and forth.
+        self.min_gain = max(sampler.lbfgsb_ftol, 4.0 * sampler.lbfgsb_noise)
         self.test_fitness = None
         self.will_update = False
 
@@ -35,7 +37,7 @@ class PatchingTestJob(Job):
         self._is_finished = True
 
         # Check if we found an improvement
-        if self.test_fitness > self.current_best_fitness:
+        if self.test_fitness > self.current_best_fitness + self.min_gain:
             self.will_update = True
 
         return []
