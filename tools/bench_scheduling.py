@@ -202,7 +202,7 @@ def run(name, noise, n_workers, grid, method, roi, extra, seed):
         'evaluations': out['evaluations'], 'wall': out['wall'],
         'mean_busy_workers': out['mean_busy_workers'], 'utilisation': out['utilisation'],
         'cells': len(cells),
-        'cells_done': sum(s in ('converged', 'optimized') for s in status),
+        'cells_done': sum(s == 'done' for s in status),
         'roi_cells_true': int(in_roi.sum()),
         'global_max_error': out['global_max'] - tmax,
         'roi_err_median': float(np.median(err)) if len(err) else float('nan'),

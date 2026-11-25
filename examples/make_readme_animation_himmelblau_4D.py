@@ -120,6 +120,11 @@ PANEL_YLIM = (-5.0, 5.0)
 # ---------------------------------------------------------------------------
 
 
+def _grid_values(sampler) -> dict:
+    """Best target value of every activated grid point, by grid index."""
+    return {idx: state["best_fitness"] for idx, state in sampler.population.items()}
+
+
 class SnapshotCapturer:
     """Hooks the ProfileProjector to record periodic state snapshots."""
 
@@ -161,12 +166,9 @@ class SnapshotCapturer:
         active_count = sum(
             1 for st in s.population.values() if st.get("status") == "active"
         )
-        gen = int(getattr(s, "current_generation", 0) or 0)
         self._max_active_seen = max(self._max_active_seen, active_count)
         if pop_size == 0:
             return "initial_global_search"
-        if gen == 0:
-            return "dynamic_activation"
         if active_count == 0:
             return "patching"
         active_ratio = active_count / max(pop_size, 1)
@@ -176,9 +178,10 @@ class SnapshotCapturer:
 
     def capture(self, forced_phase: Optional[str] = None):
         s = self.sampler
+        grid_values = _grid_values(s)
         best_idx = None
         best_v = -np.inf
-        for idx, v in s.profile_likelihood_grid.items():
+        for idx, v in grid_values.items():
             if v > best_v:
                 best_v = v
                 best_idx = idx
@@ -189,7 +192,7 @@ class SnapshotCapturer:
             "global_max": float(s.global_max_target_val),
             "proj_idx": self.current_proj_idx,
             "proj_dims": tuple(s.projection_dims),
-            "grid_values": dict(s.profile_likelihood_grid),
+            "grid_values": grid_values,
             "active_cells": {idx for idx, state in s.population.items()
                              if state.get("status") == "active"},
             "best_fit_idx": best_idx,
@@ -553,14 +556,15 @@ def run_master(comm):
 
             cap.capture(forced_phase="frozen")
 
+            grid_values = _grid_values(sampler)
             best_idx = None
             best_v = -np.inf
-            for idx, v in sampler.profile_likelihood_grid.items():
+            for idx, v in grid_values.items():
                 if v > best_v:
                     best_v = v
                     best_idx = idx
             final_states[proj_idx] = {
-                "grid_values": dict(sampler.profile_likelihood_grid),
+                "grid_values": grid_values,
                 "best_fit_idx": best_idx,
                 "best_fit_value": best_v,
             }

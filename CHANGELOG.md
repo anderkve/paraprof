@@ -46,6 +46,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hypercube with ScannerBit's inverse prior transform. A point written as a
   list is rejected. Lists used to be passed on as unit-hypercube coordinates,
   although the plugin's docstring said physical coordinates.
+- **DE scale factor F is drawn around 0.7 instead of 0.5.** Each trial vector
+  still draws its own F (Cauchy, scale 0.1) and CR (normal around 0.5, scale
+  0.1). On four 4D test functions (24 seeds, one 2D projection) the calls
+  after the initial optimisation changed by +1 %, -2 %, -4 % and -5 %
+  (Himmelblau, Rosenbrock, Rastrigin, Levy; only the last is significant),
+  with no measurable change in the profile values.
+- A grid point that needs no further optimisation has the status `'done'`.
+  The two former names, `'converged'` and `'optimized'`, were never told
+  apart.
+
+### Removed
+- **DE F/CR adaptation memory** (`advanced_config['memory_size']`). One of
+  its `25 * max(grid_points)` slots was written per generation, and a scan
+  takes some tens of generations, so at most a few percent of the trial
+  vectors used an adapted value. Freezing the memory changed neither the
+  number of calls nor the profile values in the comparison above.
+- `advanced_config['de']['max_num_to_evolve']` and the priority scores that
+  chose which grid points to evolve under that cap. Every active grid point
+  is evolved in every generation, as it was with the default `None`.
+- Both keys are ignored if still given, like any unknown `advanced_config`
+  key.
+- `ProfileProjector.profile_likelihood_grid`. It mirrored
+  `population[grid_idx]['best_fitness']`; read that instead.
+- The `plot_settings` argument of `master_main`, which was not used. Plots
+  take their settings from `run_projection`, `run_all_projections` and
+  `run_scan` as before.
+- Code that could not be reached: the `POST_ACTIVATION_LBFGSB` stage, the
+  refinement variant of the activation stage, and the `rand/1` and
+  `current-to-rand/1` DE mutations.
 
 ### Fixed
 - A projection over all parameters (no profiled parameters) raised

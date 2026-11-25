@@ -187,7 +187,6 @@ def run_projection(comm, sampler, projection_config,
     master_main(
         comm=comm,
         sampler=sampler,
-        plot_settings=plot_settings,
         skip_init_opt_on_warm_start=skip_init_opt_on_warm_start,
         myrank=myrank,
         eager=eager,
@@ -225,7 +224,6 @@ def run_projection(comm, sampler, projection_config,
         master_main(
             comm=comm,
             sampler=sampler,
-            plot_settings=plot_settings,
             skip_init_opt_on_warm_start=True,  # Always skip for refinement
             myrank=myrank
         )
@@ -631,8 +629,6 @@ class _ProjectionRun:
 
         # DE stage state
         self.de_generation = 0
-        self.de_successful_F = []
-        self.de_successful_CR = []
 
         # Wave-based patching state
         self.patching_wave_number = 0
@@ -678,8 +674,7 @@ class _ProjectionLabel(logging.Filter):
         return True
 
 
-def master_main(comm, sampler,
-                plot_settings=None, skip_init_opt_on_warm_start=True,
+def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 myrank=0, eager=None):
     """State-machine main loop: dispatches jobs and processes results until done.
 
@@ -779,7 +774,7 @@ def master_main(comm, sampler,
         """Add tasks to appropriate priority queue based on job type."""
         if job is not None and _is_ahead(job):
             R.ahead_tasks.extend(tasks)
-        elif job_type in ['NOISE_ESTIMATE', 'PERIODIC_CHECK', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'POST_ACTIVATION_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
+        elif job_type in ['NOISE_ESTIMATE', 'PERIODIC_CHECK', 'INITIAL_OPTIMIZATION', 'LBFGSB', 'REFINEMENT_LBFGSB', 'LBFGSB_LOOP', 'PATCHING_TEST', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK', 'SUSPECT_RECHECK_LBFGSB']:
             R.high_prio_tasks.extend(tasks)
         else:
             # DE_GRID_POINT, ACTIVATION go to low priority
@@ -939,19 +934,11 @@ def master_main(comm, sampler,
             R.current_stage = 'WAITING_FOR_INITIAL_OPT'
 
         elif R.current_stage == 'ACTIVATION':
-            # Use refinement activation for refinement runs
-            if sampler.is_refinement_run:
-                new_jobs, next_job_id = sampler.create_refinement_activation_jobs(next_job_id)
-                if not new_jobs:
-                    logger.info("No refinement activation jobs created. Moving to next stage.")
-                    R.next_stage()
-                    return True
-            else:
-                new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
-                if not new_jobs:
-                    logger.info("No activation jobs created (no initial maxima?). Moving to next stage.")
-                    R.next_stage()
-                    return True
+            new_jobs, next_job_id = sampler.create_activation_jobs(next_job_id)
+            if not new_jobs:
+                logger.info("No activation jobs created (no initial maxima?). Moving to next stage.")
+                R.next_stage()
+                return True
 
         elif R.current_stage == 'DE_LOOP':
             # Repeats once per DE generation.
@@ -960,16 +947,10 @@ def master_main(comm, sampler,
                 R.next_stage()
                 return True
 
-            if R.de_generation > 0:
-                sampler.update_de_memory(R.de_successful_F, R.de_successful_CR)
-
             R.de_generation += 1
-            sampler.current_generation = R.de_generation
             logger.info(f"--- Master: Starting DE Generation {R.de_generation} ---")
 
-            new_de_jobs, next_job_id, R.de_successful_F, R.de_successful_CR = sampler.create_de_generation_jobs(
-                next_job_id, sampler.de_max_num_to_evolve
-            )
+            new_de_jobs, next_job_id = sampler.create_de_generation_jobs(next_job_id)
 
             # --- Add dynamic activation jobs ---
             new_act_jobs, next_job_id = sampler.create_dynamic_activation_jobs(next_job_id)
@@ -981,12 +962,12 @@ def master_main(comm, sampler,
             converged_count = total_grid_points - active_count
             newly_activated_count = len(new_act_jobs)
 
-            logger.info(f"Gen {sampler.current_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
+            logger.info(f"Gen {R.de_generation:4d} | Calls: {sampler.target_calls/1e3:6.1f}k | "
                   f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
                   f"Global Max logL: {sampler.global_max_target_val:.4e} | "
                   f"New Activations: {newly_activated_count:3d}")
 
-            if not new_jobs and not R.de_successful_F: # DE converged and no new activations
+            if not new_jobs: # DE converged and no new activations
                 logger.info("--- Master: DE converged and no new activations. ---")
                 R.next_stage()
                 return True
@@ -1003,7 +984,7 @@ def master_main(comm, sampler,
             # --- Print iteration summary ---
             total_grid_points = len(sampler.population)
             active_count = len([s for s in sampler.population.values() if s['status'] == 'active'])
-            converged_count = len([s for s in sampler.population.values() if s['status'] in ['converged', 'optimized']])
+            converged_count = len([s for s in sampler.population.values() if s['status'] == 'done'])
             newly_activated_count = len(new_act_jobs)
 
             logger.info(f"LBFGSB Iter | Calls: {sampler.target_calls/1e3:6.1f}k | "
@@ -1104,15 +1085,6 @@ def master_main(comm, sampler,
 
             if not new_jobs:
                 logger.info("--- Master: No refinement LBFGSB jobs created. Ending refinement. ---")
-                R.next_stage()
-                return True
-
-        elif R.current_stage == 'POST_ACTIVATION_LBFGSB':
-            # L-BFGS-B on all activated cells.
-            new_jobs, next_job_id = sampler.create_post_activation_lbfgsb_jobs(next_job_id)
-
-            if not new_jobs:
-                logger.info("--- Master: No post-activation L-BFGS-B jobs created. ---")
                 R.next_stage()
                 return True
 
@@ -1227,7 +1199,7 @@ def master_main(comm, sampler,
                     idle = R.idle_after_dispatch
                     if job.type == 'ACTIVATE_GRID_POINT':
                         new_job, next_job_id = sampler.create_lbfgsb_job_for_active_cell(
-                            job.grid_idx, next_job_id, 'LBFGSB_LOOP', 'converged')
+                            job.grid_idx, next_job_id)
                         if new_job is not None:
                             rolling.append(new_job)
                     # Eager activation: with workers idle, a cell whose
@@ -1443,8 +1415,7 @@ def master_main(comm, sampler,
             if run.current_stage == 'LBFGSB_LOOP' and now - run.last_progress_log > PROGRESS_LOG_INTERVAL:
                 run.last_progress_log = now
                 _switch(run)
-                done = sum(1 for st in sampler.population.values()
-                           if st['status'] in ('converged', 'optimized'))
+                done = sum(1 for st in sampler.population.values() if st['status'] == 'done')
                 logger.info(f"LBFGSB Loop | Calls: {sampler.target_calls/1e3:6.1f}k | "
                             f"Grid Pts (done/tot): {done:4d}/{len(sampler.population):4d} | "
                             f"Global Max logL: {sampler.global_max_target_val:.4e} | "

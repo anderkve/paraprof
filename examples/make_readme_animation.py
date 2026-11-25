@@ -94,6 +94,11 @@ CONTOUR_LINEWIDTHS = [1.0, 1.6]
 # Snapshot capture
 # ---------------------------------------------------------------------------
 
+def _grid_values(sampler) -> dict:
+    """Best target value of every activated grid point, by grid index."""
+    return {idx: state["best_fitness"] for idx, state in sampler.population.items()}
+
+
 class SnapshotCapturer:
     """Hooks the ProfileProjector to record periodic state snapshots."""
 
@@ -137,12 +142,11 @@ class SnapshotCapturer:
     def _classify_phase(self, forced: Optional[str] = None) -> str:
         """Infer the algorithmic phase from observable sampler state.
 
-        The sampler's *current_generation* counter is the cleanest tell:
-            - == 0 and population empty -> initial L-BFGS-B global search
-            - == 0 and population non-empty -> activation (warm-started or
-              right after the initial sweep populated the grid)
-            - > 0 with active cells -> DE/dynamic activation
-            - > 0 with no active cells -> patching wave
+            - population empty -> initial L-BFGS-B global search
+            - active cells, frontier still growing -> dynamic activation
+              (also right after a warm start, when every cell is active)
+            - few active cells, frontier saturated -> DE refinement
+            - no active cells -> patching wave
         """
         if forced is not None:
             return forced
@@ -152,18 +156,11 @@ class SnapshotCapturer:
         active_count = sum(
             1 for st in s.population.values() if st.get("status") == "active"
         )
-        gen = int(getattr(s, "current_generation", 0) or 0)
 
         self._max_active_seen = max(self._max_active_seen, active_count)
 
         if pop_size == 0:
             return "initial_global_search"
-
-        # When the second projection warm-starts, the grid populates almost
-        # instantly without an initial L-BFGS-B sweep -- skip straight to
-        # dynamic activation in that case.
-        if gen == 0:
-            return "dynamic_activation"
 
         if active_count == 0:
             return "patching"
@@ -180,9 +177,10 @@ class SnapshotCapturer:
     def capture(self, forced_phase: Optional[str] = None):
         s = self.sampler
 
+        grid_values = _grid_values(s)
         best_idx = None
         best_v = -np.inf
-        for idx, v in s.profile_likelihood_grid.items():
+        for idx, v in grid_values.items():
             if v > best_v:
                 best_v = v
                 best_idx = idx
@@ -195,7 +193,7 @@ class SnapshotCapturer:
             "proj_idx": self.current_proj_idx,
             "proj_dims": tuple(s.projection_dims),
             "grid_axes": [np.asarray(a).copy() for a in s.grid_axes],
-            "grid_values": dict(s.profile_likelihood_grid),
+            "grid_values": grid_values,
             "active_cells": {idx for idx, state in s.population.items()
                              if state.get("status") == "active"},
             "best_fit_idx": best_idx,
@@ -613,14 +611,15 @@ def run_master(comm):
             cap.capture(forced_phase="frozen")
 
             if proj_idx == 0:
+                grid_values = _grid_values(sampler)
                 best_idx = None
                 best_v = -np.inf
-                for idx, v in sampler.profile_likelihood_grid.items():
+                for idx, v in grid_values.items():
                     if v > best_v:
                         best_v = v
                         best_idx = idx
                 frozen_p1 = {
-                    "grid_values": dict(sampler.profile_likelihood_grid),
+                    "grid_values": grid_values,
                     "best_fit_idx": best_idx,
                     "best_fit_value": best_v,
                 }

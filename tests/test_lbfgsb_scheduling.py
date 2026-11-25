@@ -74,7 +74,7 @@ def test_scan_reaches_exact_profile(n_workers):
     assert np.all(err <= 1e-9)            # a stored value never exceeds the true profile
     assert err.min() > -1e-5
     assert abs(out['global_max'] + 10.0) < 1e-6
-    assert all(st['status'] in ('converged', 'optimized') for st in out['population'].values())
+    assert all(st['status'] == 'done' for st in out['population'].values())
 
 
 def test_noisy_target_is_profiled_to_its_noise():
@@ -83,7 +83,7 @@ def test_noisy_target_is_profiled_to_its_noise():
     err = roi_errors(out)
     assert err.min() > -100 * amp
     assert out['global_max'] > -10.0 - 100 * amp
-    assert all(st['status'] in ('converged', 'optimized') for st in out['population'].values())
+    assert all(st['status'] == 'done' for st in out['population'].values())
 
 
 def test_more_workers_shorten_the_scan():
@@ -275,7 +275,7 @@ def test_activation_depth_keeps_the_cells_and_their_values():
     assert set(deep['population']) == set(base['population'])
     assert roi_errors(deep).min() > -1e-5
     assert abs(deep['global_max'] + 10.0) < 1e-6
-    assert all(st['status'] in ('converged', 'optimized') for st in deep['population'].values())
+    assert all(st['status'] == 'done' for st in deep['population'].values())
     # The cells ahead cost evaluations.
     assert deep['target_calls'] > base['target_calls']
 

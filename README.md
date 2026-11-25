@@ -250,12 +250,10 @@ Pass an `advanced_config` dict to set these:
 
 | Key                                | Default                        | What it does                                                     |
 |------------------------------------|--------------------------------|------------------------------------------------------------------|
-| `memory_size`                      | `max(grid_sizes) * 25`         | DE F/CR adaptation memory size                                   |
 | `convergence_threshold`            | `1e-6`                         | DE per-cell convergence cutoff                                   |
 | `de.convergence_window`            | `3`                            | Generations of no-improvement before DE declares convergence     |
 | `de.allow_early_DE_exit`           | `True`                         | Cells whose neighbours agree on the profiled argmax run one DE generation, then the L-BFGS-B polish (see below). Set `False` for multimodal-inner targets |
 | `de.num_generations`               | `100000`                       | Hard cap on DE generations                                       |
-| `de.max_num_to_evolve`             | `None`                         | Cap on cells evolved per generation                              |
 | `lbfgsb.ftol`                      | `1e-9`                         | L-BFGS-B function tolerance. For a profile likelihood `1e-4` is far below what a contour shows and saves iterations |
 | `lbfgsb.gradient_method`           | `'forward'`                    | `'forward'` or `'central'` (~50% more calls)                     |
 | `lbfgsb.fd_step`                   | `'auto'`                       | Finite-difference step as a fraction of the bound extent. `'auto'` sets it from a noise estimate of the target |
@@ -287,7 +285,7 @@ A noise level far above `1e-12` is worth a look at the target: it also limits ho
 
 **Early exit from the DE search (`de.allow_early_DE_exit`).** A cell normally runs at least `de.convergence_window` DE generations to confirm convergence. With `de.allow_early_DE_exit=True` (the default), a newly activated cell whose in-population neighbours agree on the profiled argmax, and whose neighbour warm-start was the best activation seed, runs one DE generation and then goes to the L-BFGS-B polish. A cell that improves in that generation keeps evolving. The default suits targets where the profiled-out dimensions enter smoothly (e.g. Gaussian-constrained nuisances). Set it to `False` when the inner problem is multimodal (e.g. Rastrigin-4D): one DE generation then under-explores the modes.
 
-See the `ProfileProjector` docstring for the full structure. Some internal settings (`mutation_strategy`, `pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and not user-tunable.
+See the `ProfileProjector` docstring for the full structure. Some internal settings (`pbest_fraction`, `neighbor_pull_probability`, `global_pool_size`, `patching.n_neighbors`, `activation.mix_ratios`) are module-level constants in `sampler.py` and not user-tunable. Each DE trial vector draws its scale factor F around 0.7 and its crossover rate CR around 0.5; these centres are constants in `jobs/de_job.py`.
 
 ### Projection options
 

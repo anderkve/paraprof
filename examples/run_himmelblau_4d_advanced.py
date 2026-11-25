@@ -68,16 +68,12 @@ if myrank == 0:
 
     # For expert users: demonstrate the advanced_config dict with ALL parameters
     # This shows how to access every configuration option if needed
-    max_grid_points = max(len(proj['grid_points']) for proj in PROJECTIONS_TO_RUN)
-
     advanced_config = {
-        'memory_size': max_grid_points * 25,      # Default: max_grid_size * 25
         'convergence_threshold': 1e-3,            # Default: roi_threshold / 1000
 
         'de': {
             'convergence_window': 3,              # Default: 3
             'num_generations': 100000,            # Default: 100000
-            'max_num_to_evolve': None,            # Default: None (all grid points)
             'allow_early_DE_exit': True,          # Default: True. A fresh, skip-eligible cell
                                                   # whose seed population is already converged
                                                   # exits DE early. Set False for genuinely
