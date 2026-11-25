@@ -73,8 +73,7 @@ def evaluate_task(task, target_func, grad_func, rank, logger):
             )
             target_val = -np.inf
 
-    # Skip grad_func if the target eval failed — gradient at a bad point
-    # is meaningless.
+    # No gradient at a point where the target evaluation failed.
     user_gradient = None
     user_gradient_error = None
     if (context.get('compute_gradient') and grad_func is not None
@@ -114,8 +113,8 @@ def worker_main(comm, myrank, target_func=None, grad_func=None):
     logger = setup_logger(rank=myrank)
 
     if target_func is None:
-        # Accept both the legacy bare-callable broadcast and the new
-        # (target_func, grad_func) tuple form.
+        # The broadcast is either a bare callable or a
+        # (target_func, grad_func) tuple.
         payload = comm.bcast(None, root=0)
         if (isinstance(payload, tuple) and len(payload) == 2
                 and (payload[0] is None or callable(payload[0]))):

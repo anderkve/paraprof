@@ -306,7 +306,7 @@ def run_all_projections(comm, sampler, projections,
         if proj_idx > 0:
             sampler._reset_for_new_projection(projection_config)
 
-        # Enable warm start after first projection
+        # Projections after the first warm-start from the earlier ones.
         skip_init_opt = (proj_idx > 0)
 
         # eager_start: the eligible projections that follow may be started
@@ -347,10 +347,8 @@ def run_all_projections(comm, sampler, projections,
             logger.info(f"=== Completed Projection {proj_idx + 1}/{len(projections)} ===")
             logger.info("=" * 80)
 
-    # Optional post-projection volume-sampling stage (see volume.py and
-    # docs/volume_sampling_plan.md). Result is stashed on
-    # sampler.volume_stage_result; the per-projection result list is
-    # returned unchanged.
+    # Optional volume-sampling stage. Its result goes to
+    # sampler.volume_stage_result, not into the returned list.
     if getattr(sampler, 'volume_sampling_config', None):
         run_volume_sampling(comm, sampler, all_results, myrank=myrank)
 
@@ -423,10 +421,9 @@ def run_volume_sampling(comm, sampler, projection_results, myrank=0):
     """Run the post-projection volume-sampling stage (master side).
 
     Populates the ROI ``{logL > global_max - roi_threshold}`` with an
-    affine-invariant ensemble of umbrella walkers (see
-    docs/volume_sampling_plan.md), seeded inside the ProjectionEnvelope built
-    from ``projection_results``. Requires ``sampler.volume_sampling_config``
-    and live workers. Returns the stage-result dict (also stored on
+    affine-invariant ensemble of umbrella walkers, seeded inside the
+    ProjectionEnvelope built from ``projection_results``. Requires
+    ``sampler.volume_sampling_config`` and live workers. Returns the stage-result dict (also stored on
     ``sampler.volume_stage_result``); a dict with ``skipped=True`` and a
     ``reason`` when it cannot run.
     """
@@ -647,11 +644,9 @@ class _ProjectionRun:
         self.suspect_wave_test_jobs = set()
         self.suspect_wave_lbfgsb_jobs = set()
 
-        # Rolling initial-optimization (basin detection) state. The stage
-        # keeps `initial_opt_batch_size` global L-BFGS-B starts in flight,
-        # classifying each converged optimum and refilling until the Bayesian
-        # stopping rule trips or the `initial_opt_cap` (=
-        # n_initial_optimizations) is reached.
+        # Rolling initial optimization (basin detection): keep
+        # `initial_opt_batch_size` global L-BFGS-B starts in flight until the
+        # stopping rule trips or `initial_opt_cap` starts have been made.
         self.initial_opt_inflight = set()   # job IDs of in-flight INITIAL_OPTIMIZATION jobs
         self.initial_opt_started = 0        # starts launched so far
         self.initial_opt_completed = 0      # starts finished so far (incl. failures)
@@ -705,7 +700,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
         # Define the workflow stages (different for refinement runs only)
         if sampler.is_refinement_run:
             stages = ['REFINEMENT_LBFGSB']
-            # Disable patching in direct evaluation mode (no profiled params to share)
+            # No patching in direct evaluation mode (no profiled params to share).
             if sampler.patch_refined_grid and not sampler.direct_eval_mode:
                 stages.append('PATCHING_WAVES')
                 if sampler.suspect_recheck_enabled:
@@ -720,9 +715,8 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             # Periodic parameters: compare the target at their two bounds.
             if sampler.needs_periodic_check():
                 stages.append('PERIODIC_CHECK')
-            # Evaluate user-supplied initial points first (if any). This stage is
-            # only added on the first projection that sees them; the job sets
-            # ``_initial_points_evaluated`` once complete.
+            # User-supplied initial points are evaluated once, in the first
+            # projection; the job then sets ``_initial_points_evaluated``.
             if (sampler.initial_points is not None
                     and not sampler._initial_points_evaluated):
                 stages.append('INITIAL_POINTS_EVAL')
@@ -836,11 +830,9 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             initial_tasks = job.start()
             _queue_tasks(initial_tasks, job.type, job)
             _offer_speculation(job)
-            # A job may finish during start() without dispatching any tasks
-            # (e.g. an LBFGSBJob with zero dims to optimize). Without this
-            # cleanup it would stay in active_jobs forever and hang the
-            # main loop, since the finalization path below only runs when
-            # a result arrives.
+            # A job can finish in start() without tasks (e.g. an LBFGSBJob
+            # with no dims to optimize). Finalize it here, since the main
+            # loop only finalizes jobs when a result arrives.
             if not initial_tasks and job.is_finished():
                 job.on_finish(next_job_id)
                 del R.active_jobs[job.id]
@@ -873,25 +865,22 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             new_jobs, next_job_id = sampler.create_periodic_check_job(next_job_id)
 
         elif R.current_stage == 'INITIAL_POINTS_EVAL':
-            # Evaluate user-supplied initial_points via the standard Job
-            # path so the master result-handler does the bookkeeping
-            # (samples_output_file, global solution pool, etc.).
+            # Run as an ordinary job so the result handler does the
+            # bookkeeping (sample file, global solution pool).
             new_jobs, next_job_id = sampler.create_initial_points_eval_job(next_job_id)
             if not new_jobs:
                 R.next_stage()
                 return True
 
         elif R.current_stage == 'INITIAL_OPTIMIZATION':
-            # Try to initialize from a warm-start file (separate from the
-            # samples output file; see ProfileProjector.warm_start_file).
+            # Warm-start file (not the samples output file; see
+            # ProfileProjector.warm_start_file).
             if R.skip_init_opt_on_warm_start and sampler.warm_start_file:
                 sampler._initialize_from_warm_start_file(sampler.warm_start_file)
 
-            # In-memory cross-projection seeding: skip the global L-BFGS-B
-            # starts on projections 2..N when the accumulated pool already
-            # covers the relevant peaks. Falls through to the original
-            # initial-optimization path when the pool is empty (first
-            # projection) or the feature is disabled.
+            # Projections after the first take their initial maxima from the
+            # global solution pool, if enabled and non-empty, and skip the
+            # global L-BFGS-B starts.
             if (R.skip_init_opt_on_warm_start
                     and not sampler.initial_maxima
                     and sampler.pool_seeded_initial_maxima
@@ -903,16 +892,14 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             n_refine = sampler.start_initial_point_refinement()
             R.initial_opt_refining = n_refine > 0
 
-            # If maxima already came from warm start / pool seeding, skip the
-            # global optimization stage entirely.
+            # Maxima from warm start or the pool: no global optimization.
             if sampler.initial_maxima and not R.initial_opt_refining:
                 logger.info("Skipping initial optimization - using provided initial points or warm start.")
                 R.next_stage()
                 return True
 
-            # Rolling multistart with online basin detection. Launch a
-            # first batch and hand control to WAITING_FOR_INITIAL_OPT,
-            # which refills and applies the stopping rule as jobs return.
+            # Launch the first batch. WAITING_FOR_INITIAL_OPT refills it and
+            # applies the stopping rule as jobs return.
             R.initial_opt_started = 0
             R.initial_opt_completed = 0
             R.initial_opt_stopped = False
@@ -941,8 +928,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 R.initial_opt_started += 1
 
             if not new_jobs:
-                # Degenerate cap (e.g. n_initial_optimizations == 0):
-                # nothing to optimize, move on.
+                # Nothing to do, e.g. n_initial_optimizations == 0.
                 R.next_stage()
                 return True
             R.current_stage = 'WAITING_FOR_INITIAL_OPT'
@@ -955,7 +941,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 return True
 
         elif R.current_stage == 'DE_LOOP':
-            # This stage loops
+            # Repeats once per DE generation.
             if R.de_generation >= sampler.de_num_generations:
                 logger.info("--- Master: DE generations complete. ---")
                 R.next_stage()
@@ -980,7 +966,6 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                   f"Grid Pts (act/conv/tot): {active_count:4d}/{converged_count:4d}/{total_grid_points:4d} | "
                   f"Global Max logL: {sampler.global_max_target_val:.4e} | "
                   f"New Activations: {newly_activated_count:3d}")
-            # --- End Print ---
 
             if not new_jobs: # DE converged and no new activations
                 logger.info("--- Master: DE converged and no new activations. ---")
@@ -988,10 +973,8 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 return True
 
         elif R.current_stage == 'LBFGSB_LOOP':
-            # Iterative L-BFGS-B optimization with dynamic activation
-            # Similar to DE_LOOP but using gradient-based optimization
-
-            # Create L-BFGS-B jobs for all active (non-converged) grid points
+            # L-BFGS-B jobs for all active cells, plus activation of the
+            # neighbours of cells inside the region of interest.
             new_lbfgsb_jobs, next_job_id = sampler.create_lbfgsb_loop_jobs(next_job_id)
 
             # Create dynamic activation jobs for neighbors of high-likelihood points
@@ -1044,7 +1027,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 R.next_stage()
                 return True
 
-            # Record baseline fitness for all grid points at wave start
+            # Fitness at wave start, to find the cells the wave improved.
             R.patching_wave_baseline_fitness = {
                 idx: state['best_fitness']
                 for idx, state in sampler.population.items()
@@ -1058,8 +1041,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             R.current_stage = 'WAITING_FOR_PATCHING_WAVE'
 
         elif R.current_stage == 'WAITING_FOR_PATCHING_WAVE':
-            # This stage just waits for wave jobs to complete
-            # Wave is complete when checked in job completion handling
+            # Wave completion is checked when its jobs finish.
             pass
 
         elif R.current_stage == 'SUSPECT_RECHECK_WAVES':
@@ -1098,7 +1080,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
             pass
 
         elif R.current_stage == 'REFINEMENT_LBFGSB':
-            # For refinement runs, directly create LBFGSB jobs from interpolated starts
+            # L-BFGS-B from starts interpolated from the coarse grid.
             new_jobs, next_job_id = sampler.create_refinement_lbfgsb_jobs(next_job_id)
 
             if not new_jobs:
@@ -1110,8 +1092,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
         # --- Add new jobs to active pool and queue initial tasks ---
         _start_jobs(new_jobs)
 
-        # If we just finished a non-looping stage, advance to the next
-        # Looping stages: DE_LOOP, LBFGSB_LOOP (they re-run after jobs complete)
+        # Looping and waiting stages stay current; the others advance.
         if R.current_stage not in ['DE_LOOP', 'LBFGSB_LOOP',
                                  'WAITING_FOR_PATCHING_WAVE',
                                  'WAITING_FOR_SUSPECT_WAVE',
@@ -1137,7 +1118,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
 
         # --- 2. Check for and process ALL available results ---
         while comm.Iprobe(source=MPI.ANY_SOURCE):
-            # A message is waiting, so now we do a blocking (but instant) receive
+            # A message is waiting, so this receive returns at once
             result = comm.recv(source=MPI.ANY_SOURCE)
             worker_rank = result['context']['worker_rank']
             free_workers.append(worker_rank)
@@ -1186,7 +1167,7 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                 if is_suspect_lbfgsb_job:
                     R.suspect_wave_lbfgsb_jobs.remove(job_id_finished)
 
-                # This updates the sampler state and can spawn a new job
+                # Updates the sampler state; may return a new job.
                 spawn_result = job.on_finish(next_job_id)
                 del R.active_jobs[job_id_finished]
 
@@ -1277,10 +1258,10 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                     logger.info(f"--- Master: Patching Wave {R.patching_wave_number} complete. Updated {len(updated_points)} points ---")
 
                     if updated_points:
-                        # Start next wave with updated points as seeds
+                        # The improved cells seed the next wave.
                         R.patching_updated_last_wave = updated_points
                         R.patching_wave_number += 1
-                        R.current_stage = 'PATCHING_WAVES'  # Loop back to start next wave
+                        R.current_stage = 'PATCHING_WAVES'
                     else:
                         # No updates, patching converged
                         logger.info("--- Master: No updates in wave. Patching converged. ---")
@@ -1309,9 +1290,8 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                         logger.info("--- Master: No updates in wave. Suspect recheck converged. ---")
                         R.next_stage()
 
-                # Rolling initial-optimization with basin detection. The job's
-                # on_finish has already clustered its endpoint into the registry;
-                # here we apply the stopping rule and refill the in-flight batch.
+                # Basin detection: on_finish has clustered the job's optimum;
+                # apply the stopping rule and refill the batch.
                 if R.current_stage == 'WAITING_FOR_INITIAL_OPT' and \
                    job_id_finished in R.initial_opt_inflight:
 
@@ -1338,11 +1318,9 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                                     and n_distinct >= sampler.basin_max_optima)
                                 else "stopping rule met"
                             )
-                            # Abort the still-running optimizations -- their
-                            # remaining evaluations would be pure overshoot.
-                            # Dropping them from active_jobs makes their in-flight
-                            # results get ignored; queued tasks are purged. (The
-                            # cap branch above keeps runs we've already paid for.)
+                            # Abort the runs still in flight: their queued tasks
+                            # are purged and results already out are ignored.
+                            # At the cap (above) running starts are kept.
                             aborted = set(R.initial_opt_inflight)
                             for jid in aborted:
                                 R.active_jobs.pop(jid, None)
@@ -1443,17 +1421,11 @@ def master_main(comm, sampler, skip_init_opt_on_warm_start=True,
                             f"Global Max logL: {sampler.global_max_target_val:.4e} | "
                             f"Busy workers: {n_workers - len(free_workers):4d}/{n_workers}")
 
-        # Completed sends are dropped as the scan goes, so the list does not
-        # grow with the number of evaluations.
+        # Drop completed sends so the list does not grow with the scan.
         if len(pending_sends) >= PENDING_SENDS_PRUNE:
             pending_sends = [r for r in pending_sends if not r.Test()]
 
-        # --- 4. No Sleep Needed ---
-        # Iprobe() is non-blocking and very lightweight, so no sleep is needed.
-        # The loop will naturally wait for results or new tasks to become available.
-
-
-    # --- End of Main Event Loop ---
+        # The loop polls with Iprobe and does not sleep.
 
     # Wait for all pending non-blocking sends to complete
     if pending_sends:

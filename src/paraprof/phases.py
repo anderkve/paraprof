@@ -4,10 +4,10 @@ Every evaluation paraprof records streams into the single
 ``samples_output_file`` as a row ``[params..., logL, phase]``, where
 ``phase`` is one of the integer constants below identifying the algorithm
 stage that produced the point. Filtering on this column recovers any
-subset — e.g. the volume-sampling evaluations, or just the refinement points.
+subset, e.g. the volume-sampling evaluations or the refinement points.
 
-The phase is derived master-side from the producing job's ``type`` (see
-:data:`JOB_TYPE_TO_PHASE`), so no MPI payload changes are needed.
+The master derives the phase from the producing job's ``type`` (see
+:data:`JOB_TYPE_TO_PHASE`).
 """
 
 PHASE_UNKNOWN = -1        # producing stage not identified

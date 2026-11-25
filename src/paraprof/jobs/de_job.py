@@ -33,8 +33,7 @@ class DEGridPointJob(Job):
         self.pop_size = self.sampler.pop_per_grid_point
         self.evals_remaining = self.pop_size
 
-        # Trial vectors by population slot, to process results
-        self.trial_params = {}
+        self.trial_params = {}  # {point_idx: trial_params}
 
 
     def start(self):
@@ -181,9 +180,8 @@ class DEGridPointJob(Job):
             full_params = self.sampler._construct_params(self.grid_idx, best_profiled_params)
             self.sampler._update_global_pool(full_params, new_best_fitness, self.grid_idx)
 
-        # Effective convergence window: allow_early_DE_exit cells use a reduced
-        # one (set in create_de_generation_jobs). `>=` + slice matches the old
-        # `==`/full-deque for the default window (capped at convergence_window).
+        # allow_early_DE_exit cells use a shorter window (set in
+        # create_de_generation_jobs).
         eff_window = grid_state.get('conv_window') or self.sampler.convergence_window
         if grid_state['status'] == 'active' and \
            len(grid_state['improvement_history']) >= eff_window:

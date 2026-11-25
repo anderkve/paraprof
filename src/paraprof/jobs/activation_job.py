@@ -72,9 +72,8 @@ class ActivationJob(Job):
             unit_samples = lhs_sampler.random(n=n_from_random)
             samples_list.extend(prof_bounds[:, 0] + unit_samples * (prof_bounds[:, 1] - prof_bounds[:, 0]))
 
-        # Cross-projection knowledge transfer: replace the last random LHS slot
-        # with the past evaluation closest to this cell in projection-dim space.
-        # Silent no-op when the pool is empty or proximity_warm_start is off.
+        # proximity_warm_start: replace the last random slot with the past
+        # evaluation closest to this cell in the projection dimensions.
         if (self.sampler.proximity_warm_start
                 and not self.sampler.is_refinement_run
                 and n_from_random > 0
@@ -133,8 +132,7 @@ class ActivationJob(Job):
             ),
         }
         if self.sampler.direct_eval_mode:
-            # Stash the full param vector since direct-eval cells skip
-            # _construct_params downstream (no profiled dims to recombine).
+            # Direct-eval cells have no profiled params to rebuild this from.
             state['full_params'] = self.all_full_params[0]
         self.sampler.population[self.grid_idx] = state
         return None

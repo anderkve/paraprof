@@ -1,9 +1,7 @@
-"""
-Job for evaluating user-provided initial points.
+"""Job that evaluates user-provided initial points.
 
-Routes the evaluations through the normal master/result loop so they share
-the same bookkeeping path as every other target call: ``_register_target_call``
-(which feeds ``samples_output_file``) and ``_update_global_pool``.
+The evaluations go through the normal master/result loop, so they are
+recorded like any other target call.
 """
 import numpy as np
 

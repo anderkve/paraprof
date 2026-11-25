@@ -14,8 +14,6 @@ class PatchingTestJob(Job):
 
         # Store current best for comparison
         self.current_best_fitness = self.sampler.population[self.grid_idx]['best_fitness']
-
-        # Result storage
         self.test_fitness = None
         self.will_update = False
 
@@ -40,12 +38,10 @@ class PatchingTestJob(Job):
         if self.test_fitness > self.current_best_fitness:
             self.will_update = True
 
-        return []  # No new tasks
+        return []
 
     def on_finish(self, next_job_id):
-        """
-        If test found improvement, spawn L-BFGS-B job to optimize from test point.
-        """
+        """If the test point improved the cell, start an L-BFGS-B run from it."""
         if not self.success or not self.will_update:
             return None
 
@@ -57,8 +53,7 @@ class PatchingTestJob(Job):
             self.grid_idx, self.test_profiled_params
         )
 
-        # Create L-BFGS-B job to optimize from the improved starting point
-        # Use special job type to track it's part of patching wave
+        # L-BFGS-B job from the improved starting point, tagged as part of the patching wave
         job = LBFGSBJob(
             job_id=next_job_id,
             job_type='PATCHING_LBFGSB',
