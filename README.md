@@ -334,7 +334,7 @@ paraprof/
 │   ├── exceptions.py
 │   └── logger.py
 ├── tests/
-├── tools/                    # virtual_pool.py (master on virtual workers), bench_scheduling.py
+├── tools/                    # virtual_pool.py (master on virtual workers), bench_scheduling.py, octant_lab.py
 └── examples/                 # `*_advanced.py` exercises advanced_config
 ```
 

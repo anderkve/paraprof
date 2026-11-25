@@ -56,6 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluation for the whole scan. Completed sends are now dropped as it goes.
 
 ### Added
+- Test function `octant_6d`: a six-parameter mock of a neutrino oscillation
+  fit in which one parameter (`s23`) has two optima, and which of them is
+  higher changes across the projections that profile it.
+  `tools/octant_lab.py` runs one projection of it on virtual workers, compares
+  the result with a reference profile computed separately for each optimum,
+  and lists what patching and the suspect recheck tried at the grid points
+  that end in the wrong optimum.
 - **Periodic parameters** (`periodic`, a list of parameter indices or names).
   For a parameter whose bounds span one period, the lower and the upper bound
   are the same point. Without the option a region of interest that runs

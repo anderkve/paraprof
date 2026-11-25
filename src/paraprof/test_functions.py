@@ -4,7 +4,8 @@ when known).
 Categories: unimodal (Sphere, Rosenbrock); multimodal with few peaks
 (Himmelblau, Beale, Eggholder); multimodal with many regular peaks
 (Rastrigin, Ackley, Griewank); multimodal with steep/rugged landscapes
-(Michalewicz, Styblinski-Tang, Levy, Schwefel).
+(Michalewicz, Styblinski-Tang, Levy, Schwefel); two modes whose order
+changes across a projection (octant_6d).
 
 The ``*_2d/4d/6d/10d`` names are aliases of the ``*_nd`` functions.
 
@@ -203,6 +204,45 @@ levy_2d = levy_4d = levy_6d = levy_10d = levy_nd
 schwefel_2d = schwefel_4d = schwefel_6d = schwefel_10d = schwefel_nd
 
 
+# --- Two modes whose order changes across a projection ---
+
+OCTANT_6D_MAX = -0.03217547446477575
+
+
+def octant_6d(params):
+    """Mock of a three-flavour neutrino oscillation fit with the theta23
+    octant degeneracy, on the unit cube [0, 1]^6.
+
+    Parameters: delta (periodic), m21, m32, s12, s13, s23. The
+    disappearance term has two wells in s23, the lower and the upper
+    octant, with a barrier of about 1.8 between them. The appearance, mass
+    splitting and reactor terms decide which well is higher, and that
+    depends on delta, m32 and s13. In a projection that profiles s23 the
+    best octant therefore changes across the grid. delta has two local
+    optima per octant as well.
+
+    Global maximum 0 in the upper octant; the best lower-octant point is
+    0.127 below it. ``peaks`` in the registry lists these two.
+    """
+    d, m21, m32, s12, s13, s23 = params
+    S = 0.30 + 0.40 * s23          # sin^2(theta23)
+    T = 0.015 + 0.015 * s13        # sin^2(theta13)
+    T0 = 0.022
+    Smu = S * (1.0 - T)
+    c_dis = (4.0 * Smu * (1.0 - Smu) - 0.985) / 0.008
+    c_m32 = (m32 - 0.5 - 0.6 * (S - 0.5) - 0.15 * (s13 - 0.467)) / 0.06
+    t13 = T * (1.0 - T) / (T0 * (1.0 - T0))
+    sd, cd = np.sin(2.0 * np.pi * d), np.cos(2.0 * np.pi * d)
+    c_app = (S * t13 * (1.0 - 0.25 * sd + 0.08 * cd) - 0.50) / 0.035
+    c_apb = (S * t13 * (1.0 + 0.25 * sd + 0.08 * cd) - 0.53) / 0.09
+    c_rea = (T - T0) / 0.0007
+    c_m21 = (m21 - 0.45) / 0.07
+    c_s12 = (s12 - 0.52) / 0.055 + 0.3 * c_m21
+    chi2 = (c_dis**2 + c_m32**2 + c_app**2 + c_apb**2 + c_rea**2
+            + c_m21**2 + c_s12**2)
+    return -0.5 * chi2 - OCTANT_6D_MAX
+
+
 # --- Factory function ---
 
 def _make_uniform_registry(prefix, func, bounds, peak_value, dims=(2, 4, 6, 10)):
@@ -254,6 +294,12 @@ _FUNCTION_REGISTRY = {
     **_make_uniform_registry("levy", levy_nd, [-10, 10], 1.0),
 
     **_make_uniform_registry("schwefel", schwefel_nd, [-500, 500], 420.9687),
+
+    # Best point of the upper and of the lower octant.
+    "octant_6d": (octant_6d, [0, 1], [
+        np.array([0.47444626, 0.45, 0.54289877, 0.52, 0.462841, 0.68134424]),
+        np.array([0.99609645, 0.45, 0.47236552, 0.52, 0.47424972, 0.38032526]),
+    ]),
 }
 
 

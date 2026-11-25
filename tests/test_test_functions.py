@@ -32,3 +32,21 @@ class TestTestFunctions:
         value = func(optimum)
 
         np.testing.assert_allclose(value, 0.0, atol=1e-10)
+
+    def test_octant_6d_has_two_octant_maxima(self):
+        """The registered peaks are the best point of each s23 optimum."""
+        func, bounds, peaks = get_test_function("octant_6d")
+
+        assert np.array(bounds).shape == (6, 2)
+        upper, lower = peaks
+        assert upper[5] > 0.6 and lower[5] < 0.45
+        np.testing.assert_allclose(func(upper), 0.0, atol=1e-6)
+        np.testing.assert_allclose(func(lower), -0.1272, atol=1e-3)
+        # Both are local maxima: a small step in any parameter lowers the value.
+        for peak in peaks:
+            for i in range(6):
+                for step in (-1e-3, 1e-3):
+                    moved = peak.copy()
+                    moved[i] += step
+                    assert func(moved) < func(peak)
+
