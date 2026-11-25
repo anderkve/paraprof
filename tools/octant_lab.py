@@ -23,8 +23,7 @@ that is missing and `.` one outside the region of interest.
 reference solutions of a chosen octant: the reference assignment displaced
 by a number of grid points per projection dimension, or one octant
 everywhere. This tests patching and the suspect recheck on a known wrong
-state. `--all-neighbours` replaces the patching rule by one that tests the
-vector of every neighbour that differs from the grid point's own.
+state.
 """
 import argparse
 import collections
@@ -35,7 +34,6 @@ from scipy.optimize import minimize
 
 import paraprof
 import paraprof.master as _master
-from paraprof.jobs.patching_test_job import PatchingTestJob
 from virtual_pool import VirtualComm, _MPIShim
 
 NAMES = ['delta', 'm21', 'm32', 's12', 's13', 's23']
@@ -110,35 +108,8 @@ def plant(sampler, ref, assign):
         sampler.profile_likelihood_grid[idx] = st['best_fitness']
 
 
-def patch_all_neighbours(sampler, wave_number, updated, next_job_id, log):
-    """Patching jobs that test the vector of every neighbour that differs
-    from the grid point's own, whatever the neighbour's value."""
-    if wave_number == 0:
-        cutoff = sampler.global_max_target_val - sampler.roi_threshold
-        cells = [i for i, st in sampler.population.items() if st['best_fitness'] >= cutoff]
-    else:
-        cells = list({n for u in updated for n in sampler._get_valid_neighbors(u)
-                      if n in sampler.population})
-    extent = sampler._profiled_extent()
-    jobs = []
-    for idx in cells:
-        kept = [sampler._best_profiled_params(idx)]
-        for n in sampler._get_valid_neighbors(idx):
-            if n not in sampler.population:
-                continue
-            v = sampler._best_profiled_params(n)
-            if any(np.linalg.norm(sampler._param_delta(v, k, sampler.profiled_dims) / extent) < 1e-3
-                   for k in kept):
-                continue
-            kept.append(v)
-            jobs.append(PatchingTestJob(next_job_id, sampler, idx, v.copy(), wave_number))
-            log.append((wave_number, jobs[-1], n))
-            next_job_id += 1
-    return jobs, next_job_id
-
-
 def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None,
-        all_neighbours=False, **projector_kwargs):
+        **projector_kwargs):
     """One projection on virtual workers. Returns the snapshots and the
     patching and suspect-recheck jobs, which keep what they tested."""
     np.random.seed(seed)
@@ -161,9 +132,6 @@ def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None
                     if assign is not None:
                         plant(sampler, ref, assign)
                     rec['snaps']['before patching'] = snapshot(sampler)
-                if all_neighbours:
-                    return patch_all_neighbours(sampler, wave_number, updated_points_last_wave,
-                                                next_job_id, rec['patch_jobs'])
                 jobs, next_job_id = make_patch_jobs(wave_number, updated_points_last_wave,
                                                     next_job_id)
                 for job in jobs:
@@ -283,8 +251,6 @@ def main():
                     help="plant the reference octants displaced by this many grid points per dim")
     ap.add_argument('--plant', default=None, choices=['lower', 'upper'],
                     help="plant one octant everywhere it exists")
-    ap.add_argument('--all-neighbours', action='store_true',
-                    help="patching tests every neighbour's vector")
     ap.add_argument('--cells', type=int, default=3, help="wrong grid points to report on")
     args = ap.parse_args()
 
@@ -302,7 +268,7 @@ def main():
             int(np.clip(i + s, 0, n - 1)) for i, s, n in zip(idx, shift, shape))])
 
     rec = run(dims, npts, method=args.method, n_workers=args.workers, seed=args.seed,
-              assign=assign, ref=ref, all_neighbours=args.all_neighbours)
+              assign=assign, ref=ref)
 
     print(f"projection {[NAMES[d] for d in dims]}, grid {npts}, {args.method}, "
           f"{rec['calls']} target calls")

@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Patching tests the parameters of neighbours that hold a different
+  optimum.** A wave used to evaluate, at each grid point, the parameters of its
+  highest neighbour only, and only if that neighbour was higher. Where the best
+  optimum of a profiled parameter changes across the grid, the highest
+  neighbour is the uphill one and mostly holds the same optimum as the grid
+  point, so the border between the two optima stayed where the scan had put
+  it. Patching now also tests one neighbour for each different optimum held
+  across a jump in the profiled parameters, whatever that neighbour's value. A
+  jump is a difference in some profiled parameter above the median plus three
+  MAD of its differences over all pairs of neighbours. Waves after the first
+  test the neighbours of the updated grid points with the parameters of those
+  grid points only. A test is taken if it gains more than the L-BFGS-B
+  convergence tolerance (`lbfgsb.ftol`, or four times the noise); without
+  this, optima of equal height were swapped back and forth. On `octant_6d`,
+  projection (delta, m32) with 40 x 40 grid points: of 25 grid points in the
+  wrong optimum before patching, 9 were left after patching and 0 to 4 at the
+  end of the scan; now 0 are left after patching, at the same number of
+  target calls.
+- **`max_patching_waves` defaults to the largest number of grid points along a
+  projection dimension** (was 10). The border between two optima moves by one
+  grid point per wave, and patching ends when a wave updates nothing. With
+  the cap of 10 a 200-point projection of `octant_6d` ended with 13 grid
+  points up to 0.86 too low.
 - **L-BFGS-B runs work in bound-normalised coordinates and choose their
   finite-difference step from the noise of the target.** The step was
   `max(|x| * 1e-8, 1e-10)` in parameter units, which suits a target accurate to

@@ -1027,8 +1027,8 @@ def master_main(comm, sampler,
                 return True
 
             # Check if max waves reached
-            if R.patching_wave_number >= sampler.max_patching_waves:
-                logger.info(f"--- Master: Max patching waves ({sampler.max_patching_waves}) reached. ---")
+            if R.patching_wave_number >= sampler.patching_wave_cap():
+                logger.info(f"--- Master: Max patching waves ({sampler.patching_wave_cap()}) reached. ---")
                 R.next_stage()
                 return True
 

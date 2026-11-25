@@ -88,7 +88,9 @@ Scanner:
         # without the model prefix). The range must be exactly one period,
         # e.g. [0, 6.283185307179586] for an angle. None in this example.
         # periodic: [delta13]
-        max_patching_waves: 15
+        # Cap on patching waves. The default lets patching run until a wave
+        # updates nothing.
+        # max_patching_waves: 15
         lbfgsb_max_iter: 50
         lbfgsb_polish: true
         use_clustering: true
