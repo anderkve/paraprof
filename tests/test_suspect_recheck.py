@@ -39,9 +39,8 @@ def _set_cell(sampler, idx, profiled_params, fitness):
         'profiled_params': np.array([profiled_params]),
         'fitnesses': np.array([float(fitness)]),
         'best_fitness': float(fitness),
-        'status': 'optimized',
+        'status': 'done',
         'improvement_history': [],
-        'last_update_gen': 0,
         'optimizer_state': None,
     }
     if fitness > sampler.global_max_target_val:
@@ -217,7 +216,6 @@ def test_planted_wrong_optimum_strip_is_repaired():
                     st['profiled_params'][k] = moved
                     st['fitnesses'][:] = val
                     st['best_fitness'] = val
-                    sampler.profile_likelihood_grid[idx] = val
                 record['strip'] = strip
                 record['before'] = {c: st['best_fitness'] for c, st in sampler.population.items()}
             return orig(wave_number, updated_points_last_wave, next_job_id)

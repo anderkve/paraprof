@@ -84,7 +84,7 @@ def snapshot(sampler):
     """{grid point: (value, octant, full parameters)} of the finished grid points."""
     snap = {}
     for idx, st in sampler.population.items():
-        if st['status'] in ('converged', 'optimized'):
+        if st['status'] == 'done':
             u = sampler._construct_params(idx, sampler._best_profiled_params(idx))
             snap[tuple(int(i) for i in idx)] = (float(st['best_fitness']), octant_of(u), u)
     return snap
@@ -104,8 +104,7 @@ def plant(sampler, ref, assign):
         st['profiled_params'][k] = x[sampler.profiled_dims]
         st['fitnesses'][:] = -np.inf
         st['fitnesses'][k] = st['best_fitness'] = TARGET(x)
-        st['status'] = 'optimized'
-        sampler.profile_likelihood_grid[idx] = st['best_fitness']
+        st['status'] = 'done'
 
 
 def run(dims, npts, method='lbfgsb', n_workers=16, seed=1, assign=None, ref=None,

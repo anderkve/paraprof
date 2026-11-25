@@ -12,11 +12,12 @@ LHS_SEED_MAX = 1_000_000_000_000
 
 class ActivationJob(Job):
     """Evaluate the initial population for one grid cell (optionally warm-started)."""
-    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None, mark_converged=False):
+    def __init__(self, job_id, sampler, grid_idx, warm_start_params=None, mark_done=False):
         super().__init__(job_id, 'ACTIVATE_GRID_POINT', sampler)
         self.grid_idx = grid_idx
         self.warm_start_params = warm_start_params
-        self.mark_converged = mark_converged
+        # True: the grid point needs no optimisation after its evaluations.
+        self.mark_done = mark_done
 
         if self.sampler.direct_eval_mode:
             # Direct-eval mode: a single target evaluation at the grid centre.
@@ -113,9 +114,8 @@ class ActivationJob(Job):
             return None
 
         best_fitness = np.max(self.fitnesses)
-        self.sampler.profile_likelihood_grid[self.grid_idx] = best_fitness
 
-        status = 'converged' if (self.sampler.direct_eval_mode or self.mark_converged) else 'active'
+        status = 'done' if (self.sampler.direct_eval_mode or self.mark_done) else 'active'
 
         state = {
             'profiled_params': self.all_profiled_params,
@@ -123,7 +123,6 @@ class ActivationJob(Job):
             'best_fitness': best_fitness,
             'status': status,
             'improvement_history': collections.deque(maxlen=self.sampler.convergence_window),
-            'last_update_gen': 0,
             'optimizer_state': None,
             # True if the neighbour warm-start (or a perturbation) was the best
             # seed here -- the allow_early_DE_exit multimodality guard.
@@ -136,6 +135,4 @@ class ActivationJob(Job):
             # Direct-eval cells have no profiled params to rebuild this from.
             state['full_params'] = self.all_full_params[0]
         self.sampler.population[self.grid_idx] = state
-
-        self.sampler.activated_grid_indices.add(self.grid_idx)
         return None

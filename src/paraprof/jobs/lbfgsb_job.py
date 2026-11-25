@@ -33,8 +33,7 @@ HESSIAN_MAX_REFRESH = 3
 # of the largest one in magnitude, and made positive.
 HESSIAN_EIG_FLOOR = 1e-4
 
-GRID_JOB_TYPES = ('LBFGSB', 'LBFGSB_LOOP', 'POST_ACTIVATION_LBFGSB',
-                  'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB')
+GRID_JOB_TYPES = ('LBFGSB', 'LBFGSB_LOOP', 'PATCHING_LBFGSB', 'SUSPECT_RECHECK_LBFGSB')
 
 
 class LBFGSBJob(Job):
@@ -56,7 +55,7 @@ class LBFGSBJob(Job):
     inverse. A cell takes the Hessian of a finished neighbour instead.
 
     For grid-anchored LBFGSB jobs the run starts with a neighbor-test
-    step: if a converged neighbor has better fitness at our cell, we
+    step: if a finished neighbor has better fitness at our cell, we
     adopt its params and seed the (s, y) history from its optimizer state.
     """
     def __init__(self, job_id, job_type, sampler, opt_dims, start_params,
@@ -146,12 +145,6 @@ class LBFGSBJob(Job):
         self._gid = None       # gradient the run is waiting for
         self._ls = None        # state of the current line search
 
-    def _get_full_params(self, partial_params):
-        """Build full params from the opt-dim slice (passthrough for global opt)."""
-        if self.grid_idx is None:
-            return partial_params
-        return self.sampler._construct_params(self.grid_idx, partial_params)
-
     def _get_partial_params_from_full(self, full_params):
         """Slice a full parameter vector down to opt_dims."""
         return np.asarray(full_params, dtype=float)[list(self.opt_dims)]
@@ -202,8 +195,8 @@ class LBFGSBJob(Job):
             for neighbor_idx in self.sampler._get_valid_neighbors(self.grid_idx):
                 if neighbor_idx in self.sampler.population:
                     neighbor_state = self.sampler.population[neighbor_idx]
-                    # Neighbour must be optimized or converged and have an optimizer state
-                    if (neighbor_state['status'] in ['optimized', 'converged']) and \
+                    # Neighbour must be done and have an optimizer state
+                    if (neighbor_state['status'] == 'done') and \
                        (neighbor_state.get('optimizer_state') is not None):
 
                         if neighbor_state['best_fitness'] > best_neighbor_fitness:
@@ -810,19 +803,15 @@ class LBFGSBJob(Job):
                                             'Hinv': self.Hinv}
                 if self._hessian_z is not None:
                     sampler.lbfgsb_hessian_hint = self.Hinv
-                # LBFGSB_LOOP cells stay 'converged' so dynamic activation can
-                # re-promote them; everything else terminates at 'optimized'.
-                # A run that could not start (invalid start point) also leaves
-                # the cell 'converged', for patching to pick up.
-                state['status'] = ('converged' if (self.type == 'LBFGSB_LOOP' or not self.success)
-                                   else 'optimized')
+                # A run that could not start (invalid start point) ends here
+                # too: the cell keeps its value, and patching may improve it.
+                state['status'] = 'done'
 
                 if usable and self.current_fitness > state['best_fitness']:
                     state['best_fitness'] = self.current_fitness
                     best_idx = np.argmax(state['fitnesses'])
                     state['profiled_params'][best_idx] = self.current_params
                     state['fitnesses'][best_idx] = self.current_fitness
-                    sampler.profile_likelihood_grid[self.grid_idx] = self.current_fitness
 
                     if self.current_fitness > sampler.global_max_target_val:
                         sampler.global_max_target_val = self.current_fitness
@@ -839,12 +828,10 @@ class LBFGSBJob(Job):
                 'profiled_params': np.array([self.current_params]),
                 'fitnesses': np.array([self.current_fitness]),
                 'best_fitness': self.current_fitness,
-                'status': 'optimized',
+                'status': 'done',
                 'improvement_history': [],
-                'last_update_gen': 0,
                 'optimizer_state': {'s': list(self.s_hist), 'y': list(self.y_hist)},
             }
-            sampler.profile_likelihood_grid[grid_idx] = self.current_fitness
             if self.current_fitness > sampler.global_max_target_val:
                 sampler.global_max_target_val = self.current_fitness
 

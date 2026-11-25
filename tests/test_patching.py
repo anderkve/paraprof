@@ -29,9 +29,8 @@ def _set_cell(sampler, idx, profiled_params, fitness):
         'profiled_params': np.array([np.asarray(profiled_params, dtype=float)]),
         'fitnesses': np.array([float(fitness)]),
         'best_fitness': float(fitness),
-        'status': 'optimized',
+        'status': 'done',
         'improvement_history': [],
-        'last_update_gen': 0,
         'optimizer_state': None,
     }
     sampler.global_max_target_val = max(sampler.global_max_target_val, float(fitness))
