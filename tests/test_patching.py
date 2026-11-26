@@ -38,10 +38,17 @@ def _set_cell(sampler, idx, profiled_params, fitness):
 
 def _plant_two_optima_1d(sampler, border):
     """Values falling with the index; grid points below ``border`` hold one
-    optimum, the others a distant one. Both vary slowly along the grid."""
+    optimum, the others a distant one. Both vary slowly along the grid, by a
+    little more per grid step as the index grows."""
     for i in range(sampler.grid_shape[0]):
-        vec = [0.01 * i, -0.01 * i] if i < border else [3.0 + 0.01 * i, 2.0]
+        drift = 0.01 * i + 0.0005 * i * i
+        vec = [drift, -drift] if i < border else [3.0 + drift, 2.0]
         _set_cell(sampler, (i,), vec, fitness=-float(i))
+
+
+def _neighbours(sampler, idx):
+    """The neighbours of a grid point, each one grid step away."""
+    return {n: 1 for n in sampler._get_valid_neighbors(idx) if n in sampler.population}
 
 
 class TestPatchingSources:
@@ -50,9 +57,9 @@ class TestPatchingSources:
         _plant_two_optima_1d(sampler, border=100)
         thresholds = sampler._jump_thresholds()
 
-        assert sampler._patching_sources((5,), thresholds) == [(4,)]
+        assert sampler._patching_sources((5,), thresholds, _neighbours(sampler, (5,))) == [(4,)]
         # The highest grid point has no higher neighbour.
-        assert sampler._patching_sources((0,), thresholds) == []
+        assert sampler._patching_sources((0,), thresholds, _neighbours(sampler, (0,))) == []
 
     def test_neighbour_across_a_jump_is_tested_even_if_lower(self):
         sampler = _make_sampler([12])
@@ -60,41 +67,64 @@ class TestPatchingSources:
         thresholds = sampler._jump_thresholds()
 
         # (6,) holds the first optimum; (7,) is lower and holds the other.
-        assert sampler._patching_sources((6,), thresholds) == [(5,), (7,)]
+        assert sampler._patching_sources(
+            (6,), thresholds, _neighbours(sampler, (6,))) == [(5,), (7,)]
         # (6,) is both the highest neighbour of (7,) and across the jump.
-        assert sampler._patching_sources((7,), thresholds) == [(6,)]
+        assert sampler._patching_sources((7,), thresholds, _neighbours(sampler, (7,))) == [(6,)]
 
     def test_one_neighbour_per_optimum(self):
         sampler = _make_sampler([6, 6])
         for i in range(7):
             for j in range(7):
-                vec = [0.01 * i, 0.01 * j] if i < 4 else [3.0 + 0.01 * i, 2.0 + 0.01 * j]
+                vec = ([0.01 * i + 0.0005 * i * i, 0.01 * j + 0.0005 * j * j] if i < 4
+                       else [3.0 + 0.01 * i, 2.0 + 0.01 * j + 0.0005 * j * j])
                 _set_cell(sampler, (i, j), vec, fitness=-float(i) - 0.1 * j)
         thresholds = sampler._jump_thresholds()
 
-        sources = sampler._patching_sources((3, 3), thresholds)
+        sources = sampler._patching_sources((3, 3), thresholds, _neighbours(sampler, (3, 3)))
         # The highest neighbour, and of the three across the jump the one
         # along an axis.
         assert sources == [(2, 2), (4, 3)]
 
-    def test_sources_limit_the_neighbours(self):
+    def test_only_the_given_grid_points_are_sources(self):
         sampler = _make_sampler([12])
         _plant_two_optima_1d(sampler, border=7)
         thresholds = sampler._jump_thresholds()
 
-        assert sampler._patching_sources((6,), thresholds, sources={(7,)}) == [(7,)]
-        assert sampler._patching_sources((6,), thresholds, sources={(5,)}) == [(5,)]
-        assert sampler._patching_sources((6,), thresholds, sources={(9,)}) == []
+        assert sampler._patching_sources((6,), thresholds, {(7,): 1}) == [(7,)]
+        assert sampler._patching_sources((6,), thresholds, {(5,): 1}) == [(5,)]
+        assert sampler._patching_sources((6,), thresholds, {}) == []
+
+    def test_further_away_only_across_a_jump(self):
+        sampler = _make_sampler([12])
+        _plant_two_optima_1d(sampler, border=7)
+        thresholds = sampler._jump_thresholds()
+
+        # (7,) holds the other optimum, three steps from (4,).
+        assert sampler._patching_sources((4,), thresholds, {(7,): 3}) == [(7,)]
+        # (1,) is higher than (4,) and holds the same optimum: three steps
+        # away it is no source, one step away the higher neighbour is.
+        assert sampler._patching_sources((4,), thresholds, {(1,): 3}) == []
+        assert sampler._patching_sources((4,), thresholds, {(3,): 1}) == [(3,)]
+
+    def test_nearest_grid_point_of_an_optimum_is_the_source(self):
+        sampler = _make_sampler([12])
+        _plant_two_optima_1d(sampler, border=7)
+        thresholds = sampler._jump_thresholds()
+
+        within = {(9,): 5, (7,): 3, (8,): 4}
+        assert sampler._patching_sources((4,), thresholds, within) == [(7,)]
 
     def test_periodic_parameter_at_its_bounds_is_no_jump(self):
         sampler = _make_sampler([12], periodic=[1])
         for i in range(sampler.grid_shape[0]):
             # The periodic parameter crosses its bound between (5,) and (6,).
-            first = -5.0 + 0.01 * (i - 5.5) if i >= 6 else 5.0 + 0.01 * (i - 5.5)
+            drift = 0.01 * (i - 5.5) + 0.0005 * i * i
+            first = -5.0 + drift if i >= 6 else 5.0 + drift
             _set_cell(sampler, (i,), [first, 0.0], fitness=-float(i))
         thresholds = sampler._jump_thresholds()
 
-        assert sampler._patching_sources((5,), thresholds) == [(4,)]
+        assert sampler._patching_sources((5,), thresholds, _neighbours(sampler, (5,))) == [(4,)]
 
 
 class TestPatchingWaveJobs:
@@ -109,17 +139,43 @@ class TestPatchingWaveJobs:
         assert ((6,), tuple(sampler._best_profiled_params((7,)))) in tested
         assert ((7,), tuple(sampler._best_profiled_params((6,)))) in tested
 
-    def test_later_wave_tests_only_the_updated_grid_points(self):
+    def test_later_wave_looks_ahead_across_the_jump(self):
         sampler = _make_sampler([12])
         _plant_two_optima_1d(sampler, border=7)
+        assert sampler.patching_look_ahead() == 6
 
         jobs, _ = sampler.create_patching_wave_jobs(1, [(7,)], 0)
         tested = {(job.grid_idx, tuple(job.test_profiled_params)) for job in jobs}
 
         vec = tuple(sampler._best_profiled_params((7,)))
-        # (6,) is across the jump from (7,). (8,) is lower and holds the
-        # same optimum, so it gets a test too; (7,) itself gets none.
-        assert tested == {((6,), vec), ((8,), vec)}
+        # The six grid points before (7,) hold the other optimum and are
+        # within reach. Of those after it, which hold the same optimum, only
+        # the neighbour (8,) is tested, being lower. (0,) is out of reach.
+        assert tested == {((i,), vec) for i in (1, 2, 3, 4, 5, 6, 8)}
+
+    def test_look_ahead_shrinks_with_the_dimension(self):
+        assert _make_sampler([12]).patching_look_ahead() == 6
+        assert _make_sampler([12, 12]).patching_look_ahead() == 3
+        sampler = ProfileProjector(
+            target_func=lambda p: -float(np.sum(p ** 2)),
+            bounds=np.array([[-5.0, 5.0]] * 5),
+            projections=[{'dims': [0, 1, 2], 'grid_points': [4, 4, 4]}])
+        assert sampler.patching_look_ahead() == 2
+
+    def test_later_wave_in_2d_reaches_three_steps(self):
+        sampler = _make_sampler([8, 8])
+        for i in range(9):
+            for j in range(9):
+                vec = ([0.01 * i + 0.0005 * i * i, 0.01 * j + 0.0005 * j * j] if i < 5
+                       else [3.0 + 0.01 * i, 2.0 + 0.01 * j + 0.0005 * j * j])
+                _set_cell(sampler, (i, j), vec, fitness=-float(i) - 0.1 * j)
+
+        jobs, _ = sampler.create_patching_wave_jobs(1, [(5, 4)], 0)
+        across = {job.grid_idx for job in jobs if job.grid_idx[0] < 5}
+
+        # Columns 2 to 4 hold the other optimum and are up to three steps
+        # from (5, 4); so are rows 1 to 7.
+        assert across == {(i, j) for i in (2, 3, 4) for j in range(1, 8)}
 
     def test_wave_cap_defaults_to_the_grid_size(self):
         sampler = _make_sampler([12, 30])
@@ -217,3 +273,25 @@ def test_patching_moves_a_displaced_border_back():
     assert planted['wrong octant'] == 3
     assert patched['wrong octant'] == 0
     assert patched['ok'] == planted['ok'] + 3
+
+
+def test_look_ahead_moves_a_border_several_grid_points_per_wave():
+    """octant_6d, projection on s13 with 200 grid points: the upper octant is
+    planted 20 grid points too far. One grid point per wave would take 21
+    waves."""
+    dims, npts = [4], [200]
+    ref = octant_lab.reference(dims, npts)
+    last = ref['oct'].shape[0] - 1
+
+    def displaced(idx):
+        return int(ref['oct'][max(0, min(last, idx[0] - 20))])
+
+    rec = octant_lab.run(dims, npts, assign=displaced, ref=ref,
+                         n_initial_optimizations=20)
+
+    planted, _ = octant_lab.compare(rec['snaps']['before patching'], ref, rec['roi'])
+    patched, _ = octant_lab.compare(rec['snaps']['end'], ref, rec['roi'])
+    n_waves = 1 + max(wave for wave, _, _ in rec['patch_jobs'])
+    assert planted['wrong octant'] == 20
+    assert patched['wrong octant'] == 0
+    assert n_waves <= 8

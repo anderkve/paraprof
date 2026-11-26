@@ -90,6 +90,13 @@ LBFGSB_HESSIAN_STEP_MAX = 0.05
 # of the bound extent).
 PATCHING_JUMP_K = 3.0
 PATCHING_JUMP_FLOOR = 1e-3
+# After its first wave, patching tests the parameters of an updated grid point
+# up to this many grid steps away, so that the border between two optima can
+# move by more than one grid point per wave. By number of projection
+# dimensions; PATCHING_LOOK_AHEAD_DEFAULT for more. The number of grid points
+# within reach grows with the dimension, hence the smaller values.
+PATCHING_LOOK_AHEAD = {1: 6, 2: 3}
+PATCHING_LOOK_AHEAD_DEFAULT = 2
 
 
 # Activation-population mix ratios (neighbours / global pool / random LHS).
@@ -181,9 +188,9 @@ class ProfileProjector:
             DE population size per grid point (default: 3). Typical values: 1-5.
         max_patching_waves : int, optional
             Maximum number of patching waves. A wave moves the border between
-            two optima by one grid point. Default: the largest number of grid
-            points along a projection dimension, so that patching ends when a
-            wave updates nothing.
+            two optima by a few grid points at most (``PATCHING_LOOK_AHEAD``).
+            Default: the largest number of grid points along a projection
+            dimension, so that patching ends when a wave updates nothing.
         lbfgsb_max_iter : int, optional
             Maximum L-BFGS-B iterations per optimization (default: 50).
         lbfgsb_polish : bool, optional
@@ -2375,46 +2382,59 @@ class ProfileProjector:
         mad = np.median(np.abs(diffs - med), axis=0)
         return np.maximum(med + PATCHING_JUMP_K * 1.4826 * mad, PATCHING_JUMP_FLOOR)
 
-    def _is_jump(self, idx_a, idx_b, thresholds):
+    def _is_jump(self, idx_a, idx_b, thresholds, steps=1):
         """True if the profiled parameters of two grid points differ by more
-        than ``thresholds`` in some parameter."""
+        than ``thresholds`` in some parameter. For grid points ``steps`` grid
+        steps apart the thresholds are multiplied by ``steps``: that far the
+        parameters of one optimum can differ by as much."""
         delta = self._param_delta(self._best_profiled_params(idx_a),
                                   self._best_profiled_params(idx_b), self.profiled_dims)
-        return bool(np.any(np.abs(delta) / self._profiled_extent() > thresholds))
+        return bool(np.any(np.abs(delta) / self._profiled_extent() > steps * thresholds))
 
-    def _patching_sources(self, grid_idx, thresholds, sources=None):
-        """Neighbours whose profiled parameters are tested at ``grid_idx``.
+    def _patching_sources(self, grid_idx, thresholds, within):
+        """Grid points whose profiled parameters are tested at ``grid_idx``.
 
-        The highest neighbour, if it is higher than the grid point: this
-        catches a grid point whose own optimisation ended early. And one
-        neighbour for each different optimum held across a jump, whatever its
-        value: at the border between two optima the highest neighbour is the
-        uphill one, which mostly holds the same optimum as the grid point.
+        ``within`` holds the grid points to choose from, as
+        ``{grid point: grid steps from grid_idx}``.
 
-        ``sources`` limits the neighbours considered.
+        The highest of those one step away, if it is higher than the grid
+        point: this catches a grid point whose own optimisation ended early.
+        And one grid point for each different optimum held across a jump,
+        whatever its value: at the border between two optima the highest
+        neighbour is the uphill one, which mostly holds the same optimum as
+        the grid point.
         """
-        neighbors = [n for n in self._get_valid_neighbors(grid_idx)
-                     if n in self.population and (sources is None or n in sources)]
-        if not neighbors:
-            return []
-
         def value(n):
             return self.population[n]['best_fitness']
 
         chosen = []
-        top = max(neighbors, key=value)
-        if value(top) > value(grid_idx):
-            chosen.append(top)
+        neighbors = [n for n, steps in within.items() if steps == 1]
+        if neighbors:
+            top = max(neighbors, key=value)
+            if value(top) > value(grid_idx):
+                chosen.append(top)
         if thresholds is not None:
-            # Across a jump, nearest first: grid points one step along an
-            # axis before the diagonal ones, then by value.
-            across = [n for n in neighbors if self._is_jump(n, grid_idx, thresholds)]
-            across.sort(key=lambda n: (sum(a != b for a, b in zip(n, grid_idx)), -value(n)))
+            # Across a jump, nearest first: fewer steps, then along an axis
+            # before the diagonal, then by value.
+            across = [n for n, steps in within.items()
+                      if self._is_jump(n, grid_idx, thresholds, steps)]
+            across.sort(key=lambda n: (within[n], sum(a != b for a, b in zip(n, grid_idx)),
+                                       -value(n)))
             for n in across:
-                # one neighbour per optimum
-                if all(self._is_jump(n, c, thresholds) for c in chosen):
+                # One per optimum. Two neighbours of the grid point are
+                # compared as neighbours, so that every test made without
+                # the look-ahead is still made. Otherwise the two are at
+                # most the sum of their steps apart.
+                if all(self._is_jump(n, c, thresholds,
+                                     1 if within[n] == within[c] == 1 else within[n] + within[c])
+                       for c in chosen):
                     chosen.append(n)
         return chosen
+
+    def patching_look_ahead(self):
+        """How many grid steps from an updated grid point its parameters are
+        tested in the patching waves after the first."""
+        return PATCHING_LOOK_AHEAD.get(self.n_proj_dims, PATCHING_LOOK_AHEAD_DEFAULT)
 
     def patching_wave_cap(self):
         """Largest number of patching waves: ``max_patching_waves`` if set,
@@ -2426,13 +2446,17 @@ class ProfileProjector:
     def create_patching_wave_jobs(self, wave_number, updated_points_last_wave, next_job_id):
         """Patching test jobs for one wave.
 
-        Each job evaluates the profiled parameters of one neighbour at a grid
-        point (see ``_patching_sources`` for the neighbours chosen).
+        Each job evaluates the profiled parameters of another grid point at a
+        grid point (see ``_patching_sources`` for the ones chosen).
         Wave 0: every grid point inside the region of interest, and those
         outside it with most of their neighbours inside or with a neighbour
-        inside across a jump.
-        Wave 1+: the neighbours of the grid points updated in the previous
-        wave, tested with the parameters of those grid points.
+        inside across a jump. Each is tested with the parameters of its
+        neighbours.
+        Wave 1+: the grid points up to ``patching_look_ahead()`` steps from
+        one updated in the previous wave, tested with the parameters of the
+        updated ones. Beyond one step only across a jump: the look-ahead is
+        there to move the border between two optima faster than one grid
+        point per wave.
         """
         from .jobs.patching_test_job import PatchingTestJob
 
@@ -2441,41 +2465,43 @@ class ProfileProjector:
             self._patching_jump_thresholds = self._jump_thresholds()
         thresholds = self._patching_jump_thresholds
 
+        # {grid point to test: {grid point to take parameters from: steps apart}}
+        tests = {}
         if wave_number == 0:
-            sources = None
             roi_cutoff = self.global_max_target_val - self.roi_threshold
-            candidates = []
             for idx, state in self.population.items():
-                if state['best_fitness'] >= roi_cutoff:
-                    candidates.append(idx)
-                    continue
                 neighbors = [n for n in self._get_valid_neighbors(idx) if n in self.population]
-                inside = [n for n in neighbors
-                          if self.population[n]['best_fitness'] >= roi_cutoff]
-                if not inside:
-                    continue
-                if (len(inside) / len(neighbors) > 0.5
-                        or (thresholds is not None
-                            and any(self._is_jump(n, idx, thresholds) for n in inside))):
-                    candidates.append(idx)
+                if state['best_fitness'] < roi_cutoff:
+                    inside = [n for n in neighbors
+                              if self.population[n]['best_fitness'] >= roi_cutoff]
+                    if not inside:
+                        continue
+                    if not (len(inside) / len(neighbors) > 0.5
+                            or (thresholds is not None
+                                and any(self._is_jump(n, idx, thresholds) for n in inside))):
+                        continue
+                tests[idx] = dict.fromkeys(neighbors, 1)
         else:
-            sources = set(updated_points_last_wave)
-            candidates = list({n for updated_idx in sources
-                               for n in self._get_valid_neighbors(updated_idx)
-                               if n in self.population})
+            look_ahead = self.patching_look_ahead()
+            for updated_idx in updated_points_last_wave:
+                for steps in range(1, look_ahead + 1):
+                    for idx in self._cells_within(updated_idx, steps):
+                        if idx in self.population:
+                            # the first time a grid point turns up is the nearest
+                            tests.setdefault(idx, {}).setdefault(updated_idx, steps)
 
         jobs = []
-        for grid_idx in candidates:
-            for neighbor_idx in self._patching_sources(grid_idx, thresholds, sources):
+        for grid_idx, within in tests.items():
+            for source_idx in self._patching_sources(grid_idx, thresholds, within):
                 jobs.append(PatchingTestJob(
                     job_id=next_job_id,
                     sampler=self,
                     grid_idx=grid_idx,
-                    test_profiled_params=self._best_profiled_params(neighbor_idx).copy(),
+                    test_profiled_params=self._best_profiled_params(source_idx).copy(),
                     wave_number=wave_number,
                 ))
                 next_job_id += 1
 
         self.logger.info(f"--- Patching Wave {wave_number}: {len(jobs)} tests at "
-                         f"{len(candidates)} grid points ---")
+                         f"{len(tests)} grid points ---")
         return jobs, next_job_id
