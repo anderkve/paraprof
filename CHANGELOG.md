@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Patching looks ahead.** After its first wave, patching tests the
+  parameters of an updated grid point not only at its neighbours but, across
+  a jump, up to 6 grid steps away in a 1D projection, 3 in 2D and 2 beyond.
+  The border between two optima then moves by several grid points per wave
+  instead of one. With one grid point per wave a long border move kept only
+  the two or so grid points at the border busy, wave after wave. On
+  `octant_6d`, projection on s13 with 200 grid points, patching took 29 waves
+  and now takes 7; the wall time on 128 virtual workers fell from 281 to 135
+  evaluation times and on 1024 from 255 to 104, for 2 to 3 % more target
+  calls. A scan of that projection and two 40 x 40 ones took 254 evaluation
+  times on 1024 workers and now takes 103. Projections whose patching ended
+  after two or three waves are unchanged apart from up to 1 % more target
+  calls. For a given grid a wave still makes every test it made before. Grid
+  values on Himmelblau, Rosenbrock, Levy and Rastrigin did not change;
+  Rastrigin with `'de'` took 2 to 3 % more target calls.
 - **Patching tests the parameters of neighbours that hold a different
   optimum.** A wave used to evaluate, at each grid point, the parameters of its
   highest neighbour only, and only if that neighbour was higher. Where the best
